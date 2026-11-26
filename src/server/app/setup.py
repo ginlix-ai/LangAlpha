@@ -231,6 +231,11 @@ async def lifespan(app: FastAPI):
 
     # Configure logging based on environment settings (first thing on startup)
     configure_logging()
+    logger.info(f"Event loop: {type(asyncio.get_running_loop()).__module__}")
+    # Before anything starts a child: MCP servers below, CLIs and commands later.
+    from src.server.utils.child_fds import keep_descriptors_from_children
+
+    keep_descriptors_from_children()
 
     # Phase 2 of the OTel bootstrap (see module-top init_otel comment). Runs
     # per-worker so BatchSpanProcessor / PeriodicExportingMetricReader daemon

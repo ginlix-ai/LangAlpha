@@ -175,6 +175,15 @@ class TestEnvironment:
         monkeypatch.setenv("LANGALPHA_NODE", "/Applications/LangAlpha.app/Contents/MacOS/LangAlpha")
         assert machine_env()["LANGALPHA_NODE"] == "/Applications/LangAlpha.app/Contents/MacOS/LangAlpha"
 
+
+class TestARealCommand:
+    @pytest.fixture(params=["asyncio", "uvloop"])
+    def event_loop_policy(self, request, event_loop_policy):
+        """These run for real, on each loop a server may run."""
+        if request.param == "uvloop":
+            return pytest.importorskip("uvloop").EventLoopPolicy()
+        return event_loop_policy
+
     @pytest.mark.asyncio
     async def test_a_command_sees_none_of_the_servers_environment(
         self, allowed, monkeypatch, tmp_path

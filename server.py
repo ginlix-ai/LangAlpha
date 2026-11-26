@@ -86,6 +86,11 @@ if __name__ == "__main__":
     os.environ.setdefault("EDGAR_RATE_LIMIT_PER_SEC", str(max(1, 9 // args.workers)))
     if args.workers > 9 and os.environ["EDGAR_RATE_LIMIT_PER_SEC"] == "1":
         logger.warning(f"{args.workers} workers at 1 SEC request/s each exceed SEC's 10/s per client")
+    # uvloop resolves host names on libuv's thread pool, 4 threads unless this
+    # says otherwise, so a few lookups stuck on an unanswering resolver would
+    # hold every connect in the worker. Sized like asyncio's own executor, which
+    # did the lookups before.
+    os.environ.setdefault("UV_THREADPOOL_SIZE", str(min(32, (os.process_cpu_count() or 1) + 4)))
 
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")
