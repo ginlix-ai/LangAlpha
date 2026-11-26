@@ -15,6 +15,9 @@ RENAMED_SETTINGS: dict[str, str] = {
     "GINLIX_DATA_WS_URL": "LANGALPHA_DATA_WS_URL",
     "GINLIX_DATA_SEC_ENABLED": "LANGALPHA_DATA_SEC_ENABLED",
     "AUTH_SERVICE_URL": "PLATFORM_SERVICE_URL",
+    "GINLIXFLOW_BASE_URL": "SERVER_LOOPBACK_URL",
+    "PDF_RENDER_INTERNAL_BASE": "SERVER_LOOPBACK_URL",
+    "EGRESS_RELAY_LOOPBACK_URL": "SERVER_LOOPBACK_URL",
 }
 
 #: Former names whose blank was a value, not unset: a blank GINLIX_DATA_SEC_ENABLED
@@ -143,10 +146,14 @@ PLUGIN_MARKETPLACE_URL: str = os.getenv("PLUGIN_MARKETPLACE_URL", "")
 # place that sends it.
 PLUGIN_MARKETPLACE_TOKEN: str = os.getenv("PLUGIN_MARKETPLACE_TOKEN", "")
 
-# Internal base URL the server-side PDF renderer (headless Chromium) loads
-# workspace HTML from. Must be the server's own loopback listen address so
-# Chromium fetches bytes from this process, not the public ingress.
-PDF_RENDER_INTERNAL_BASE: str = os.getenv("PDF_RENDER_INTERNAL_BASE", "http://127.0.0.1:8000")
+# This process's own listener, for its calls to itself: report-backs and
+# hand-offs posted to its thread routes, the PDF renderer loading workspace
+# HTML, and directly bound MCP tools going through its egress relay. Each has
+# to reach this process rather than the public ingress. Unset, server.py's
+# --host and --port name it (LANGALPHA_LISTEN_URL), else port 8000.
+SERVER_LOOPBACK_URL: str = (
+    os.getenv("SERVER_LOOPBACK_URL") or os.getenv("LANGALPHA_LISTEN_URL") or "http://127.0.0.1:8000"
+).rstrip("/")
 
 # Shared HS256 secret authenticating sandboxes to the egress relay
 # (/v1/egress/*). Empty disables the relay — OAuth-connected MCP servers
@@ -164,11 +171,6 @@ EGRESS_RELAY_SECRET: str = os.getenv("EGRESS_RELAY_SECRET", "")
 # (Daytona + a local address). Point it at the API origin, not an SPA-fallback
 # frontend.
 EGRESS_RELAY_BASE_URL: str = os.getenv("EGRESS_RELAY_BASE_URL", "")
-
-# Where THIS process reaches its own egress relay for directly bound MCP
-# tools. Loopback on purpose: the host-side call takes the same route, policy
-# and audit as a sandbox call, without leaving the box.
-EGRESS_RELAY_LOOPBACK_URL: str = os.getenv("EGRESS_RELAY_LOOPBACK_URL", "http://127.0.0.1:8000")
 
 # Credit conversion rate (USD → credits).  Override with USD_TO_CREDITS_RATE env var.
 USD_TO_CREDITS_RATE: int = int(os.getenv("USD_TO_CREDITS_RATE", "1000"))

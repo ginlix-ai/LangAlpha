@@ -33,7 +33,7 @@ from langchain_core.tools import BaseTool
 
 from ptc_agent.agent.middleware.direct_mcp import METADATA_KEY
 from ptc_agent.agent.middleware.order_governance import execution_token
-from src.config.env import EGRESS_RELAY_LOOPBACK_URL, EGRESS_RELAY_SECRET
+from src.config.env import EGRESS_RELAY_SECRET, SERVER_LOOPBACK_URL
 from src.observability.langsmith_run import TOOL_PROVIDER
 from src.server.database.mcp_oauth import SERVABLE, ConnectionStatus, get_connection
 from src.server.services.brokerage_capabilities import (
@@ -224,10 +224,9 @@ def relay_mcp_client(grant_id: str, *, token: str) -> Any:
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
 
-    base = EGRESS_RELAY_LOOPBACK_URL.rstrip("/")
     return Client(
         StreamableHttpTransport(
-            url=f"{base}/v1/egress/{grant_id}",
+            url=f"{SERVER_LOOPBACK_URL}/v1/egress/{grant_id}",
             headers={"Authorization": f"Bearer {token}"},
             httpx_client_factory=relay_http_client,
         )

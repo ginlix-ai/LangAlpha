@@ -65,9 +65,7 @@ describe('starting', () => {
     assert.equal(env.PUBLIC_APP_URL, sup.origin)
     assert.equal(env.SERVER_BASE_URL, sup.origin)
     // The hand-offs and report-backs that used to reach whatever listened on 8000.
-    for (const name of ['GINLIXFLOW_BASE_URL', 'PDF_RENDER_INTERNAL_BASE', 'EGRESS_RELAY_LOOPBACK_URL']) {
-      assert.equal(env[name], sup.origin, name)
-    }
+    assert.equal(env.SERVER_LOOPBACK_URL, sup.origin)
     const provided = Object.keys(plan.backendEnv({ layout: plan.layoutOf(tree), from: {}, db: { host: 'h', port: 1, user: 'u', password: 'p', name: 'n' }, redisUrl: 'r', byokKey: 'k', port: 2, pythonMinor: '3.13' }))
     assert.ok(provided.every((name) => env[name] !== undefined && !/:8000\b/.test(env[name])), 'no value points at the default port')
     assert.equal(env.DB_HOST, '127.0.0.1')

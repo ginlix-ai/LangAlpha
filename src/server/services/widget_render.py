@@ -505,11 +505,11 @@ async def _serve_base(workspace_id: str | None, user_id: str | None) -> str | No
 def internal_url(url: str, serve_base: str) -> str | None:
     """The loopback serve route's address for a workspace file the widget
     asked for, or None for anything outside its grant's prefix."""
-    from src.config.env import PDF_RENDER_INTERNAL_BASE
+    from src.config.env import SERVER_LOOPBACK_URL
 
     if not url.startswith(serve_base) or not serve_base.startswith(_FILES_ORIGIN):
         return None
-    return PDF_RENDER_INTERNAL_BASE.rstrip("/") + url[len(_FILES_ORIGIN):]
+    return SERVER_LOOPBACK_URL + url[len(_FILES_ORIGIN):]
 
 
 # --- What the render answers itself ---------------------------------------------

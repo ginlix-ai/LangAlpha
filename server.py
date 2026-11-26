@@ -8,6 +8,22 @@ import uvicorn
 
 logger = logging.getLogger(__name__)
 
+
+def listen_url(host: str, port: int) -> str | None:
+    """The URL this process reaches itself at when bound to *host*:*port*, or None for port 0.
+
+    A wildcard bind is reached on loopback; any other bind on its own address.
+    """
+    if not port:
+        return None
+    if host in ("", "0.0.0.0"):
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
+
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Run the server")
@@ -75,6 +91,13 @@ if __name__ == "__main__":
     # or deleted as of v4 Phase 2 (accepted residual: same-pair dispatch
     # lifecycle overlap across processes, gen-CAS-bounded last-writer-wins).
     os.environ["LANGALPHA_WORKERS"] = str(args.workers)
+    # The address this process's calls to itself dial when SERVER_LOOPBACK_URL
+    # is unset: its own listener, under a name of its own so an explicit
+    # setting always wins.
+    if listen := listen_url(args.host, args.port):
+        os.environ["LANGALPHA_LISTEN_URL"] = listen
+    else:
+        os.environ.pop("LANGALPHA_LISTEN_URL", None)
     # Prompt templates are re-read on change only where the code reloads too:
     # checking each one's mtime on every render costs a stat per template
     # per turn on the event loop.
