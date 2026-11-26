@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,13 +25,15 @@ from unittest.mock import AsyncMock
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 
-from ptc_agent.agent.claude_code import ssh_launcher
+from ptc_agent.agent.claude_code import detach, ssh_launcher
 from ptc_agent.agent.claude_code.launcher import _INHERITED, cli_env
 from ptc_agent.agent.claude_code.machine_token import TOKEN_FD_ENV
 from ptc_agent.agent.claude_code.machine_token import NO_PERL, STREAM_BOOT
-from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher, kill_if_cli, remote_session_path
+from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher, SSHTransport, kill_if_cli, remote_session_path
 from ptc_agent.core.sandbox.providers._ssh_transport import _COMMAND_SLOTS, CLI_SLOTS, Machine, SlotWaitTimeout
-from src.llms.claude_code import ClaudeTurnFailed
+from claude_agent_sdk import CLIConnectionError
+
+from src.llms.claude_code import COMPUTER_LOST, ClaudeTurnFailed
 from tests.unit.ptc_agent.agent.claude_code.bsd_userland import bsd_path, on_linux
 from tests.unit.ptc_agent.agent.claude_code.local_link import local_link
 
@@ -76,8 +79,11 @@ def _relayed(secret: str) -> bytes:
 
 
 def _run(tmp_path: Path, machine: dict[str, str], *, relay: bool, after: bytes = b"") -> tuple[str, dict]:
-    """Run the launcher's command as sshd would; what the shim announced and what the stand-in CLI saw."""
+    """Run the launcher's command as sshd would, ending the CLI's input; what
+    the shim announced first in the CLI's stdout and what the stand-in CLI saw."""
     seen = tmp_path / "seen.json"
+    shutil.rmtree(tmp_path / "cfg", ignore_errors=True)
+    (tmp_path / "cfg").mkdir()
     cli = tmp_path / "claude"
     cli.write_text(
         f"#!{sys.executable}\nimport json, os, socket, sys\n"
@@ -91,13 +97,25 @@ def _run(tmp_path: Path, machine: dict[str, str], *, relay: bool, after: bytes =
     launcher = _launcher(relay)
     script = launcher.command(options)
     assert "\n" not in script and TOKEN not in script and STORED not in script
-    done = subprocess.run(["sh", "-c", STREAM_BOOT], input=script.encode() + b"\n" + after, env=machine,
-                          capture_output=True, timeout=30)
+    done = subprocess.run(["sh", "-c", STREAM_BOOT], input=script.encode() + b"\n" + after + b"langalpha-eof\n",
+                          env=machine, capture_output=True, timeout=30)
     assert done.returncode == 0, done.stderr.decode()
-    first, _, _ = done.stdout.decode().partition("\n")
+    assert done.stdout.startswith(b"langalpha-attach 0\n")
+    assert _ended(tmp_path / "cfg") == "x 0"
+    first, _, _ = (tmp_path / "cfg" / "attach" / "out").read_text().partition("\n")
     seen_by_cli = json.loads(seen.read_text())
     assert cli_env(options, launcher.env).items() <= seen_by_cli["env"].items(), "the local launcher's environment, every key"
     return first, seen_by_cli
+
+
+def _ended(config_dir: Path, wait_s: float = 30) -> str:
+    """How the CLI under the supervisor in ``config_dir`` ended, once it has."""
+    rc = config_dir / "attach" / "rc"
+    deadline = time.monotonic() + wait_s
+    while not rc.exists():
+        assert time.monotonic() < deadline, "the CLI never ended"
+        time.sleep(0.05)
+    return rc.read_text().strip()
 
 
 def test_the_cli_gets_the_machines_token_through_a_socket_and_a_clean_environment(tmp_path, monkeypatch):
@@ -561,3 +579,388 @@ async def test_a_cli_starting_fences_the_computers_reports_before_it_reads_the_t
     transport = await _started(launcher(plan=plan))
     await transport.close()
     plan.launching.assert_awaited_once()
+
+
+def _echo_cli(tmp_path: Path) -> Path:
+    """A stand-in CLI that answers each line of input with a message carrying it, and ends with its input."""
+    cli = tmp_path / "claude"
+    cli.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        "for line in sys.stdin:\n"
+        "    print(json.dumps({'type': 'echo', 'line': json.loads(line)}), flush=True)\n"
+    )
+    cli.chmod(0o755)
+    return cli
+
+
+def _drop(transport: Any) -> None:
+    """Lose the channel as a dropped connection does. Its process ends with a
+    status of its own, as a cloud stream's does (-1), but never says the CLI
+    ended, which only its last line does."""
+    transport._process.proc.kill()
+
+
+async def _next(messages: Any) -> dict[str, Any]:
+    return await asyncio.wait_for(anext(messages), 20)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("acks", [True, False], ids=["acked", "unacked"])
+async def test_a_lost_connection_is_reattached_and_the_cli_misses_nothing(tmp_path, monkeypatch, acks):
+    """The CLI runs on under its supervisor; a new channel attaches where the
+    last one stopped reading and is sent again only the input the supervisor
+    did not take, whether or not its acks reached the transport, so the SDK
+    reads one unbroken stream and the CLI each line once."""
+    if not acks:
+        heard = SSHTransport._stderr_line
+        monkeypatch.setattr(
+            SSHTransport, "_stderr_line",
+            lambda self, line, **kw: None if line.startswith(detach.TAKEN_MARK) else heard(self, line, **kw),
+        )
+    _, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    transport = await _started(launcher())
+    messages = transport.read_messages()
+    await transport.write('{"n": 1}\n')
+    assert (await _next(messages))["line"] == {"n": 1}
+    _drop(transport)
+    await transport.write('{"n": 2}\n')
+    assert (await _next(messages))["line"] == {"n": 2}
+    _drop(transport)
+    await asyncio.sleep(0.2)
+    await transport.write('{"n": 3}\n')
+    assert (await _next(messages))["line"] == {"n": 3}
+    await transport.end_input()
+    with pytest.raises(StopAsyncIteration):
+        await _next(messages)
+    await transport.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resumes", [True, False], ids=["resumed", "failed"])
+async def test_a_machine_that_does_not_answer_again_ends_the_read_and_its_cli_ends_on_its_own(tmp_path, monkeypatch, resumes):
+    """Past the wait the read ends the turn, stopped to be resumed where the
+    launcher says, else as a lost connection, and the supervisor ends the
+    CLI once nothing has attached for its grace, saying so."""
+    monkeypatch.setattr(ssh_launcher, "RECONNECT_WAIT_S", 1)
+    monkeypatch.setattr(ssh_launcher, "DETACHED_GRACE_S", 1)
+    _, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    one = launcher(resumes=resumes)
+    prepared = await one._lay_out(await one.ready(), None)
+    transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
+    await transport.connect()
+    messages = transport.read_messages()
+
+    async def silent():
+        raise ConnectionRefusedError("the tunnel is down")
+
+    one.machine = Machine(silent, one.machine.root)
+    _drop(transport)
+    with pytest.raises(ClaudeTurnFailed if resumes else CLIConnectionError, match="Lost the connection to local") as lost:
+        await _next(messages)
+    assert getattr(lost.value, "kind", None) == (COMPUTER_LOST if resumes else None)
+    assert await asyncio.to_thread(_ended, Path(prepared.config_dir)) == detach.GRACE_KILLED
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cli_gone_from_the_machine_fails_the_read_at_once(tmp_path, monkeypatch):
+    _, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    one = launcher(resumes=True)
+    prepared = await one._lay_out(await one.ready(), None)
+    transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
+    await transport.connect()
+    messages = transport.read_messages()
+    shutil.rmtree(Path(prepared.config_dir) / "attach")
+    _drop(transport)
+    started = time.monotonic()
+    with pytest.raises(ClaudeTurnFailed, match="no longer running") as gone:
+        await _next(messages)
+    assert gone.value.kind == COMPUTER_LOST
+    assert time.monotonic() - started < ssh_launcher.RECONNECT_WAIT_S
+    closing = time.monotonic()
+    await transport.close()
+    assert time.monotonic() - closing < ssh_launcher.EXIT_GRACE_S, "a pid no longer the CLI's is never signalled"
+
+
+def _noisy_cli(tmp_path: Path) -> Path:
+    """A stand-in CLI that answers each line of input on stdout, with a line
+    of stderr before the answer and another a moment after it."""
+    cli = tmp_path / "claude"
+    cli.write_text(
+        f"#!{sys.executable}\nimport json, sys, time\n"
+        "for line in sys.stdin:\n"
+        "    n = json.loads(line)['n']\n"
+        "    print(f'said {n}', file=sys.stderr, flush=True)\n"
+        "    print(json.dumps({'type': 'echo', 'n': n}), flush=True)\n"
+        "    time.sleep(0.2)\n"
+        "    print(f'after {n}', file=sys.stderr, flush=True)\n"
+    )
+    cli.chmod(0o755)
+    return cli
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_relays_each_line_of_the_clis_stderr_once(tmp_path, monkeypatch):
+    """The stderr a new channel replays starts at the first line the last one
+    did not finish, however that channel ended, including the lines the CLI
+    wrote with no channel attached: no line is skipped or seen twice."""
+    heard: list[str] = []
+    link, launcher = _local(tmp_path, monkeypatch, str(_noisy_cli(tmp_path)))
+    one = launcher()
+    prepared = await one._lay_out(await one.ready(), None)
+
+    async def slow():
+        await asyncio.sleep(0.5)
+        return link
+
+    one.machine = Machine(slow, one.machine.root)
+    transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir},
+                                                 stderr=heard.append))
+    await transport.connect()
+    messages = transport.read_messages()
+    for n in range(1, 4):
+        await transport.write(json.dumps({"n": n}) + "\n")
+        assert (await _next(messages))["n"] == n
+        _drop(transport)
+    await transport.write(json.dumps({"n": 4}) + "\n")
+    assert (await _next(messages))["n"] == 4
+    await transport.end_input()
+    with pytest.raises(StopAsyncIteration):
+        await _next(messages)
+    await transport.close()
+    assert [line for line in heard if line.startswith(("said", "after"))] == [
+        f"{word} {n}" for n in range(1, 5) for word in ("said", "after")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_closing_a_turn_with_no_channel_attached_ends_its_cli(tmp_path, monkeypatch):
+    """A stop that lands while the transport reattaches still ends the CLI,
+    by its pid over a new connection, rather than leaving it to the
+    supervisor's grace. The stand-in runs again under its own name, since
+    the CLI is signalled only while its command line starts with its path;
+    a framework Python would be listed as its app bundle instead."""
+    monkeypatch.setattr(ssh_launcher, "EXIT_GRACE_S", 1)
+    cli = tmp_path / "claude"
+    bash = shutil.which("bash")
+    cli.write_text(
+        f"#!{bash}\n"
+        f'if [ -z "${{NAMED:-}}" ]; then NAMED=1 exec -a "$0" {bash} "$0" "$@"; fi\n'
+        "while read -r _; do :; done\n"
+    )
+    cli.chmod(0o755)
+    _, launcher = _local(tmp_path, monkeypatch, str(cli))
+    one = launcher()
+    prepared = await one._lay_out(await one.ready(), None)
+    transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
+    await transport.connect()
+    deadline = time.monotonic() + 15
+
+    def named() -> bool:
+        ps = subprocess.run(["ps", "-ww", "-o", "args=", "-p", str(transport._pid)], capture_output=True, text=True)
+        return ps.stdout.startswith(str(cli))
+
+    while transport._pid is None or not await asyncio.to_thread(named):
+        assert time.monotonic() < deadline, "the CLI never named itself"
+        await asyncio.sleep(0.1)
+    await transport._detach()
+    transport._cli_link.retired = True
+    fresh, dials = local_link(None, HOME=str(tmp_path)), []
+
+    async def dial():
+        dials.append(fresh)
+        return fresh
+
+    one.machine = Machine(dial, one.machine.root)
+    await transport.close()
+    assert await asyncio.to_thread(_ended, Path(prepared.config_dir), 10) == "s 15"
+    assert dials and transport._cli_link is fresh, "the signal went over a new connection"
+
+
+class _SentOnDrain:
+    """A channel's stdin that sends only on a drain, as a cloud stream's does (``sandbox_launcher._Input``)."""
+
+    def __init__(self, writer: Any) -> None:
+        self._writer = writer
+        self._queued = bytearray()
+
+    def write(self, data: bytes) -> None:
+        self._queued += data
+
+    async def drain(self) -> None:
+        data, self._queued = bytes(self._queued), bytearray()
+        self._writer.write(data)
+        await self._writer.drain()
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_sends_what_it_queued_on_a_channel_that_sends_only_on_a_drain(tmp_path, monkeypatch):
+    """Input the supervisor never took goes again on the new channel even
+    where nothing leaves without a drain, rather than waiting on it forever."""
+    started = SSHTransport._start
+
+    async def start(self, hold, script):
+        await started(self, hold, script)
+        self._process.stdin = _SentOnDrain(self._process.stdin)
+
+    monkeypatch.setattr(SSHTransport, "_start", start)
+    _, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    transport = await _started(launcher())
+    messages = transport.read_messages()
+    await transport.write('{"n": 1}\n')
+    assert (await _next(messages))["line"] == {"n": 1}
+    transport._live = False
+    _drop(transport)
+    await transport.write('{"n": 2}\n')
+    assert (await _next(messages))["line"] == {"n": 2}
+    await transport.end_input()
+    with pytest.raises(StopAsyncIteration):
+        await _next(messages)
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_a_wait_asks_the_machine_on_the_clis_connection_and_closes_one_that_does_not_answer(tmp_path, monkeypatch):
+    """A channel let go is not answering; a connection busy with kills is,
+    however long they hold it past the probe's own time; one that fails to
+    answer is closed with its channel, so the reattach dials a new one
+    rather than the stale one."""
+    _, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    transport = await _started(launcher())
+    link = transport._cli_link
+    closed = []
+    monkeypatch.setattr(link, "close", lambda: closed.append(True), raising=False)
+    assert await transport._answers() is True
+    grace = ssh_launcher.EXIT_GRACE_S
+    monkeypatch.setattr(ssh_launcher, "EXIT_GRACE_S", 0.1)
+
+    async def kill_running(s: float) -> None:
+        async with link.kill_slot:
+            await asyncio.sleep(s)
+
+    killing = asyncio.ensure_future(kill_running(0.5))
+    await asyncio.sleep(0)
+    assert await asyncio.wait_for(transport._answers(), 5) is True, "a kill holding the slot past the probe's time is waited out"
+    await killing
+    monkeypatch.setattr(ssh_launcher, "EXIT_GRACE_S", grace)
+    monkeypatch.setattr(ssh_launcher, "RECONNECT_WAIT_S", 0.2)
+    async with link.kill_slot:
+        assert await transport._answers() is True, "a connection its kills keep busy is one that answers"
+    assert closed == [] and transport._reach.up.is_set()
+    monkeypatch.setattr(link, "run", AsyncMock(side_effect=TimeoutError()))
+    assert await transport._answers() is False
+    assert closed == [True] and not transport._reach.up.is_set()
+    monkeypatch.setattr(link, "run", AsyncMock())
+    transport._live = False
+    assert await transport._answers() is False, "a channel let go is about to reattach, however the machine answers"
+    await transport.close()
+
+
+def test_a_reattach_sends_again_only_the_input_the_supervisor_has_not_taken():
+    ledger = detach.InputLedger()
+    ledger.add(b"abc")
+    ledger.add(b"def")
+    assert not ledger.takes(7), "a count past what was sent is the protocol broken"
+    ledger.ack(2)
+    assert (bytes(ledger.unsent), ledger.start) == (b"cdef", 2)
+    ledger.ack(1)
+    assert (bytes(ledger.unsent), ledger.start) == (b"cdef", 2), "an older count takes nothing back"
+    ledger.ack(6)
+    assert (bytes(ledger.unsent), ledger.start) == (b"", 6)
+
+
+def test_a_machine_not_answering_is_told_however_deep_its_cause():
+    try:
+        try:
+            try:
+                raise ConnectionResetError("reset")
+            except OSError as e:
+                raise RuntimeError("the channel failed") from e
+        except RuntimeError as e:
+            raise CLIConnectionError("lost") from e
+    except CLIConnectionError as e:
+        assert detach.unanswered(e)
+    try:
+        try:
+            raise ConnectionResetError("reset")
+        except OSError:
+            raise ValueError("a refusal raised while handling it")
+    except ValueError as e:
+        assert not detach.unanswered(e), "only what it was raised from counts, not what was being handled"
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_whose_channel_ends_before_it_attaches_dials_again(tmp_path, monkeypatch):
+    """A channel the machine ends before the supervisor says it attached, as
+    a login cut short does, is dialed again within the wait."""
+    _, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    transport = await _started(launcher())
+    messages = transport.read_messages()
+    attach, tries = detach.attach_command, []
+
+    def cut_short_once(*args: Any) -> str:
+        tries.append(args)
+        return "exit 3" if len(tries) == 1 else attach(*args)
+
+    monkeypatch.setattr(detach, "attach_command", cut_short_once)
+    _drop(transport)
+    await transport.write('{"n": 1}\n')
+    assert (await _next(messages))["line"] == {"n": 1}
+    assert len(tries) == 2
+    await transport.end_input()
+    with pytest.raises(StopAsyncIteration):
+        await _next(messages)
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_a_protocol_line_cut_short_changes_nothing(tmp_path, monkeypatch):
+    """A channel lost mid-line leaves a fragment, which must not read as the
+    CLI attached or ended."""
+    _, launcher = _local(tmp_path, monkeypatch)
+    one = launcher()
+    prepared = await one._lay_out(await one.ready(), None)
+    transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
+    transport._stderr_line(detach.ATTACH_MARK, whole=False)
+    assert not transport._err_attached
+    transport._stderr_line(detach.ATTACH_MARK)
+    transport._stderr_line(detach.EXIT_MARK + "x 0", whole=False)
+    assert transport._exit is None and transport._err_lines == 0
+    transport._stderr_line(detach.EXIT_MARK + "x 0")
+    assert transport._exit == "x 0"
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_that_finds_no_slot_fails_as_a_busy_computer_not_a_lost_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(ssh_launcher, "RECONNECT_WAIT_S", 2)
+    link, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    one = launcher(resumes=True)
+    prepared = await one._lay_out(await one.ready(), None)
+    transport = one.transport(ClaudeAgentOptions(cwd=prepared.cwd, env={"CLAUDE_CONFIG_DIR": prepared.config_dir}))
+    await transport.connect()
+    messages = transport.read_messages()
+
+    @contextlib.asynccontextmanager
+    async def full(wait_s: float):
+        await asyncio.sleep(wait_s)
+        raise SlotWaitTimeout("command")
+        yield
+
+    monkeypatch.setattr(link, "cli_hold", full)
+    _drop(transport)
+    with pytest.raises(ClaudeTurnFailed) as busy:
+        await _next(messages)
+    assert busy.value.kind == "commands_full"
+    await transport.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_probe_that_does_not_finish_is_no_answer(tmp_path, monkeypatch):
+    _, launcher = _local(tmp_path, monkeypatch, str(_echo_cli(tmp_path)))
+    transport = await _started(launcher())
+    link = transport._cli_link
+    transport._cli_link = SimpleNamespace(run=AsyncMock(return_value=SimpleNamespace(exit_code=None)))
+    assert await transport._answers() is False
+    assert not transport._reach.up.is_set()
+    transport._cli_link = link
+    await transport.close()

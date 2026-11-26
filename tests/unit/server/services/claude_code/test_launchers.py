@@ -578,6 +578,22 @@ async def test_a_pick_that_now_lands_on_another_own_computer_keeps_the_admitted_
     seams.machine_of.assert_awaited_once_with(_row("running"))
 
 
+@pytest.mark.parametrize("channel, resumes", [("ssh_tunnel", True), (None, False)], ids=["tunneled", "dialed"])
+def test_a_turn_resumes_after_losing_its_computer_only_where_the_resume_waits_for_it(channel, resumes):
+    """The resume parks until the workspace's own tunneled computer is back;
+    a directly dialed one, or a computer picked for a workspace on another,
+    is not waited for, so its turn fails as a lost connection instead."""
+    sandbox = _ssh_sandbox()
+    sandbox.provider.channel = channel
+    own = turn_launcher(sandbox, computer_id=CID, workspace_id="ws-1", user_id="user-1", admitted=Admitted())
+    assert own.resumes is resumes
+    picked = turn_launcher(
+        SimpleNamespace(provider=MagicMock()), computer_id="c-2", workspace_id="ws-2", user_id="user-1",
+        admitted=Admitted(cli_computer=CID),
+    )
+    assert picked.resumes is False
+
+
 def test_a_turn_admitted_on_a_picked_computer_runs_its_cli_there_whatever_its_own_sandbox_is():
     admitted = Admitted(saved="saved_token", cli_computer=CID)
     launcher = turn_launcher(

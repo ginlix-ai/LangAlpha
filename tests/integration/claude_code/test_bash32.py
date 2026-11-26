@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+import threading
 import uuid
 from types import SimpleNamespace
 
@@ -147,15 +148,36 @@ async def test_a_machine_on_musl_reads_as_unsupported_and_is_refused_before_the_
 
 
 def _turn(container: str, *, relay: bool, after: str = "") -> list[str]:
-    """The turn's command, as the CLI's channel runs it, with the stand-in CLI."""
+    """The turn's command, as the CLI's channel runs it, with the stand-in CLI,
+    in a fresh config dir as the turn's layout leaves it; the lines the CLI
+    printed, past the one its supervisor attaches the channel with."""
+    _docker("exec", container, "sh", "-c", "rm -rf /tmp/cfg && mkdir -m 700 /tmp/cfg")
     launcher = SSHLauncher(Machine(None, lambda: "/root"), identity="u", token_file=CID, credential=object() if relay else None)
     options = ClaudeAgentOptions(cli_path=CLI, cwd="/tmp", env={"CLAUDE_CONFIG_DIR": "/tmp/cfg", "ODD": "it's\na \"value\" $HOME"})
-    done = subprocess.run(
+    channel = subprocess.Popen(
         ["docker", "exec", "-i", "-e", f"HOME={HOME}", "-e", "MACHINE_SECRET=machine-only", container, "sh", "-c", STREAM_BOOT],
-        input=launcher.command(options) + "\n" + after, capture_output=True, text=True, timeout=60,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    assert done.returncode == 0, done.stderr
-    return done.stdout.splitlines()
+    # Its input stays open until the CLI has ended, as a live channel's
+    # does: one that ends first is a connection lost.
+    channel.stdin.write(launcher.command(options) + "\n" + after)
+    channel.stdin.flush()
+    errors: list[str] = []
+    reading = threading.Thread(target=lambda: errors.append(channel.stderr.read()))
+    reading.start()
+    timer = threading.Timer(60, channel.kill)
+    timer.start()
+    try:
+        out = channel.stdout.read()
+        channel.stdin.close()
+        returncode = channel.wait(10)
+    finally:
+        timer.cancel()
+        reading.join(10)
+    assert returncode == 0, errors
+    attached, *printed = out.splitlines()
+    assert attached == "langalpha-attach 0"
+    return printed
 
 
 def test_a_turns_command_runs_under_bash_3_2_and_busybox(container):
