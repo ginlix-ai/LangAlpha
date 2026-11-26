@@ -10,6 +10,7 @@ import { EmptyState } from '@/pages/Plugins/components/EmptyState';
 import type { DriveTrashItem } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
 import { parentOf } from '../drivePaths';
+import { loadFailedLine } from '../driveRefusal';
 import { EntryGlyph } from './EntryGlyph';
 import { PaneFrame } from './PaneFrame';
 
@@ -119,7 +120,7 @@ export function DriveTrash({ trashDays, trashBytes, onRestored }: {
   };
 
   let body: React.ReactNode;
-  if (error) body = <ListError onRetry={() => void refetch()}>{t('drive:errors.loadFailed')}</ListError>;
+  if (error) body = <ListError onRetry={() => void refetch()}>{loadFailedLine(error, t)}</ListError>;
   else if (isLoading) body = <ListSkeleton rows={4} />;
   else if (!items?.length) body = <EmptyState message={t('drive:trash.none', { count: trashDays })} />;
   else {
@@ -131,14 +132,14 @@ export function DriveTrash({ trashDays, trashBytes, onRestored }: {
           ))}
         </ul>
         {data?.more && (
-          <div className="drive-trash-more">
+          <div className="drive-more">
             {limit < TRASH_MAX ? (
               <HeaderButton
                 variant="ghost"
                 disabled={isFetching && isPlaceholderData}
                 onClick={() => setLimit((n) => Math.min(TRASH_MAX, n + TRASH_PAGE))}
               >
-                {t('drive:trash.loadMore')}
+                {t('drive:loadMore')}
               </HeaderButton>
             ) : (
               <span className="drive-row-sub">{t('drive:trash.newestOnly', { count: TRASH_MAX })}</span>

@@ -1,0 +1,330 @@
+/* A memo's band, record, changes, who wrote what, the memo list and the
+   memo dialog. Loaded right after Drive.css, so a rule here still wins over
+   a shared rule of the same weight there (a ticker's pill, a link button). */
+
+/* The pill, the tickers and the tags are neutral: a memo is a kind of file,
+   not a state. Amber marks one thing, the text moving on past its final. */
+.drive-memo-status,
+.drive-memo-facts {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+.drive-memo-status { font-variant-numeric: tabular-nums; }
+/* Beside a name, the name gives way: the status keeps to one line. */
+.drive-row-title .drive-memo-status { flex-shrink: 0; white-space: nowrap; color: var(--color-text-secondary); }
+/* The memo's own header: its status and the ways on, parted by dots. The
+   separator trails its item, so a line the facts wrap onto never starts with
+   one on a narrow pane. */
+.drive-memo-facts > :not(:last-child)::after,
+.drive-memo-facts .drive-memo-status > :not(:last-child)::after {
+  content: '·';
+  margin-left: 6px;
+  color: var(--color-text-quaternary);
+}
+/* The status and a link button are flex rows, whose own gaps (6px, 4px) part the separator. */
+.drive-memo-facts > .drive-memo-status:not(:last-child)::after { margin-left: 0; }
+.drive-memo-facts > .drive-link-button:not(:last-child)::after { margin-left: 2px; }
+.drive-memo-revised { display: inline-flex; align-items: center; gap: 5px; color: var(--color-text-tertiary); }
+.drive-memo-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background-color: var(--color-accent-primary);
+}
+.drive-tickers { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.drive-ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  line-height: 1.125rem;
+}
+.drive-ticker.is-button:hover { color: var(--color-text-primary); }
+.drive-ticker.is-filter { color: var(--color-text-primary); }
+
+.drive-memo-band { padding: 0 16px; }
+.drive-memo-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  /* Under the name, past the file's glyph (18px and the 10px gap). */
+  padding-left: 28px;
+  margin-top: -4px;
+  padding-bottom: 8px;
+  font-size: 0.75rem;
+}
+.drive-memo-edit { margin-left: auto; color: var(--color-text-tertiary); text-decoration: none; }
+.drive-memo-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 -8px;
+  /* Scrolls sideways at phone width; never down, which drew a scrollbar beside the tabs. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.drive-tab {
+  padding: 6px 8px 7px;
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  /* The selected view's underline: a nav selection, the one sanctioned edge marker. */
+  border-bottom: 2px solid transparent;
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+.drive-tab:hover:not(:disabled) { color: var(--color-text-secondary); }
+.drive-tab.is-active { color: var(--color-text-primary); border-bottom-color: var(--color-text-primary); }
+.drive-tab:disabled { color: var(--color-text-quaternary); cursor: default; }
+.drive-tab:focus-visible { border-radius: 4px; }
+
+/* One focus ring: drawn inside a control that fills its row, outside one set in text. */
+.drive-tab:focus-visible,
+.drive-memos-open:focus-visible,
+.drive-record-main:focus-visible,
+.drive-record-toggle:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+.drive-tab:focus-visible,
+.drive-memos-open:focus-visible { outline-offset: -2px; }
+
+/* Record */
+.drive-record { max-width: 760px; margin: 0 auto; padding: 12px 16px 24px; }
+.drive-record-head { display: flex; justify-content: flex-end; margin: -4px -6px 0 0; }
+.drive-record-list { display: flex; flex-direction: column; }
+.drive-record-item,
+.drive-record-subitem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--color-border-muted);
+}
+.drive-record-item { padding: 10px 2px; font-size: 0.8125rem; }
+.drive-record-item:first-child { border-top: 0; }
+.drive-record-main { text-align: left; border-radius: 4px; }
+/* The record's controls sit closer than a finger, so each touch box keeps to
+   its own row: the opener takes the padding above it and, in a row, only the
+   gap below, since the line under it can hold a thread link, which sits
+   unpositioned and would lose to the box. */
+.drive-record-item > .drive-record-main { --tap-target-h: calc(100% + 12px); --tap-target-y: -4px; }
+.drive-record-subitem > .drive-record-main { --tap-target-h: calc(100% + 12px); }
+.drive-record-main:hover .drive-record-seq { text-decoration: underline; text-underline-offset: 2px; }
+.drive-record-top { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; row-gap: 2px; }
+.drive-record-seq {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.drive-record-stats {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.drive-record-stats .is-added { color: var(--color-profit); }
+.drive-record-stats .is-removed { color: var(--color-loss); }
+.drive-record-who { color: var(--color-text-secondary); font-size: 0.75rem; }
+/* A person or the agent, told apart by shape in the text's own tone, never by colour. */
+.drive-who-glyph {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  vertical-align: -2px;
+  color: var(--color-icon-muted);
+}
+.drive-authors-who .drive-who-glyph { margin: 4px 0 0; }
+.drive-record-muted { color: var(--color-text-tertiary); }
+.drive-record-note {
+  color: var(--color-text-primary);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* An agent's change of several versions: a quiet disclosure under its reason,
+   opening to its versions, indented to sit under the chevron's text. */
+.drive-record-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 2px 0 0 -2px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  /* From the 4px above it to the row's padding below, or the 4px above its open list. */
+  --tap-target-h: calc(100% + 14px);
+  --tap-target-y: 3px;
+}
+.drive-record-toggle[aria-expanded="true"] { --tap-target-h: calc(100% + 8px); --tap-target-y: 0px; }
+.drive-record-toggle:hover { color: var(--color-text-secondary); }
+.drive-record-chevron { width: 14px; height: 14px; flex-shrink: 0; transition: transform var(--motion-quick) var(--ease-out); }
+.drive-record-toggle[aria-expanded="true"] .drive-record-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .drive-record-chevron { transition: none; }
+}
+.drive-record-sublist { display: flex; flex-direction: column; margin: 2px 0 0 14px; }
+.drive-record-subitem { padding: 6px 0 6px 2px; }
+.drive-record-addwhy {
+  align-self: flex-start;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  /* From the 2px gap above it to the row's padding below. */
+  --tap-target-h: calc(100% + 12px);
+  --tap-target-y: 4px;
+}
+.drive-record-whyform { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.drive-record-item.is-event { color: var(--color-text-tertiary); }
+.drive-record-item.is-event .drive-record-note { color: var(--color-text-secondary); }
+.drive-record-event { min-width: 0; }
+.drive-record-when {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.drive-record-tag {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--color-text-quaternary);
+}
+
+/* Changes */
+.drive-changes { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.drive-changes-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 20px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-muted);
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.drive-changes-pick { display: inline-flex; align-items: center; gap: 8px; }
+.drive-changes-select select { height: 28px; font-size: 0.75rem; max-width: 260px; }
+.drive-changes-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.drive-changes-note {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+/* Who wrote what: a narrow label column, then the lines that run wrote. */
+.drive-authors { padding: 8px 0 24px; }
+.drive-authors-run {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  column-gap: 12px;
+  border-top: 1px solid var(--color-border-muted);
+}
+.drive-authors-run:first-child { border-top: 0; }
+.drive-authors-label { padding: 6px 0 6px 16px; }
+.drive-authors-who {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.25rem;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.drive-authors-who:hover { text-decoration: underline; text-underline-offset: 2px; }
+.drive-authors-text {
+  margin: 0;
+  padding: 6px 16px 6px 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Memos list */
+.drive-memos-filters { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.drive-memos-columns,
+.drive-memos-row:not(.is-compact) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 140px 150px;
+  align-items: center;
+  column-gap: 12px;
+}
+.drive-memos-columns {
+  /* No side padding: the rows' grid has none, so the headings stand over their cells. */
+  padding: 6px 0 4px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  border-bottom: 1px solid var(--color-border-muted);
+  margin-bottom: 2px;
+}
+.drive-memos-columns .drive-col { font-size: inherit; color: inherit; text-align: left; }
+.drive-memos-columns button.drive-col:hover { color: var(--color-text-secondary); }
+.drive-memos-columns .drive-col.is-sorted { color: var(--color-text-primary); font-weight: 500; }
+.drive-memos-columns .drive-memos-name { padding-left: 32px; }
+.drive-memos-row {
+  border-radius: var(--radius, 8px);
+  font-size: 0.8125rem;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.drive-memos-row:hover,
+.drive-memos-row.is-active { background-color: var(--color-bg-hover); }
+.drive-memos-row.is-active .drive-row-name { font-weight: 500; }
+/* The grid item around a cell's or a heading's button, which fills it. */
+.drive-memos-slot { display: flex; min-width: 0; border-radius: inherit; }
+.drive-memos-slot > button { flex: 1; min-width: 0; }
+.drive-memos-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  text-align: left;
+  border-radius: inherit;
+}
+.drive-memos-open .drive-row-text { padding-left: 0; }
+.drive-memos-status { font-size: 0.75rem; }
+.drive-memos-revised {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.drive-memos-row.is-compact { display: flex; flex-direction: column; align-items: stretch; }
+.drive-memos-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 0 8px 8px 32px;
+  font-size: 0.6875rem;
+}
+
+/* The memo dialog */
+.drive-memo-form { display: flex; flex-direction: column; gap: 14px; }
+.drive-memo-field { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.drive-memo-field > input,
+.drive-memo-field > textarea { width: 100%; }
+.drive-memo-label { font-size: 0.75rem; color: var(--color-text-secondary); }
+.drive-memo-tickers-input { font-family: var(--font-mono); }
+.drive-memo-error { font-size: 0.75rem; color: var(--color-loss); }
+.drive-memo-unmark { margin-right: auto; }
+
+/* ====== Phone ====== */
+@media (max-width: 767px) {
+  .drive-memo-band { padding: 0 12px; }
+  .drive-memo-line { padding-left: 0; margin-top: 0; }
+  .drive-authors-run { grid-template-columns: 96px minmax(0, 1fr); }
+  .drive-authors-label { padding-left: 12px; }
+}

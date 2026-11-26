@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { Code2, Eye, History, MoreHorizontal, Pencil } from 'lucide-react';
+import type React from 'react';
+import { Code2, Eye, MoreHorizontal, Pencil } from 'lucide-react';
 import { HeaderButton } from '@/components/mcp/McpPrimitives';
 import { Button } from '@/components/ui/button';
 import {
@@ -12,14 +13,17 @@ import {
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { formatBytes, formatTimestamp, relativeTime } from '@/lib/format';
-import { cn } from '@/lib/utils';
+import { isImeComposing } from '@/lib/ime';
+import { Input } from '@/components/ui/input';
 import type { DriveEntry } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
-import { nameOf, parentOf } from '../drivePaths';
+import { nameOf } from '../drivePaths';
+import { memoState } from '../memoMarks';
 import type { DriveEditor } from '../useDriveEditor';
 import { whoLabel } from '../who';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
+import { MemoChip } from './MemoBadges';
 import { BackButton, ICON_BUTTON } from './PaneFrame';
 
 /** The save's quiet mark beside the editor's buttons. */
@@ -35,10 +39,10 @@ function useSaveMark(editor: DriveEditor): string {
 
 /**
  * The open file's name and where it stands (version, who changed it last,
- * size), then what can be done: edit, see its history, the entry's menu; or,
- * while editing, the save.
+ * size), then what can be done: edit, the entry's menu; or, while editing,
+ * the save, beside which a memo asks what changed. Under it, a memo's band.
  */
-export function FileHeader({ path, entry, mobile, editor, canEdit, html, historyOpen, onToggleHistory }: {
+export function FileHeader({ path, entry, mobile, editor, canEdit, html, children }: {
   path: string;
   entry: DriveEntry | undefined;
   mobile: boolean;
@@ -47,13 +51,14 @@ export function FileHeader({ path, entry, mobile, editor, canEdit, html, history
   canEdit: boolean;
   /** An HTML file at its head: whether its source is shown, and the switch. */
   html: { source: boolean; toggle: () => void } | null;
-  historyOpen: boolean;
-  onToggleHistory: () => void;
+  /** Under the name row, inside the header: a memo's status and views. */
+  children?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const locale = useLocale();
   const now = useNow();
-  const { go, leaveEditor } = useDriveContext();
+  const { back, backTo, leaveEditor } = useDriveContext();
+  const backLabel = backTo === 'memos' ? t('drive:backToMemos') : t('drive:backToFolder');
   const mark = useSaveMark(editor);
   const { session, dirty } = editor;
   const name = entry?.name ?? nameOf(path);
@@ -66,58 +71,71 @@ export function FileHeader({ path, entry, mobile, editor, canEdit, html, history
     : '';
 
   return (
-    <div className="drive-file-head">
-      {mobile && <BackButton label={t('drive:backToFolder')} onClick={() => go({ dir: parentOf(path) })} />}
-      <EntryGlyph name={name} className="drive-file-glyph" />
-      <div className="drive-file-title">
-        <h2 className="drive-file-name" title={path}>{name}</h2>
-        {meta && <p className="drive-file-meta" title={entry ? formatTimestamp(entry.modified_at, locale) : undefined}>{meta}</p>}
-      </div>
-      {entry && (
-        <div className="drive-file-actions">
-          {session ? (
-            <>
-              <span className="drive-save-state" aria-live="polite">{mark}</span>
-              <HeaderButton variant="ghost" onClick={() => leaveEditor()}>
-                {dirty ? t('common.cancel') : t('common.done')}
-              </HeaderButton>
-              <HeaderButton variant="primary" onClick={() => void editor.save()} disabled={!dirty || session.save !== 'idle' || session.conflict}>
-                {t('common.save')}
-              </HeaderButton>
-            </>
-          ) : (
-            <>
-              {html && (
-                <HeaderButton variant="ghost" icon={html.source ? Eye : Code2} onClick={html.toggle}>
-                  {html.source ? t('drive:file.page') : t('drive:file.source')}
-                </HeaderButton>
-              )}
-              {canEdit && (
-                <HeaderButton icon={Pencil} onClick={editor.start}>{t('drive:actions.edit')}</HeaderButton>
-              )}
-              <HeaderButton
-                variant={historyOpen ? 'secondary' : 'ghost'}
-                icon={History}
-                onClick={onToggleHistory}
-                aria-pressed={historyOpen}
-                className={cn(historyOpen && 'drive-btn-on')}
-              >
-                <span className={cn(mobile && 'sr-only')}>{t('drive:history.title')}</span>
-              </HeaderButton>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="ghost" size="icon" className={ICON_BUTTON} aria-label={t('drive:actions.more', { name })}>
-                    <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <EntryMenuItems entry={entry} parts={{ Item: DropdownMenuItem, Separator: DropdownMenuSeparator }} />
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </>
-          )}
+    <div className="drive-file-top">
+      <div className="drive-file-head">
+        {mobile && <BackButton label={backLabel} onClick={back} />}
+        <EntryGlyph name={name} className="drive-file-glyph" />
+        <div className="drive-file-title">
+          <div className="drive-file-name-row">
+            <h2 className="drive-file-name" title={path}>{name}</h2>
+            {memoState(entry).kind === 'memo' && <MemoChip />}
+          </div>
+          {meta && <p className="drive-file-meta" title={entry ? formatTimestamp(entry.modified_at, locale) : undefined}>{meta}</p>}
         </div>
-      )}
+        {entry && (
+          <div className="drive-file-actions">
+            {session ? (
+              <>
+                <span className="drive-save-state" aria-live="polite">{mark}</span>
+                {editor.asksWhy && (
+                  <Input
+                    value={session.note}
+                    onChange={(e) => editor.setNote(e.target.value)}
+                    maxLength={500}
+                    placeholder={t('drive:edit.whatChanged')}
+                    aria-label={t('drive:edit.whatChanged')}
+                    className="drive-save-note"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !isImeComposing(e) && editor.canSave) {
+                        e.preventDefault();
+                        void editor.save();
+                      }
+                    }}
+                  />
+                )}
+                <HeaderButton variant="ghost" onClick={() => leaveEditor()}>
+                  {dirty ? t('common.cancel') : t('common.done')}
+                </HeaderButton>
+                <HeaderButton variant="primary" onClick={() => void editor.save()} disabled={!editor.canSave}>
+                  {t('common.save')}
+                </HeaderButton>
+              </>
+            ) : (
+              <>
+                {html && (
+                  <HeaderButton variant="ghost" icon={html.source ? Eye : Code2} onClick={html.toggle}>
+                    {html.source ? t('drive:file.page') : t('drive:file.source')}
+                  </HeaderButton>
+                )}
+                {canEdit && (
+                  <HeaderButton icon={Pencil} onClick={editor.start}>{t('drive:actions.edit')}</HeaderButton>
+                )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button type="button" variant="ghost" size="icon" className={ICON_BUTTON} aria-label={t('drive:actions.more', { name })}>
+                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <EntryMenuItems entry={entry} parts={{ Item: DropdownMenuItem, Separator: DropdownMenuSeparator }} />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      {children}
     </div>
   );
 }

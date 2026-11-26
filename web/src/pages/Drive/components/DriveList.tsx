@@ -19,7 +19,8 @@ import { crumbsOf, drivePathKey, nameOf, sortEntries, type SortKey } from '../dr
 import { useDriveDrop, type DriveDrop } from '../useDriveDrop';
 import { pickedFiles, type PickedFile } from '../useDriveUpload';
 import { DriveRow } from './DriveRow';
-import { PaneFrame } from './PaneFrame';
+import { DriveViews } from './DriveViews';
+import { PaneAction, PaneFrame } from './PaneFrame';
 
 type Upload = (files: PickedFile[], dir: string, folders?: string[]) => void;
 
@@ -200,16 +201,15 @@ export function DriveList({ dir, entries, loading, error, openPath, compact, usa
   return (
     <PaneFrame
       title={t('drive:title')}
+      views={<DriveViews current="files" />}
       className={cn('drive-list', compact && 'is-compact', drop.filesOver && 'is-files-over')}
       {...drop.listProps}
       actions={(
         <>
-          <HeaderButton icon={FolderPlus} onClick={() => ask.newFolder(dir)} aria-label={t('drive:actions.newFolder')} title={t('drive:actions.newFolder')}>
-            <span className={cn(compact && 'sr-only')}>{t('drive:actions.newFolder')}</span>
-          </HeaderButton>
+          <PaneAction icon={FolderPlus} label={t('drive:actions.newFolder')} compact={compact} onClick={() => ask.newFolder(dir)} />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <HeaderButton variant="primary" icon={Upload}>{t('drive:actions.upload')}</HeaderButton>
+              <PaneAction variant="primary" icon={Upload} label={t('drive:actions.upload')} compact={compact} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onSelect={pickers.pickFiles}>

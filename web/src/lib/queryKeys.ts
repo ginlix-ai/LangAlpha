@@ -1,5 +1,6 @@
 import type { QueryMeta } from '@tanstack/react-query';
 import type { SearchKind } from '@/api/search';
+import type { DriveMemoQuery } from '@/types/drive';
 
 /**
  * Hierarchical query key factory for React Query, plus the query `meta`
@@ -415,6 +416,19 @@ export const queryKeys = {
     trash:    (space: string) => [...queryKeys.drive.space(space), 'trash'],
     trashPage: (space: string, limit: number) => [...queryKeys.drive.trash(space), limit],
     body:     (space: string, entryId: string, sha: string, mode: string) => [...queryKeys.drive.all, 'body', space, entryId, sha, mode],
+    // A memo list per sort and filter, under the space so every change reads it again.
+    memos:    (space: string, params: DriveMemoQuery) => [...queryKeys.drive.space(space), 'memos', params],
+    record:   (space: string, entryId: string) => [...queryKeys.drive.space(space), 'record', entryId],
+    // A version's text and a head's attribution are fixed by the version they
+    // came from, so they sit outside the space and a save never reads them
+    // again. A clear takes versions away, so it drops the entry's (`…Of`).
+    // A text is keyed by the file's name too, which picks the reader for bytes
+    // saved with no type that says; the sha stays last, where its reader looks.
+    versionTextOf: (space: string, entryId: string) => [...queryKeys.drive.all, 'text', space, entryId],
+    versionText: (space: string, entryId: string, name: string, seq: number, sha: string) => [...queryKeys.drive.versionTextOf(space, entryId), name, seq, sha],
+    attributions: (space: string) => [...queryKeys.drive.all, 'attribution', space],
+    attributionOf: (space: string, entryId: string) => [...queryKeys.drive.attributions(space), entryId],
+    attribution: (space: string, entryId: string, seq: number, sha: string) => [...queryKeys.drive.attributionOf(space, entryId), seq, sha],
     /** Apart from the space's own keys, so reading the space again does not ask the feed again. */
     changes:  (space: string) => [...queryKeys.drive.all, 'changes', space],
   },

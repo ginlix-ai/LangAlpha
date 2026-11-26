@@ -63,6 +63,8 @@ interface CodeEditorProps {
   readOnly?: boolean;
   height?: string;
   diffMode?: boolean;
+  /** The diff in one column, additions and removals marked in the text, rather than the two sides apart. */
+  inline?: boolean;
   originalValue?: string;
   editorRef?: React.MutableRefObject<editor.IStandaloneCodeEditor | null>;
   /** The Monaco model to edit. Given, the model outlives this editor, so undo
@@ -74,7 +76,7 @@ interface CodeEditorProps {
   onTextSelect?: (selection: TextSelection | null) => void;
 }
 
-export default function CodeEditor({ value, onChange, fileName, readOnly = false, height = '100%', diffMode = false, originalValue, editorRef, modelPath, onUndoRedoChange, onTextSelect }: CodeEditorProps) {
+export default function CodeEditor({ value, onChange, fileName, readOnly = false, height = '100%', diffMode = false, inline = false, originalValue, editorRef, modelPath, onUndoRedoChange, onTextSelect }: CodeEditorProps) {
   const language = getLanguageFromFileName(fileName);
   const theme = useTheme().theme === 'light' ? 'vs' : 'vs-dark';
   const showDiff = diffMode && originalValue != null;
@@ -85,9 +87,28 @@ export default function CodeEditor({ value, onChange, fileName, readOnly = false
   // types into the same model, which is how its edits reach this editor.
   const seedOnly = modelPath != null;
 
-  // Track DiffEditor listener disposables to prevent "TextModel got disposed" race
-  const diffDisposablesRef = React.useRef<{ dispose(): void }[]>([]);
-  const diffDisposedRef = React.useRef(false);
+  // The diff overlay's editor, its listeners and whether its modified model is
+  // the caller's (kept with the session) or this mount's. One cleanup owns
+  // all three: the library's own unmount disposes the models before the diff
+  // editor, which Monaco throws on ("TextModel got disposed before
+  // DiffEditorWidget model got reset"), so this layout cleanup, which runs
+  // first, stops the listeners, detaches the models and disposes the ones
+  // this mount made. Keyed on the overlay alone: a model path that changes
+  // under a live diff never disposes its models.
+  const diffRef = React.useRef<{ editor: editor.IStandaloneDiffEditor; listeners: { dispose(): void }[]; keepsModified: boolean } | null>(null);
+  React.useLayoutEffect(() => {
+    if (!showDiff) return;
+    return () => {
+      const diff = diffRef.current;
+      diffRef.current = null;
+      if (!diff) return;
+      diff.listeners.forEach((l) => l.dispose());
+      const models = diff.editor.getModel();
+      diff.editor.setModel(null);
+      models?.original.dispose();
+      if (!diff.keepsModified) models?.modified.dispose();
+    };
+  }, [showDiff]);
 
   // The instance goes with this mount; a ref left pointing at it would
   // drive a disposed editor from the toolbar.
@@ -102,17 +123,6 @@ export default function CodeEditor({ value, onChange, fileName, readOnly = false
   React.useLayoutEffect(() => () => {
     if (modelPath && mountedRef.current) saveViewState(mountedRef.current);
   }, [modelPath]);
-
-  React.useEffect(() => {
-    if (showDiff) {
-      diffDisposedRef.current = false;
-    }
-    return () => {
-      diffDisposedRef.current = true;
-      diffDisposablesRef.current.forEach((d) => d.dispose());
-      diffDisposablesRef.current = [];
-    };
-  }, [showDiff]);
 
   return (
     <div style={{ position: 'relative', height, width: '100%' }}>
@@ -189,21 +199,12 @@ export default function CodeEditor({ value, onChange, fileName, readOnly = false
             modifiedModelPath={modelPath}
             keepCurrentModifiedModel={seedOnly}
             onMount={(diffEditor: editor.IStandaloneDiffEditor) => {
-              // Dispose any stale listeners from a previous mount
-              diffDisposablesRef.current.forEach((d) => d.dispose());
-              diffDisposablesRef.current = [];
-
+              diffRef.current?.listeners.forEach((l) => l.dispose());
               const modifiedEditor = diffEditor.getModifiedEditor();
-              diffDisposablesRef.current.push(
-                modifiedEditor.onDidChangeModelContent(() => {
-                  if (diffDisposedRef.current) return;
-                  onChange?.(modifiedEditor.getValue());
-                }),
-              );
+              const listeners = [modifiedEditor.onDidChangeModelContent(() => onChange?.(modifiedEditor.getValue()))];
               if (onTextSelect) {
-                diffDisposablesRef.current.push(
+                listeners.push(
                   modifiedEditor.onDidChangeCursorSelection(() => {
-                    if (diffDisposedRef.current) return;
                     const sel = modifiedEditor.getSelection();
                     if (!sel || sel.isEmpty()) {
                       onTextSelect(null);
@@ -227,8 +228,9 @@ export default function CodeEditor({ value, onChange, fileName, readOnly = false
                   }),
                 );
               }
+              diffRef.current = { editor: diffEditor, listeners, keepsModified: seedOnly };
             }}
-            options={{ ...EDITOR_OPTIONS, readOnly, renderSideBySide: true }}
+            options={{ ...EDITOR_OPTIONS, readOnly, renderSideBySide: !inline }}
           />
         </div>
       )}

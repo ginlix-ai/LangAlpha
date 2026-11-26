@@ -1,13 +1,15 @@
 import { useTranslation } from 'react-i18next';
-import { downloadFile } from '@/api/drive';
+import { downloadFile, driveErrorType } from '@/api/drive';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/components/ui/use-toast';
 import { useDriveMutations } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
 import { formatBytes } from '@/lib/format';
-import type { DriveEntry, DriveTrashItem, DriveUsage } from '@/types/drive';
+import type { MemoChange } from '@/api/drive';
+import type { DriveClearShown, DriveEntry, DriveTrashItem, DriveUsage } from '@/types/drive';
 import { driveRefusal, type Refusal } from './driveRefusal';
 import { joinDrivePath, nameOf, parentOf } from './drivePaths';
+import { memoState } from './memoMarks';
 
 /**
  * How a change asked from a name field or a row came out: where the entry is
@@ -138,22 +140,63 @@ export function useDriveActions(space: string | null, usage: DriveUsage | null, 
   const restoreVersion = async (entry: DriveEntry, seq: number): Promise<DriveEntry | null> => {
     try {
       const restored = await m.restoreTo.mutateAsync({ entryId: entry.id, seq });
-      toast({ description: t('drive:history.restored', { seq, next: restored.version ?? '' }) });
+      toast({ description: t('drive:versions.restored', { seq, next: restored.version ?? '' }) });
       return restored;
-    } catch {
-      toast({ variant: 'destructive', title: t('drive:history.restoreFailed') });
+    } catch (err) {
+      say(refused(err, entry.name, t('drive:versions.restoreFailed')));
       return null;
     }
   };
 
-  /** Drops a file's old versions; answers whether it went. */
-  const clearHistory = async (entry: DriveEntry): Promise<boolean> => {
+  /**
+   * Marks, un-marks or changes a memo's status and tickers; answers the
+   * entry, or null. A field left out of `change` keeps what it was.
+   */
+  const setMemo = async (entry: DriveEntry, change: MemoChange): Promise<DriveEntry | null> => {
     try {
-      const { freed_bytes } = await m.clear.mutateAsync(entry.id);
-      toast({ description: t('drive:history.cleared', { name: entry.name, size: formatBytes(freed_bytes, locale) }) });
+      const updated = await m.setMemo.mutateAsync({ entryId: entry.id, change });
+      if (change.memo === true && memoState(entry).kind !== 'memo') toast({ description: t('drive:memo.marked', { name: entry.name }) });
+      else if (change.memo === false) toast({ description: t('drive:memo.unmarked', { name: entry.name }) });
+      return updated;
+    } catch (err) {
+      say(refused(err, entry.name, t('drive:memo.markFailed')));
+      return null;
+    }
+  };
+
+  /** Puts a file back as it was before its last save; answers the entry, or null. */
+  const undoSave = async (entry: DriveEntry): Promise<DriveEntry | null> => {
+    try {
+      const undone = await m.undo.mutateAsync({ entryId: entry.id, ifMatch: entry.sha256 });
+      toast({ description: t('drive:undo.done', { name: entry.name }) });
+      return undone;
+    } catch (err) {
+      // Nothing below the head: the earlier copy went (its days ran out, or it was cleared).
+      if (driveErrorType(err) === 'not_found') toast({ variant: 'destructive', title: t('drive:undo.nothing') });
+      else say(refused(err, entry.name, t('drive:undo.failed')));
+      return null;
+    }
+  };
+
+  /** Drops a file's earlier versions for good, as the person was `shown` them; answers whether they went. */
+  const clearHistory = async (entry: DriveEntry, shown: DriveClearShown): Promise<boolean> => {
+    try {
+      const { dropped, freed_bytes } = await m.clear.mutateAsync({ entryId: entry.id, shown });
+      toast({ description: t('drive:record.clearedToast', { count: dropped, name: entry.name, size: formatBytes(freed_bytes, locale) }) });
       return true;
     } catch (err) {
-      say(refused(err, entry.name, t('drive:history.clearFailed')));
+      say(refused(err, entry.name, t('drive:record.clearFailed')));
+      return false;
+    }
+  };
+
+  /** Says why a version was made, where its maker had not yet; answers whether it was kept. */
+  const explain = async (entry: DriveEntry, seq: number, note: string): Promise<boolean> => {
+    try {
+      await m.explain.mutateAsync({ entryId: entry.id, seq, note });
+      return true;
+    } catch (err) {
+      say(refused(err, entry.name, t('drive:record.whyFailed')));
       return false;
     }
   };
@@ -164,10 +207,13 @@ export function useDriveActions(space: string | null, usage: DriveUsage | null, 
     /** The trash item being deleted for good; `all` while the trash empties. */
     purge: m.purge.isPending ? (m.purge.variables ?? 'all') : null,
     restoreVersion: m.restoreTo.isPending,
+    setMemo: m.setMemo.isPending,
+    undoSave: m.undo.isPending,
+    explain: m.explain.isPending,
     clearHistory: m.clear.isPending,
   };
 
-  return { trash, move, rename, moveInto, mkdir, download, restoreFromTrash, purge, restoreVersion, clearHistory, pending };
+  return { trash, move, rename, moveInto, mkdir, download, restoreFromTrash, purge, restoreVersion, setMemo, undoSave, clearHistory, explain, pending };
 }
 
 export type DriveActions = ReturnType<typeof useDriveActions>;

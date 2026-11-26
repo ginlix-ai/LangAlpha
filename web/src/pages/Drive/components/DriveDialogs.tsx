@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useDriveFolders } from '@/hooks/useDrive';
+import { isImeComposing } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 import type { DriveEntry } from '@/types/drive';
 import { isWithin, parentOf, sortEntries } from '../drivePaths';
@@ -24,6 +25,11 @@ const SURFACE = 'sm:max-w-md border dash-form';
 
 /** What the name dialog is asked for: a new folder in `dir`, or a new name for `entry`. */
 export type NameAsk = { kind: 'folder'; dir: string } | { kind: 'rename'; entry: DriveEntry };
+
+const NAME_COPY: Record<NameAsk['kind'], { title: string; body: string; placeholder: string | null; submit: string }> = {
+  rename: { title: 'drive:actions.rename', body: 'drive:rename.description', placeholder: null, submit: 'drive:actions.rename' },
+  folder: { title: 'drive:actions.newFolder', body: 'drive:newFolder.description', placeholder: 'drive:newFolder.placeholder', submit: 'drive:newFolder.submit' },
+};
 
 /**
  * A name, for a new folder or a rename. On a rename the name's stem is
@@ -61,20 +67,20 @@ export function NameDialog({ ask, onClose, onSubmit }: {
     : refused?.name === trimmed
       ? refused.message
       : null;
-  const title = ask?.kind === 'rename' ? t('drive:actions.rename') : t('drive:actions.newFolder');
+  const copy = ask ? NAME_COPY[ask.kind] : NAME_COPY.folder;
+  const title = t(copy.title);
+  const description = t(copy.body);
   return (
     <Dialog open={!!ask} onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
       <DialogContent className={SURFACE}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            {ask?.kind === 'rename' ? t('drive:rename.description') : t('drive:newFolder.description')}
-          </DialogDescription>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <Input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={ask?.kind === 'rename' ? undefined : t('drive:newFolder.placeholder')}
+          placeholder={copy.placeholder ? t(copy.placeholder) : undefined}
           aria-label={title}
           aria-invalid={!!fieldError || undefined}
           aria-describedby={fieldError ? 'drive-name-error' : undefined}
@@ -85,7 +91,7 @@ export function NameDialog({ ask, onClose, onSubmit }: {
             if (dot > 0) e.target.setSelectionRange(0, dot);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !isImeComposing(e)) {
               e.preventDefault();
               void submit();
             }
@@ -97,7 +103,7 @@ export function NameDialog({ ask, onClose, onSubmit }: {
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t('common.cancel')}</Button>
           <Button onClick={() => void submit()} disabled={!valid || busy || refused?.name === trimmed}>
-            {busy ? t('common.saving') : ask?.kind === 'rename' ? t('drive:actions.rename') : t('drive:newFolder.submit')}
+            {busy ? t('common.saving') : t(copy.submit)}
           </Button>
         </DialogFooter>
       </DialogContent>

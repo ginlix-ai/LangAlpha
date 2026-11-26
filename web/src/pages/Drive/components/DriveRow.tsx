@@ -21,10 +21,12 @@ import { formatBytes, mediumDate, relativeTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { DriveEntry } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
+import { memoState } from '../memoMarks';
 import type { DriveDrop } from '../useDriveDrop';
 import { whoLabel } from '../who';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
+import { MemoChip, MemoStatus } from './MemoBadges';
 
 /** Moves keyboard focus to the row before or after the one focused. */
 function stepFocus(from: HTMLElement, delta: number) {
@@ -50,6 +52,7 @@ export function DriveRow({ entry, compact, active, drop }: {
   const now = useNow();
   const { open, ask, trash } = useDriveContext();
   const folder = entry.kind === 'folder';
+  const state = memoState(entry);
   const when = relativeTime(entry.modified_at, locale, now);
   const who = whoLabel(t, entry.modified_by);
   const size = folder || entry.size == null ? '' : formatBytes(entry.size, locale);
@@ -90,7 +93,15 @@ export function DriveRow({ entry, compact, active, drop }: {
           >
             <EntryGlyph name={entry.name} folder={folder} className="drive-row-icon" />
             <span className="drive-row-text">
-              <span className="drive-row-name">{entry.name}</span>
+              <span className="drive-row-title">
+                <span className="drive-row-name">{entry.name}</span>
+                {state.kind === 'memo' && (
+                  <>
+                    <MemoChip />
+                    <MemoStatus mark={state.mark} head={entry.version} />
+                  </>
+                )}
+              </span>
               {compact && <span className="drive-row-sub">{[when, who, size].filter(Boolean).join(' · ')}</span>}
             </span>
             {!compact && (

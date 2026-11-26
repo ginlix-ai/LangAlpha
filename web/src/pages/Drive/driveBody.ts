@@ -94,7 +94,7 @@ export function driveBodyKey(space: string, entry: Pick<DriveEntry, 'id' | 'name
  */
 export function atVersion(entry: DriveEntry, version: DriveVersion | null): DriveEntry {
   if (!version) return entry;
-  return { ...entry, size: version.size, sha256: version.sha256, is_text: version.is_text ?? entry.is_text };
+  return { ...entry, size: version.size, sha256: version.sha256, is_text: version.is_text };
 }
 
 /**

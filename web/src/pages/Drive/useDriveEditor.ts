@@ -14,6 +14,7 @@ import type { DriveEntry } from '@/types/drive';
 import { editReducer, isDirty, isPast, newSitting, VIEWING, type Content, type EditSession, type SaveRequest } from './driveEdit';
 import { draftOf, dropDraft, keepDraft } from './driveDrafts';
 import { driveRefusal } from './driveRefusal';
+import { memoState } from './memoMarks';
 
 /** The head body as content an edit can be written over, or null while it has no hash. */
 function asContent(body: FileBody | undefined): Content | null {
@@ -31,8 +32,8 @@ export function useDriveEditor(
   path: string | null,
   entry: DriveEntry | undefined,
   head: UseQueryResult<FileBody>,
-  /** The past version in view, if any: it reads as it was and never opens a kept draft. */
-  version: number | null = null,
+  /** The head's document is in view: the only view a kept draft reopens over (a past version, a record or a comparison never does). */
+  atHeadDocument = true,
 ) {
   const { t } = useTranslation();
   const locale = useLocale();
@@ -44,7 +45,16 @@ export function useDriveEditor(
   // A session belongs to one file: another file in view is not being edited.
   const session: EditSession | null = raw.mode === 'editing' && raw.path === path ? raw : null;
   const state = session ?? VIEWING;
+  const setNote = (text: string) => dispatch({ type: 'note', note: text });
   const dirty = isDirty(state);
+  /** No save under way and no conflict to settle first. */
+  const ready = !!session && session.save === 'idle' && !session.conflict;
+  /** What the Save button and Enter read: ready, with unsaved text. */
+  const canSave = ready && dirty;
+  // "What changed?" is asked and sent only with a memo's save: a mark removed
+  // while the editor was open leaves a note typed before it unsent.
+  const asksWhy = memoState(entry).kind === 'memo';
+  const noteToSend = (s: EditSession) => (asksWhy ? s.note.trim() || null : null);
   const headContent = asContent(head.data);
   const theirs = session && headContent && !isPast(session, headContent.sha) ? headContent : null;
   /** The file moved on under an open editor. */
@@ -76,7 +86,7 @@ export function useDriveEditor(
   const entryId = entry && entry.path === path ? entry.id : null;
   useEffect(() => {
     if (!session || !entryId) return;
-    if (dirty) keepDraft(entryId, { base: session.base, draft: session.draft });
+    if (dirty) keepDraft(entryId, { base: session.base, draft: session.draft, note: session.note });
     else dropDraft(entryId);
   }, [session, dirty, entryId]);
 
@@ -85,10 +95,10 @@ export function useDriveEditor(
   const resume = useEffectEvent((id: string) => {
     const kept = draftOf(id);
     if (!kept || !path) return;
-    dispatch({ type: 'open', path, sitting: newSitting(), modelPath: newEditorModelPath(path), base: kept.base });
+    dispatch({ type: 'open', path, sitting: newSitting(), modelPath: newEditorModelPath(path), base: kept.base, note: kept.note });
     dispatch({ type: 'change', draft: kept.draft });
   });
-  const resumable = !session && version === null && entryId;
+  const resumable = !session && atHeadDocument && entryId;
   useEffect(() => {
     if (resumable) resume(resumable);
   }, [resumable]);
@@ -158,10 +168,12 @@ export function useDriveEditor(
 
   /** Saves the draft over the content it was written on. */
   const save = async () => {
-    if (!session || session.save !== 'idle' || session.conflict) return;
+    // Not `canSave`: a save pressed straight after typing can arrive before
+    // the render that makes the draft dirty, so the model's text decides.
+    if (!session || !ready) return;
     const text = typed(session);
     if (text === session.base.content) return;
-    const req: SaveRequest = { sitting: session.sitting, path: session.path, text, ifMatch: session.base.sha };
+    const req: SaveRequest = { sitting: session.sitting, path: session.path, text, ifMatch: session.base.sha, note: noteToSend(session) };
     dispatch({ type: 'saving', req });
     await send(req);
   };
@@ -169,7 +181,7 @@ export function useDriveEditor(
   /** Saves the draft over their content instead, matched on their hash. */
   const keepMine = () => {
     if (!session || !theirs) return;
-    const req: SaveRequest = { sitting: session.sitting, path: session.path, text: typed(session), ifMatch: theirs.sha };
+    const req: SaveRequest = { sitting: session.sitting, path: session.path, text: typed(session), ifMatch: theirs.sha, note: noteToSend(session) };
     dispatch({ type: 'keep-mine', theirs, req });
     void send(req);
   };
@@ -192,6 +204,11 @@ export function useDriveEditor(
     theirs,
     behind,
     editorRef,
+    /** Whether the save asks "What changed?": the file is a memo. */
+    asksWhy,
+    /** Sets the "What changed?" a memo's save carries (`session.note`). */
+    setNote,
+    canSave,
     start,
     change,
     save,
