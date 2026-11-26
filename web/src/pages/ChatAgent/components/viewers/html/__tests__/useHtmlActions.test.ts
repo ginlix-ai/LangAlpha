@@ -3,6 +3,7 @@ import { renderHook } from '@testing-library/react';
 
 import { useHtmlActions, exportServedPdf } from '../useHtmlActions';
 import { buildServeUrl, pdfQuery, versionPrefix } from '../wsfilesUrl';
+import { WIDGET_SANDBOX } from '../sandbox';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -19,6 +20,30 @@ vi.mock('@/components/ui/use-toast', () => ({
 }));
 
 const WIDGET_SRCDOC = '<!DOCTYPE html><html><body>widget</body></html>';
+// What leaves the viewer: the same widget with no grant in its base.
+const EXPORT_DOC = '<!DOCTYPE html><html><body>copy</body></html>';
+const WIDGET = { mode: 'widget', srcDoc: WIDGET_SRCDOC, exportDoc: () => EXPORT_DOC } as const;
+
+/**
+ * A shell's own script, run in a frame of its own beside a stand-in for the
+ * widget frame, on this realm's timers so a test can fake them.
+ */
+function runShell(shell: string) {
+  const parsed = new DOMParser().parseFromString(shell, 'text/html');
+  const host = document.createElement('iframe');
+  document.body.appendChild(host);
+  const win = host.contentWindow as Window & typeof globalThis;
+  const widget = win.document.createElement('iframe');
+  widget.id = 'widget';
+  win.document.body.appendChild(widget);
+  const print = vi.fn();
+  Object.assign(win, { print, setTimeout, clearTimeout });
+  new win.Function(parsed.querySelector('script')!.textContent!)();
+  const resize = (height: number) => win.dispatchEvent(
+    new win.MessageEvent('message', { data: { type: 'widget:resize', height }, source: widget.contentWindow }),
+  );
+  return { widget, print, resize, remove: () => host.remove() };
+}
 // The owner's served URL rides a grant prefix; what opens in a tab is the
 // item's own page, never a served URL.
 const GRANT = '/api/v1/wsfiles/g/grant-1/';
@@ -129,7 +154,7 @@ describe('useHtmlActions — widget mode', () => {
   it('opens a blob URL in a new tab and revokes it once the tab has had time to load', () => {
     vi.useFakeTimers();
     const { result } = renderHook(() =>
-      useHtmlActions({ mode: 'widget', srcDoc: WIDGET_SRCDOC, fileName: 'w.html' }),
+      useHtmlActions({ ...WIDGET, fileName: 'w.html' }),
     );
     result.current.openInNewTab!();
     expect(createObjectURL).toHaveBeenCalledTimes(1);
@@ -141,7 +166,7 @@ describe('useHtmlActions — widget mode', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:widget-url');
   });
 
-  it('downloads a blob via an anchor', () => {
+  it('downloads a blob via an anchor', async () => {
     const click = vi.fn();
     const realCreate = document.createElement.bind(document);
     vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
@@ -150,39 +175,104 @@ describe('useHtmlActions — widget mode', () => {
       return el;
     });
     const { result } = renderHook(() =>
-      useHtmlActions({ mode: 'widget', srcDoc: WIDGET_SRCDOC, fileName: 'w.html' }),
+      useHtmlActions({ ...WIDGET, fileName: 'w.html' }),
     );
     result.current.downloadHtml();
+    await vi.waitFor(() => expect(click).toHaveBeenCalledTimes(1));
     expect(createObjectURL).toHaveBeenCalled();
-    expect(click).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:widget-url');
   });
 
-  it('opens a blob tab WITHOUT noopener so auto-print fires for PDF', async () => {
-    vi.useFakeTimers();
-    const print = vi.fn();
-    open.mockReturnValue({ print, addEventListener: vi.fn() });
+  // A blob the app makes has the app's origin: the widget document opened
+  // directly would run agent script with the app's storage, and with a print
+  // handle, the app window itself. Each tab gets the shell that frames it.
+  const shellOf = async (call: number) => (createObjectURL.mock.calls[call][0] as Blob).text();
+
+  it('opens the print copy in a shell that frames the widget and prints itself', async () => {
     const { result } = renderHook(() =>
-      useHtmlActions({ mode: 'widget', srcDoc: WIDGET_SRCDOC }),
+      useHtmlActions(WIDGET),
     );
     // Awaited: the shell is asked first now, so the fallback lands a microtask
     // later even when there is no shell to ask.
     await result.current.exportPdf();
-    // No noopener — we need the window handle to drive print on a same-origin blob.
-    expect(open).toHaveBeenCalledWith('blob:widget-url', '_blank');
-    vi.advanceTimersByTime(800);
-    expect(print).toHaveBeenCalled();
-    expect(revokeObjectURL).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(60_000);
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:widget-url');
+    expect(open).toHaveBeenCalledWith('blob:widget-url', '_blank', 'noopener,noreferrer');
+    const shell = await shellOf(0);
+    expect(shell).toContain(`sandbox="${WIDGET_SANDBOX}"`);
+    // The tab stays open, so it carries the export copy, never the live
+    // document with the viewer's grant in its base.
+    expect(shell).toContain('srcdoc="&lt;!DOCTYPE html>&lt;html>&lt;body>copy&lt;/body>&lt;/html>"');
+
+    vi.useFakeTimers();
+    const tab = runShell(shell);
+    tab.resize(480);
+    expect(tab.widget.style.height).toBe('480px');
+    vi.advanceTimersByTime(699);
+    expect(tab.print).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(tab.print).toHaveBeenCalledTimes(1);
+    tab.remove();
   });
 
-  it('opens in a new tab WITH noopener (no handle needed there)', () => {
+  it('prints a widget that never reports, once the wait runs out', async () => {
+    const { result } = renderHook(() => useHtmlActions(WIDGET));
+    await result.current.exportPdf();
+    vi.useFakeTimers();
+    const tab = runShell(await shellOf(0));
+    vi.advanceTimersByTime(8000);
+    expect(tab.print).toHaveBeenCalledTimes(1);
+    tab.remove();
+  });
+
+  it('opens in a new tab WITH noopener (no handle needed there)', async () => {
     const { result } = renderHook(() =>
-      useHtmlActions({ mode: 'widget', srcDoc: WIDGET_SRCDOC }),
+      useHtmlActions(WIDGET),
     );
     result.current.openInNewTab!();
     expect(open).toHaveBeenCalledWith('blob:widget-url', '_blank', 'noopener,noreferrer');
+    const shell = await shellOf(0);
+    expect(shell).toContain(`sandbox="${WIDGET_SANDBOX}"`);
+    expect(shell).not.toContain('allow-same-origin');
+
+    // Sized as the chat sizes it, bounded, and never printed.
+    vi.useFakeTimers();
+    const tab = runShell(shell);
+    tab.resize(1e6);
+    expect(tab.widget.style.height).toBe('40000px');
+    tab.resize(Number.NaN);
+    expect(tab.widget.style.height).toBe('40000px');
+    vi.advanceTimersByTime(10_000);
+    expect(tab.print).not.toHaveBeenCalled();
+    tab.remove();
+  });
+
+  it('opens and downloads the export copy, not the live one', async () => {
+    const exportDoc = vi.fn(() => '<p>export</p>');
+    const { result } = renderHook(() =>
+      useHtmlActions({ ...WIDGET, exportDoc }),
+    );
+    result.current.openInNewTab!();
+    expect(await shellOf(0)).toContain('srcdoc="&lt;p>export&lt;/p>"');
+    result.current.downloadHtml();
+    await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(2));
+    expect(await shellOf(1)).toBe('<p>export</p>');
+  });
+
+  it('opens the tab inside the click when the copy is still being made, then fills it', async () => {
+    let finish!: (doc: string) => void;
+    const exportDoc = () => new Promise<string>((resolve) => { finish = resolve; });
+    const replace = vi.fn();
+    const tab = { opener: {} as unknown, closed: false, location: { replace }, close: vi.fn() };
+    open.mockReturnValue(tab);
+    const { result } = renderHook(() =>
+      useHtmlActions({ ...WIDGET, exportDoc }),
+    );
+    result.current.openInNewTab!();
+    // Opened synchronously (a popup blocker takes a later one), cut from this window.
+    expect(open).toHaveBeenCalledWith('blob:widget-url', '_blank');
+    expect(tab.opener).toBeNull();
+    finish('<p>inlined</p>');
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith('blob:widget-url'));
+    expect(await shellOf(1)).toContain('srcdoc="&lt;p>inlined&lt;/p>"');
   });
 });
 
@@ -500,7 +590,7 @@ describe('useHtmlActions — inside the desktop shell', () => {
 
   it('withholds open-in-new-tab for a widget, whose blob the shell cannot open', async () => {
     const hook = await install();
-    const { result } = renderHook(() => hook({ mode: 'widget', srcDoc: WIDGET_SRCDOC }));
+    const { result } = renderHook(() => hook(WIDGET));
     expect(result.current.openInNewTab).toBeUndefined();
   });
 
@@ -530,7 +620,7 @@ describe('useHtmlActions — inside the desktop shell', () => {
     it(`${fallsBack ? 'falls back to the browser' : 'stays put'} on ${label}`, async () => {
       saveWidgetPdf.mockResolvedValue(answer);
       const hook = await install();
-      const { result } = renderHook(() => hook({ mode: 'widget', srcDoc: WIDGET_SRCDOC }));
+      const { result } = renderHook(() => hook(WIDGET));
 
       await result.current.exportPdf();
 
@@ -545,7 +635,7 @@ describe('useHtmlActions — inside the desktop shell', () => {
     // Every install older than the one that added savePdf lands on this line.
     saveWidgetPdf.mockResolvedValue(null);
     const hook = await install();
-    const { result } = renderHook(() => hook({ mode: 'widget', srcDoc: WIDGET_SRCDOC }));
+    const { result } = renderHook(() => hook(WIDGET));
 
     await result.current.exportPdf();
 
@@ -557,7 +647,7 @@ describe('useHtmlActions — inside the desktop shell', () => {
     // 700ms to 8s of measuring with no feedback reads as a broken button.
     saveWidgetPdf.mockResolvedValue({ saved: true });
     const hook = await install();
-    const { result } = renderHook(() => hook({ mode: 'widget', srcDoc: WIDGET_SRCDOC }));
+    const { result } = renderHook(() => hook(WIDGET));
 
     await result.current.exportPdf();
 
@@ -568,14 +658,14 @@ describe('useHtmlActions — inside the desktop shell', () => {
   it('tells the user when the shell failed, and stays silent when they cancelled', async () => {
     saveWidgetPdf.mockResolvedValue({ error: 'no printer' });
     let hook = await install();
-    let view = renderHook(() => hook({ mode: 'widget', srcDoc: WIDGET_SRCDOC }));
+    let view = renderHook(() => hook(WIDGET));
     await view.result.current.exportPdf();
     expect(toastMock).toHaveBeenCalledWith({ description: 'filePanel:pdfFailed' });
 
     toastMock.mockClear();
     saveWidgetPdf.mockResolvedValue({ canceled: true });
     hook = await install();
-    view = renderHook(() => hook({ mode: 'widget', srcDoc: WIDGET_SRCDOC }));
+    view = renderHook(() => hook(WIDGET));
     await view.result.current.exportPdf();
     // Dismissing a save dialog is not an error, and reporting it as one is how
     // an app tells the user it was not listening. The generating toast is still

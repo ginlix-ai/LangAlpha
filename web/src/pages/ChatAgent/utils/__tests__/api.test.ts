@@ -1299,6 +1299,42 @@ describe('sendChatMessageStream: steer_only', () => {
   });
 });
 
+describe('sendChatMessageStream: device', () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: {
+        getReader: () => ({
+          read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+        }),
+      },
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  const send = async (device?: 'phone' | 'desktop') => {
+    await sendChatMessageStream('hi', 'ws-1', 't-1', { onEvent: () => {}, platform: 'web', device });
+    const [, opts] = (global.fetch as Mock).mock.calls[0];
+    return JSON.parse(opts.body) as Record<string, unknown>;
+  };
+
+  it('names the device beside the surface', async () => {
+    expect(await send('phone')).toMatchObject({ platform: 'web', device: 'phone' });
+  });
+
+  it('sends none when the caller names none', async () => {
+    expect('device' in (await send())).toBe(false);
+  });
+});
+
 // A paged replay names its page in the query string, and an unpaged one sends
 // none, which the backend reads as the whole thread. The signal is what lets a
 // reload or thread switch drop an older page still on its way.
