@@ -816,7 +816,8 @@ that it pauses, read from `GET /api/v1/users/me/running-work`, and against a ser
 elsewhere that the turns keep going. A page asking `shell:get-update-state` is what
 marks its window as showing the button, so the native prompt still appears where the
 loaded web app predates it. A page that takes the button down (`shell:hide-updates`, as
-its phone layout does when zoom narrows the window) gets the native prompt once per
+its phone layout does when zoom narrows the window, and as the sidebar does while it is
+hidden) gets the native prompt once per
 update, unless a page shows the button again within a second, as a sidebar collapsing
 to its rail does; a new document in that window gets five seconds to boot and ask. The
 panel links the version's release when the build was

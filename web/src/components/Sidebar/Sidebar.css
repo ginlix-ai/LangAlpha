@@ -500,8 +500,7 @@ html.desktop-mac .sidebar-history {
   transition: filter var(--motion-quick) var(--ease-out);
 }
 
-.sidebar-update-row:hover,
-.sidebar-update-rail:hover {
+.sidebar-update-row:hover {
   filter: brightness(1.12);
 }
 
@@ -535,23 +534,6 @@ html.desktop-mac .sidebar-history {
   font-size: 0.6875rem;
   font-weight: 400;
   flex-shrink: 0;
-}
-
-.sidebar-update-rail {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  margin-bottom: 8px;
-  border: none;
-  border-radius: 10px;
-  background: var(--color-accent-soft);
-  cursor: pointer;
-}
-
-.sidebar-update-rail .sidebar-update-icon {
-  width: 18px;
-  height: 18px;
 }
 
 .app-update-title {

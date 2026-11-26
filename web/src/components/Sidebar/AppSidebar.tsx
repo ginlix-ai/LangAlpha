@@ -233,7 +233,7 @@ function AppSidebar({ hidden, width, onWidthChange, peek, panelRef }: AppSidebar
 
       <div className="sidebar-panel-bottom">
         <MountOnceOpen open={canShowUpdates()}>
-          <AppUpdate variant="row" />
+          <AppUpdate shown={!hidden} />
         </MountOnceOpen>
         <AccountMenu />
       </div>

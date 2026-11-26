@@ -4,7 +4,7 @@
  * automatic download failed.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { onlineManager } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 
@@ -26,6 +26,7 @@ vi.mock('@/lib/desktop', () => ({
 vi.mock('@/api/runningWork', () => ({ getRunningWork: vi.fn() }));
 
 import { getRunningWork } from '@/api/runningWork';
+import { getUpdateState, hideUpdates } from '@/lib/desktop';
 import AppUpdate from '../AppUpdate';
 
 function updateState(patch: Partial<DesktopUpdateState>): DesktopUpdateState {
@@ -45,7 +46,7 @@ function updateState(patch: Partial<DesktopUpdateState>): DesktopUpdateState {
 
 async function openPanel(state: DesktopUpdateState) {
   shell.state = state;
-  renderWithProviders(<AppUpdate variant="row" />);
+  renderWithProviders(<AppUpdate shown />);
   const row = await screen.findByRole('button', { name: /Update (ready|available)/ });
   await userEvent.click(row);
 }
@@ -53,6 +54,8 @@ async function openPanel(state: DesktopUpdateState) {
 describe('AppUpdate panel', () => {
   beforeEach(() => {
     vi.mocked(getRunningWork).mockReset();
+    vi.mocked(hideUpdates).mockClear();
+    vi.mocked(getUpdateState).mockClear();
   });
 
   it('holds Restart now while it counts what is running', async () => {
@@ -111,5 +114,19 @@ describe('AppUpdate panel', () => {
   it('says automatic updates are off when they are', async () => {
     await openPanel(updateState({ status: 'available', automatic: false }));
     expect(await screen.findByText(/Automatic updates are off/)).toBeInTheDocument();
+  });
+  it('hands the update to the shell while the sidebar is hidden, and takes it back once shown', async () => {
+    shell.state = updateState({});
+    const { rerender } = renderWithProviders(<AppUpdate shown={false} />);
+    await waitFor(() => expect(hideUpdates).toHaveBeenCalled());
+    // Still drawn, for a peek at the hidden sidebar.
+    expect(await screen.findByRole('button', { name: /Update ready/ })).toBeInTheDocument();
+    vi.mocked(hideUpdates).mockClear();
+    vi.mocked(getUpdateState).mockClear();
+    rerender(<AppUpdate shown />);
+    await waitFor(() => expect(getUpdateState).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The cleanup of the hidden pass took it back once; showing asks again and keeps it.
+    expect(hideUpdates).toHaveBeenCalledTimes(1);
   });
 });

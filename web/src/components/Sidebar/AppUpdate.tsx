@@ -17,15 +17,22 @@ import {
 } from '@/lib/desktop';
 import { calendarMonthDay } from '@/lib/format';
 
-/** The desktop app's update as its shell reports it; null outside the app or on a shell that cannot say. */
-function useAppUpdate(): DesktopUpdateState | null {
+/**
+ * The desktop app's update as its shell reports it; null outside the app or on
+ * a shell that cannot say. Asking for it is what tells the shell this page
+ * shows the button, so a page that is not `shown` asks and then takes it back,
+ * and the shell's own prompt offers the update instead.
+ */
+function useAppUpdate(shown: boolean): DesktopUpdateState | null {
   const [state, setState] = useState<DesktopUpdateState | null>(null);
   useEffect(() => {
     if (!canShowUpdates()) return undefined;
     let live = true;
     const off = onUpdateState((next) => setState(next));
     void getUpdateState().then((first) => {
-      if (live && first) setState((held) => held ?? first);
+      if (!live) return;
+      if (first) setState((held) => held ?? first);
+      if (!shown) hideUpdates();
     });
     return () => {
       live = false;
@@ -34,7 +41,7 @@ function useAppUpdate(): DesktopUpdateState | null {
       // the button, as when a narrow window swaps the sidebar for tabs.
       hideUpdates();
     };
-  }, []);
+  }, [shown]);
   return state;
 }
 
@@ -200,13 +207,14 @@ const ROW_LABEL = {
 } as const;
 
 /**
- * The desktop app's update, offered in the sidebar once there is one to take:
- * a row above the account in the panel, an icon above the avatar on the rail.
- * The click opens what a restart will do before doing it.
+ * The desktop app's update, offered in the sidebar once there is one to take,
+ * as a row above the account. The click opens what a restart will do before
+ * doing it. `shown` is false while the sidebar is hidden, where the row still
+ * draws for a peek but the shell's own prompt is the one the person sees.
  */
-export default function AppUpdate({ variant }: { variant: 'row' | 'rail' }) {
+export default function AppUpdate({ shown }: { shown: boolean }) {
   const { t } = useTranslation();
-  const state = useAppUpdate();
+  const state = useAppUpdate(shown);
   const [open, setOpen] = useState(false);
   if (!state || !state.version || state.status === 'idle') return null;
   const label = t(ROW_LABEL[state.status]);
@@ -214,21 +222,13 @@ export default function AppUpdate({ variant }: { variant: 'row' | 'rail' }) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        {variant === 'row' ? (
-          <button type="button" className="sidebar-update-row tap-target">
-            <span className="sidebar-update-icon" aria-hidden="true">
-              <ArrowUp />
-            </span>
-            <span className="sidebar-update-label">{label}</span>
-            <span className="sidebar-update-version">{state.version.replace(/-nightly\..*$/, '')}</span>
-          </button>
-        ) : (
-          <button type="button" className="sidebar-update-rail tap-target" aria-label={label} title={label}>
-            <span className="sidebar-update-icon" aria-hidden="true">
-              <ArrowUp />
-            </span>
-          </button>
-        )}
+        <button type="button" className="sidebar-update-row tap-target">
+          <span className="sidebar-update-icon" aria-hidden="true">
+            <ArrowUp />
+          </span>
+          <span className="sidebar-update-label">{label}</span>
+          <span className="sidebar-update-version">{state.version.replace(/-nightly\..*$/, '')}</span>
+        </button>
       </PopoverTrigger>
       <PopoverContent side="right" align="end" sideOffset={10} className="w-72 p-3">
         <UpdatePanel state={state} onLater={() => setOpen(false)} />
