@@ -1146,6 +1146,8 @@
     "errorLinkViewUsage": "View usage",
     "errorLinkReconnect": "Reconnect",
     "errorLinkAddApiKey": "Add an API key",
+    "errorLinkChooseModel": "Choose a model",
+    "modelRequired": "Choose a model to chat with. You have no default model yet.",
     "errorUpstreamHeadlineModel": "{{model}} returned an error",
     "errorUpstreamHeadlineModelStatus": "{{model}} returned an error ({{status}})",
     "errorAttemptedModels": "Also tried:",

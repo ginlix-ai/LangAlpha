@@ -238,6 +238,18 @@ export interface DeploymentModelDefaults {
   background_model?: string;
 }
 
+/**
+ * The deployment's defaults as a standalone server can run them: without its
+ * Default model where nothing runs it, on a key of the user's or the
+ * server's. That model is only a name in the server's config, so an account
+ * that chose none has no default, and the server refuses a turn naming none
+ * (`model_required`) rather than fail on the missing key. The Background
+ * model stays as published, since Background work runs on it either way.
+ */
+export function runnableDeploymentDefaults<T extends DeploymentModelDefaults>(defaults: T, runs: (model: string) => boolean): T {
+  return defaults.default_model && !runs(defaults.default_model) ? { ...defaults, default_model: undefined } : defaults;
+}
+
 /** The preference key that holds the default for `slot`. The one place a
  *  slot maps to its stored field. */
 export function defaultModelKey(slot: ModelSlot | undefined): 'preferred_model' | 'preferred_background_model' {
