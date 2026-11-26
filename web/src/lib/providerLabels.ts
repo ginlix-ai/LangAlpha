@@ -7,6 +7,8 @@ import type { TFunction } from 'i18next';
  */
 const PROVIDER_LABELS: Record<string, string> = {
   'langalpha-data': 'LangAlpha Data',
+  // The provider's id before its rename, still on results saved before it.
+  'ginlix-data': 'LangAlpha Data',
   fmp: 'FMP',
   yfinance: 'Yahoo Finance',
   tushare: 'Tushare',
