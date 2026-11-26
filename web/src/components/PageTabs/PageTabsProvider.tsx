@@ -2,10 +2,21 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { NavigationType, useLocation, useNavigate, useNavigationType } from 'react-router';
 import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { storageUser, useStorageUser, userLocalStorage } from '@/lib/userStorage';
+import { storageUser, useStorageUser } from '@/lib/userStorage';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
-import { loadOwners, loadTabs, MAX_TABS, newId, saveOwners, STORAGE_KEY, type Tab, type Tabs } from './pageTabsStorage';
+import {
+  loadHistory,
+  loadTabs,
+  MAX_TABS,
+  newId,
+  saveHistory,
+  saveTabs,
+  tabsRecord,
+  type Tab,
+  type TabHistory,
+  type Tabs,
+} from './pageTabsStorage';
 import {
   PAGE_TABS_FEATURE,
   PageTabActionsContext,
@@ -39,25 +50,23 @@ function sameState(a: unknown, b: unknown): boolean {
   }
 }
 
-/** Which tab each history entry was visited in, by the entry's key. */
-type Owners = Record<string, string>;
+const NO_HISTORY: TabHistory = { owners: {}, closed: [] };
 
-/** What is known of the entries' tabs on a load: what this browser tab saved,
- *  of tabs still open, then the entry each tab was left on, and the one on
- *  screen, which is the tab in front's. */
-function ownersOf(tabs: Tabs, entry: string, saved: Owners): Owners {
+/**
+ * What is known of the tabs' past on a load: what this browser tab saved, of
+ * tabs still open or closed here, then the entry each tab was left on, and the
+ * one on screen, which is the tab in front's. A closed tab open again is left
+ * out: the strip is shared by the account's browser tabs, so another kept it.
+ */
+function historyOf(tabs: Tabs, entry: string, saved: TabHistory): TabHistory {
   const open = new Set(tabs.tabs.map((tab) => tab.id));
-  const owners: Owners = Object.fromEntries(Object.entries(saved).filter(([, id]) => open.has(id)));
+  const closed = saved.closed.filter((c) => !open.has(c.tab.id));
+  const known = new Set([...open, ...closed.map((c) => c.tab.id)]);
+  const owners = Object.fromEntries(Object.entries(saved.owners).filter(([, id]) => known.has(id)));
   for (const tab of tabs.tabs) if (tab.key) owners[tab.key] = tab.id;
   delete owners[entry];
   owners[entry] = tabs.activeId;
-  return owners;
-}
-
-/** A tab closed this session, and where it stood in the strip. */
-interface Closed {
-  tab: Tab;
-  index: number;
+  return { owners, closed };
 }
 
 /** The tabs with the one in front at `spot`. */
@@ -87,14 +96,10 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
   const path = `${location.pathname}${location.search}`;
   const [state, setState] = useState<Tabs | null>(null);
   // The tabs share one history, so each entry is remembered with the tab it
-  // was visited in, every entry and not only the one a tab was left on: a tab
-  // switched to twice has entries on both sides of the other tab's. Kept for
-  // the browser tab's life, as its history is, so a reload keeps them too.
-  const [owners, setOwners] = useState<Owners>({});
-  // Tabs closed this session, newest first. History keeps a closed tab's
-  // entries, so Back onto one brings the tab back rather than showing its page
-  // in the tab in front. Not saved: after a reload nothing reopens.
-  const [closed, setClosed] = useState<Closed[]>([]);
+  // was visited in: a tab switched to twice has entries on both sides of the
+  // other tab's. History keeps a closed tab's entries too, so Back onto one
+  // brings the tab back rather than showing its page in the tab in front.
+  const [history, setHistory] = useState<TabHistory>(NO_HISTORY);
 
   // Loaded once the flag reads on, not at mount, since the flags arrive after
   // the first paint; again for another account signed in in place; and dropped
@@ -110,11 +115,11 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
   // navigation this provider makes from an effect rather than an action.
   const [pending, setPending] = useState<{ from: string; to: string; replace?: { state?: unknown } } | null>(null);
 
-  if (enabled && (!state || loadedFor !== user)) {
+  const loading = enabled && (!state || loadedFor !== user);
+  if (loading) {
     const loaded = loadTabs(path, user);
     setState(loaded);
-    setOwners(ownersOf(loaded, location.key, loadOwners()));
-    setClosed([]);
+    setHistory(historyOf(loaded, location.key, loadHistory()));
     setLoadedFor(user);
     // Another account signed in in place: the address is still the last
     // one's page, so go to the front tab this account left rather than
@@ -127,8 +132,7 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
   }
   if (!enabled && state) {
     setState(null);
-    setOwners({});
-    setClosed([]);
+    setHistory(NO_HISTORY);
   }
 
   // What the page on screen calls itself, and at which address: its effects
@@ -152,9 +156,13 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
   // visited reopens it. Matched on the entry, not the address, so a page two
   // tabs both visited still steps back within the tab you are in.
   const [seen, setSeen] = useState<Spot>(here);
-  if (seen.key !== location.key && !waiting) {
+  // Not in the render that loads, which still reads the strip and history
+  // it is replacing: an account switched in place in the same render as a
+  // step would keep the last account's. The step is taken on the next one.
+  if (seen.key !== location.key && !waiting && !loading) {
     setSeen(here);
     let owner = state?.activeId;
+    let { owners, closed } = history;
     if (state && navigationType === NavigationType.Pop) {
       const tabs = placeActive(state, { ...seen, title: titleAt(seen.path, named, active) });
       const id = owners[location.key];
@@ -168,34 +176,34 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
       }
       if (back) {
         setState({ tabs: tabs.toSpliced(back.index, 0, back.tab), activeId: back.tab.id });
-        setClosed(closed.filter((c) => c !== back));
+        closed = closed.filter((c) => c !== back);
         owner = back.tab.id;
       }
     }
     if (owner && owners[location.key] !== owner) {
       // Moved to the end, so the newest entries are the ones saved.
       const { [location.key]: _was, ...rest } = owners;
-      setOwners({ ...rest, [location.key]: owner });
+      owners = { ...rest, [location.key]: owner };
     }
+    if (owners !== history.owners || closed !== history.closed) setHistory({ owners, closed });
   }
 
   // Memoized by the compiler on its inputs, so the context changes only when
   // the strip does.
   const shown: Tabs | null = state ? { tabs: placeActive(state, here), activeId: state.activeId } : null;
 
-  // Route state is the router's, and may not survive a trip through JSON.
-  const saved = shown && JSON.stringify({ ...shown, tabs: shown.tabs.map(({ state: _routeState, ...tab }) => tab) });
+  const saved = shown && tabsRecord(shown);
   const handoff = pending?.replace ? pending : null;
   useEffect(() => {
     if (handoff) navigate(handoff.to, { replace: true, state: handoff.replace?.state });
   }, [handoff, navigate]);
+  // Only for the account this render read: an effect still pending when
+  // another signs in in place would put one account's tabs under the next's.
   useEffect(() => {
-    if (state && storageUser() === user) saveOwners(owners);
-  }, [owners, state, user]);
+    if (state && storageUser() === user) saveHistory(history);
+  }, [history, state, user]);
   useEffect(() => {
-    // Only for the account this render read: an effect still pending when
-    // another signs in in place would put one account's tabs under the next's.
-    if (saved && storageUser() === user) userLocalStorage.setItem(STORAGE_KEY, saved);
+    if (saved && storageUser() === user) saveTabs(saved);
   }, [saved, user]);
 
   // The actions read the strip as it is when they run, so they keep one
@@ -222,7 +230,7 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
         // Back onto the one before it stays in this tab.
         also?.();
         setState({ ...next, tabs: next.tabs.map((t) => (t.id === now?.activeId ? { ...t, key: undefined } : t)) });
-        setOwners((prev) => ({ ...prev, [from]: target.id }));
+        setHistory((prev) => ({ ...prev, owners: { ...prev.owners, [from]: target.id } }));
         return;
       }
       // The strip `next` was read for the account on screen now, so if another
@@ -260,7 +268,8 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
         const index = now.tabs.findIndex((t) => t.id === id);
         if (index < 0) return;
         const tabs = now.tabs.filter((t) => t.id !== id);
-        const remember = () => setClosed((prev) => [{ tab: now.tabs[index], index }, ...prev].slice(0, MAX_TABS));
+        const remember = () =>
+          setHistory((prev) => ({ ...prev, closed: [{ tab: now.tabs[index], index }, ...prev.closed].slice(0, MAX_TABS) }));
         if (id !== now.activeId) {
           remember();
           setState({ ...now, tabs });
