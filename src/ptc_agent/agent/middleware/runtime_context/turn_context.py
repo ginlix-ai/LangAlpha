@@ -10,8 +10,11 @@ adding one meant editing every signature between them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from datetime import datetime
+
+if TYPE_CHECKING:
+    from src.server.models.chat import Device
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,9 @@ class TurnContext:
     # summary is judged; None at the turn start (see ``compaction.rebuild``).
     sent_at: float | None = None
     platform: str | None = None
+    # The layout the web app was in when the user sent the turn (phone or
+    # desktop); None from every other client.
+    device: Device | None = None
     origin: str | None = None
     # The agent that sent an agent-origin turn (``chief_of_staff``),
     # which the turn row names as acting for the user.

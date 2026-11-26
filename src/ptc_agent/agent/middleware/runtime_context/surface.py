@@ -7,6 +7,10 @@ whether langalpha has a line of its own for it. It has one only for the
 surfaces it renders itself; any other surface states its rules on the request
 (``ChatRequest.surface_rules``), written by the client that draws it.
 
+It also owns which surfaces langalpha draws and which are chat apps, since
+every reader that branches on that (the rules paragraph, steering, a
+report-back's reminder, ShowWidget, an automation's delivery) has to agree.
+
 The known set is documentation, not admission control. The caller sending a turn
 owns its own surface vocabulary and ships on its own schedule, so a name this
 build has never heard of still renders in the pointer. It is logged once, because
@@ -17,7 +21,13 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    # Defined on the request model, which the agent package already imports
+    # elsewhere: defining it here instead would make the request model import
+    # the middleware package, whose import reaches back into that model.
+    from src.server.models.chat import Device
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +46,42 @@ KNOWN_SURFACES: frozenset[str] = frozenset(
     }
 )
 
+#: The surfaces langalpha draws itself, which ``surface_rules.md.j2`` carries a
+#: line for. Every other named surface is a chat app, drawn by its gateway.
+BUILT_IN_SURFACES: frozenset[str] = frozenset({"web", "market_view"})
+
+#: The surfaces whose built-in line reads the device the turn was sent from.
+#: The market_view chat is a narrow panel on any device, so only web's does.
+DEVICE_SURFACES: frozenset[str] = frozenset({"web"})
+
+#: Chat apps as the user knows them. A name not listed is still a chat app.
+CHAT_APP_NAMES: dict[str, str] = {
+    "slack": "Slack",
+    "discord": "Discord",
+    "telegram": "Telegram",
+    "imessage": "iMessage",
+    "feishu": "Feishu",
+}
+
 
 class Surface(NamedTuple):
-    """A parsed platform string: the surface, and the symbol it is scoped to.
+    """A parsed platform string: the surface, the symbol it is scoped to, and
+    the device it was sent from where its line reads one.
 
-    Two fields rather than one string because the contract is keyed on ``name``
+    Fields rather than one string because the contract is keyed on ``name``
     alone. The symbol travels as its own value so the pointer hands the model a
     ticker instead of a compound key it has to split.
     """
 
     name: str | None
     symbol: str | None
+    device: Device | None = None
+
+    def sent_from(self, device: Device | None) -> Surface:
+        """This surface with the device the turn was sent from, kept only on a
+        surface whose line reads it, so neither the rules key nor the line has
+        to ask again which surfaces those are."""
+        return self._replace(device=device if self.name in DEVICE_SURFACES else None)
 
 
 def parse_surface(platform: str | None) -> Surface:
@@ -73,7 +108,26 @@ def is_known_surface(name: str | None) -> bool:
 
 def split_surface(platform: str | None) -> tuple[str | None, str | None]:
     """The older name for :func:`parse_surface`, kept for callers outside this package."""
-    return parse_surface(platform)
+    name, symbol, _ = parse_surface(platform)
+    return name, symbol
+
+
+def is_chat_app(platform: str | None) -> bool:
+    """Whether the turn came through a chat app's gateway rather than a
+    surface langalpha draws (``web``, ``market_view:<SYMBOL>``). No surface (an
+    automation, the phone app) is not one."""
+    name = parse_surface(platform).name
+    return name is not None and name not in BUILT_IN_SURFACES
+
+
+def chat_app_name(platform: str | None) -> str | None:
+    """The chat app the turn came from, as the user knows it, or None when it
+    came from none (see :func:`is_chat_app`). An app this build does not list
+    is named as its surface is."""
+    if not is_chat_app(platform):
+        return None
+    name = parse_surface(platform).name
+    return CHAT_APP_NAMES.get(name, name)
 
 
 @lru_cache(maxsize=256)

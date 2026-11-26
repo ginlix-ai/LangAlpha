@@ -147,9 +147,11 @@ async def execute_steer(job: dict) -> None:
         body = {
             "messages": [{"role": "user", "content": payload.get("content") or ""}],
             "workspace_id": workspace_id,
-            # The surface it was sent from (web, a MarketView panel), so the
-            # turn answers under that surface's rules.
+            # The surface it was sent from (web, a MarketView panel) and the
+            # layout it was sent in, so the turn answers under that surface's
+            # rules and for that device.
             "platform": payload.get("platform"),
+            "device": payload.get("device"),
             "request_key": payload.get("request_key") or steer_request_key(job_id),
             "steer_job_id": job_id,
             "artifact_comments": payload.get("artifact_comments"),
