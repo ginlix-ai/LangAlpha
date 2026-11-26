@@ -113,6 +113,9 @@ export const queryKeys = {
     // A chart's record, among its workspace's reads so its events reach it. An
     // object, so no file's path can spell the same key.
     byChart:     (wsId: string, chart: string) => [...queryKeys.artifacts.pathsIn(wsId), { chart }],
+    // Every timeframe's record of one ticker, among the same reads, so a
+    // comment written or read on any of them reads the counts again.
+    chartsOf:    (wsId: string, symbol: string) => [...queryKeys.artifacts.pathsIn(wsId), { symbol }],
     // The owner's get-or-create of a file's record. Beside the reads by path,
     // not under them, so an event that reads those again never makes one.
     ensured:     (wsId: string, path: string) => [...queryKeys.artifacts.all, 'ensured', wsId, path],

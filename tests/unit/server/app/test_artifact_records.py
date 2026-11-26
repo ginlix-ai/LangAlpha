@@ -200,3 +200,97 @@ async def test_a_chart_is_no_record_to_a_route_only_a_file_takes():
         with pytest.raises(HTTPException) as refused:
             await records.reached_file(chart.artifact_id, "owner")
     assert refused.value.status_code == 404
+
+
+def _chart(path: str):
+    return _record(
+        artifact_id=f"00000000-0000-0000-0000-0000000000{len(path):02d}",
+        path=path, kind="chart", keep_updated=False, latest_seq=0,
+        shared_at=None, files=None, kept_at=None, shared_seq=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_symbols_charts_are_every_timeframe_its_workspace_holds(owner):
+    """The symbol is spelled as a chart id spells it, and needs no computer."""
+    from src.server.app.artifacts import records
+
+    home = {"workspace_id": _WS, "user_id": "owner", "status": "unbound"}
+    charts = [_chart("NVDA:1day"), _chart("NVDA:15min")]
+    listed = AsyncMock(return_value=charts)
+    counts = AsyncMock(return_value=type("C", (), {"open": 2, "unread": 1})())
+    with (
+        patch(_GETWS, AsyncMock(return_value=home)),
+        patch.object(records.artifacts_db, "list_chart_records", listed),
+        patch.object(records.artifacts_db, "comment_counts", counts),
+    ):
+        resp = await owner.get(
+            f"/api/v1/workspaces/{_WS}/artifacts/charts", params={"symbol": " nvda "}
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert list(body) == ["charts"]
+    assert [(c["path"], c["kind"], c["open_comments"], c["unread"]) for c in body["charts"]] == [
+        ("NVDA:1day", "chart", 2, 1),
+        ("NVDA:15min", "chart", 2, 1),
+    ]
+    listed.assert_awaited_once_with(_WS, "NVDA")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace", [{"workspace_id": _WS, "user_id": "x"}, None])
+async def test_a_symbols_charts_in_a_workspace_not_the_callers_are_not_found(
+    owner, workspace
+):
+    from src.server.app.artifacts import records
+
+    listed = AsyncMock(return_value=[])
+    with (
+        patch(_GETWS, AsyncMock(return_value=workspace)),
+        patch.object(records.artifacts_db, "list_chart_records", listed),
+    ):
+        resp = await owner.get(
+            f"/api/v1/workspaces/{_WS}/artifacts/charts", params={"symbol": "NVDA"}
+        )
+    assert resp.status_code == 404
+    listed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symbol", ["NVDA:1day", "a b", "NVDA​", "..", None])
+async def test_a_symbol_no_chart_could_be_named_by_is_refused(owner, symbol):
+    home = {"workspace_id": _WS, "user_id": "owner", "status": "running"}
+    params = {} if symbol is None else {"symbol": symbol}
+    with patch(_GETWS, AsyncMock(return_value=home)):
+        resp = await owner.get(f"/api/v1/workspaces/{_WS}/artifacts/charts", params=params)
+    assert resp.status_code == (422 if symbol is None else 400)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "shared", "offered"),
+    [("file", False, True), ("chart", False, False), ("file", True, False)],
+)
+async def test_a_new_chief_of_staff_chat_is_offered_only_for_a_file_its_owner_holds(
+    kind, shared, offered
+):
+    """A chart's comments stay with its workspace, and a shared workspace's
+    owner is no person with a Home the caller may start a chat in."""
+    from types import SimpleNamespace
+
+    from src.server.app.artifacts import records
+    from src.server.database.home_workspace import get_home_workspace_id
+    from src.server.services.shared_workspaces.access import Access
+
+    artifact = _record(kind=kind)
+    access = Access("owner", object() if shared else None)
+    found = SimpleNamespace(
+        default=(None, "new"), artifact=artifact, bound=None, beside=None, creator=None
+    )
+    with (
+        patch.object(records, "reached", AsyncMock(return_value=(artifact, access))),
+        patch.object(records.artifacts_db, "destinations", AsyncMock(return_value=found)),
+    ):
+        resp = await records.get_destinations(artifact.artifact_id, "owner", beside=None)
+    assert resp.home_workspace_id == (get_home_workspace_id("owner") if offered else None)

@@ -120,6 +120,12 @@ function userScoped(store: () => Storage): UserStorage {
 
 export const userLocalStorage = userScoped(() => localStorage);
 
+/** Reads `userId`'s key from localStorage whoever is signed in now: for a
+ *  clean-up that checks what it removes. */
+export function getUserLocalItem(userId: string, key: string): string | null {
+  try { return localStorage.getItem(scoped(userId, key)); } catch { return null; }
+}
+
 /** Removes `userId`'s key from localStorage whoever is signed in now: for a
  *  clean-up that runs once they have signed out. */
 export function removeUserLocalItem(userId: string, key: string): void {

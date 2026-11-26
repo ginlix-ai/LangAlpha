@@ -32,6 +32,7 @@ from src.server.database.artifacts.comments import Comment
 from src.server.database.conversation import thread_reach
 from src.server.services.account import AccountSuspended
 from src.server.services.shared_workspaces.access import Access, NoAccess, thread_access
+from src.server.services.artifacts.comment_pictures import remove_pictures_soon
 from src.server.services.artifacts.events import publish_comment_change
 from src.server.utils.api import CurrentUserId
 
@@ -265,13 +266,17 @@ async def mark_comments_read(
 async def delete_comment(
     artifact_id: str, comment_id: str, x_user_id: CurrentUserId
 ) -> Response:
+    """Delete the comment, its replies, and the pictures it was saved with."""
     artifact, access = await reached(artifact_id, x_user_id)
     owner_id = access.owner_id
     comment_id = path_id(comment_id, "Comment")
-    deleted, thread_id = await artifacts_db.delete_comment(
+    deleted = await artifacts_db.delete_comment(
         user_id=owner_id, artifact_id=artifact.artifact_id, comment_id=comment_id
     )
-    if not deleted:
+    if deleted is None:
         raise not_found("Comment")
-    await _comments_changed(owner_id, artifact, [comment_id], thread_id)
+    # The caller, as every route that reaches a running computer passes: the
+    # computer is found by workspace and read for its owner either way.
+    remove_pictures_soon(deleted.workspace_id, x_user_id, deleted.pictures)
+    await _comments_changed(owner_id, artifact, [comment_id], deleted.thread_id)
     return Response(status_code=204)

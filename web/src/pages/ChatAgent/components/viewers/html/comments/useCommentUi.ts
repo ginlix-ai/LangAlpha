@@ -4,14 +4,18 @@ import { useStableHandler } from '@/hooks/useStableHandler';
 import { useSharedCommentSends, type CommentSendStore } from '../../../artifactComments/commentSendStore';
 
 /**
- * A chat line asked to show this comment, on the file at `path`
- * (workspace-relative), or the chart whose id it is. `key` tells two asks
- * for one comment apart.
+ * A comment asked to be shown, on the file at `path` (workspace-relative),
+ * or the chart whose id it is: by a chat line, or by the list's row for one
+ * on another of a chart's timeframes.
  */
-export interface CommentFocus {
+export interface CommentAsk {
   kind: ArtifactKind;
   path: string;
   commentId: string;
+}
+
+/** An ask as the layer holds it: `key` tells two asks for one comment apart, so a second click shows it again. */
+export interface CommentFocus extends CommentAsk {
   key: number;
 }
 
@@ -44,7 +48,7 @@ export interface CommentUi {
   listTab: string | null;
   setList: (tabId: string, open: boolean) => void;
   focus: CommentFocus | null;
-  requestFocus: (focus: CommentFocus) => void;
+  requestFocus: (ask: CommentAsk) => void;
   /** The layer showed the ask with this key. */
   focusHandled: (key: number) => void;
   /**
@@ -64,12 +68,6 @@ export interface CommentUi {
    */
   docOf: (tabId: string, opened: string) => string;
   showDoc: (tabId: string, opened: string, doc: string) => void;
-  /**
-   * Whether a tab's layer holds words not yet saved. A draft goes when its
-   * layer moves to another workspace, so a host that moves it asks first.
-   */
-  writing: (tabId: string) => boolean;
-  showWriting: (tabId: string, words: boolean) => void;
   /** Where each comment's send stands: the chat's store beside it, so the deck and the cards agree. */
   sends: CommentSendStore;
 }
@@ -83,12 +81,12 @@ export function useCommentUi(onAskInChat?: ((words: AskedWords) => void) | null,
   const [modeTab, setModeTab] = useState<string | null>(null);
   const [listTab, setListTab] = useState<string | null>(null);
   const [focus, setFocus] = useState<CommentFocus | null>(null);
+  const asks = useRef(0);
   // Called, not stored as state: an ask re-renders nothing. Which tabs take
   // words is state, since the toolbar is drawn by it.
   const takers = useRef(new Map<string, WordsTaker>());
   const [wordTabs, setWordTabs] = useState<ReadonlySet<string>>(() => new Set());
   const [docs, setDocs] = useState<ReadonlyMap<string, { opened: string; doc: string }>>(() => new Map());
-  const [writingTabs, setWritingTabs] = useState<ReadonlySet<string>>(() => new Set());
   const shared = useSharedCommentSends();
   const sends = beside ?? shared;
 
@@ -98,7 +96,10 @@ export function useCommentUi(onAskInChat?: ((words: AskedWords) => void) | null,
   const setList = useCallback((tabId: string, open: boolean) => {
     setListTab((prev) => (open ? tabId : prev === tabId ? null : prev));
   }, []);
-  const requestFocus = useCallback((next: CommentFocus) => setFocus(next), []);
+  const requestFocus = useCallback((ask: CommentAsk) => {
+    asks.current += 1;
+    setFocus({ ...ask, key: asks.current });
+  }, []);
   const focusHandled = useCallback((key: number) => {
     setFocus((prev) => (prev?.key === key ? null : prev));
   }, []);
@@ -134,25 +135,14 @@ export function useCommentUi(onAskInChat?: ((words: AskedWords) => void) | null,
     });
   }, []);
 
-  const writing = useCallback((tabId: string) => writingTabs.has(tabId), [writingTabs]);
-  const showWriting = useCallback((tabId: string, words: boolean) => {
-    setWritingTabs((prev) => {
-      if (prev.has(tabId) === words) return prev;
-      const next = new Set(prev);
-      if (words) next.add(tabId);
-      else next.delete(tabId);
-      return next;
-    });
-  }, []);
-
   return useMemo(
     () => ({
       modeTab, setMode, listTab, setList, focus, requestFocus, focusHandled, takesWords, commentOnWords, registerWordsTaker, askInChat, docOf,
-      showDoc, writing, showWriting, sends,
+      showDoc, sends,
     }),
     [
       modeTab, setMode, listTab, setList, focus, requestFocus, focusHandled, takesWords, commentOnWords, registerWordsTaker, askInChat, docOf,
-      showDoc, writing, showWriting, sends,
+      showDoc, sends,
     ],
   );
 }

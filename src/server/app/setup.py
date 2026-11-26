@@ -37,7 +37,9 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
@@ -70,6 +72,7 @@ from src.server.services.preview_base import (
     check_preview_proxy_config,
     preview_proxy_requirements,
 )
+from src.server.utils.pg_sanitize import drop_non_finite
 from src.server.utils.error_sanitization import (
     COMPUTER_UNREACHABLE_HEADER,
     sandbox_failure_http,
@@ -1580,6 +1583,20 @@ async def _sandbox_failure_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
+async def _request_validation_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """FastAPI's own 422, with any non-finite number it quotes back as null.
+
+    A body is read by Python's JSON, which takes a raw ``NaN`` or
+    ``Infinity``, and an error that quotes the value it refused cannot be
+    written as JSON with one in it: the 422 would end as a 500."""
+    return JSONResponse(
+        status_code=422,
+        content={"detail": drop_non_finite(jsonable_encoder(exc.errors()))},
+    )
+
+
 async def _policy_denied_handler(request: Request, exc: PolicyDenied):
     """Answer a refusal by policy exactly as any ``HTTPException`` is answered,
     recording it first in the organization's activity log: every route's
@@ -1590,6 +1607,7 @@ async def _policy_denied_handler(request: Request, exc: PolicyDenied):
 
 
 app.add_exception_handler(PolicyDenied, _policy_denied_handler)
+app.add_exception_handler(RequestValidationError, _request_validation_handler)
 app.add_exception_handler(SandboxGoneError, _sandbox_failure_handler)
 app.add_exception_handler(SandboxTransientError, _sandbox_failure_handler)
 # A refusal a caller let through unwrapped, which would otherwise answer 500.

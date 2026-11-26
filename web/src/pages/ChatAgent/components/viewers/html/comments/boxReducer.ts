@@ -2,6 +2,7 @@ import type { ArtifactComment, ArtifactCommentAnchor } from '@/types/api';
 import type { CommentTarget } from '../../../../utils/api/artifacts';
 import type { FrameRect, PageHover, PagePick } from '../pageProtocol';
 import { filterShowing, showsDraft, type ListFilter } from '../../../artifactComments/commentModel';
+import type { KeptDraft } from './commentDrafts';
 
 export interface Draft {
   anchor: ArtifactCommentAnchor;
@@ -112,12 +113,21 @@ export type BoxAction =
   | { type: 'listDraft' }
   /** A box carried onto a new document has its pin in view there. */
   | { type: 'placed' }
-  | { type: 'saved'; id: string }
+  /** A save came back. `serial` is the draft it saved, which alone it ends: the layer may have taken up another meanwhile. */
+  | { type: 'saved'; id: string; serial: number }
   /** Open a comment's card in the list; one the list keeps whatever its filter says keeps the filter. */
   | { type: 'expand'; comment: ArtifactComment; kept: boolean }
   | { type: 'collapse' }
   | { type: 'filter'; filter: ListFilter }
-  | { type: 'deleted' };
+  | { type: 'deleted' }
+  /**
+   * The layer came to show a workspace, file or chart a comment was being
+   * written on (`commentDrafts`): its box opens again with its words, or,
+   * where a card is open or on its way (`behind`), it waits in the list.
+   * `replace` lets go of the draft in hand, which stays kept for the
+   * workspace it was written in.
+   */
+  | { type: 'restore'; kept: KeptDraft | null; replace: boolean; behind?: boolean };
 
 export function initialBox({ doc, listOpen }: { doc: string; listOpen: boolean }): BoxState {
   return {
@@ -184,9 +194,24 @@ function closeBox(state: BoxState, of: BoxOf, keepHover: boolean): BoxState {
   return { ...next, text: state.text.trim() ? state.text : '' };
 }
 
+/**
+ * A card asked for (by the chat, or the list's row for another timeframe)
+ * takes the box's place. A draft open there with words waits in the list,
+ * kept, rather than going with its box; an empty one just goes.
+ */
+function setDraftAside(state: BoxState): BoxState {
+  const open = state.open;
+  if (open?.kind !== 'draft' || !state.text.trim()) return state;
+  return {
+    ...state,
+    listed: { draft: open.draft, serial: open.serial },
+    filter: showsDraft(state.filter) ? state.filter : 'open',
+  };
+}
+
 function expand(state: BoxState, comment: ArtifactComment, kept: boolean): BoxState {
   return {
-    ...show(state, null),
+    ...show(setDraftAside(state), null),
     listWanted: !state.listOpen,
     filter: kept ? state.filter : filterShowing(comment, state.filter),
     expandedId: comment.comment_id,
@@ -247,9 +272,9 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       // Words left in an empty box go; a draft waiting in the list keeps its own.
       return { ...show(state, { kind: 'card', id: action.id }), text: state.listed ? state.text : '' };
     case 'brought':
-      return { ...show(state, { kind: 'card', id: action.id }), arrivalId: action.id };
+      return { ...show(setDraftAside(state), { kind: 'card', id: action.id }), arrivalId: action.id };
     case 'awaitLanding':
-      return { ...show(state, null), landing: { id: action.id } };
+      return { ...show(setDraftAside(state), null), landing: { id: action.id } };
     case 'landed':
       if (action.id === null) return { ...state, landing: null };
       return { ...state, landing: null, open: { kind: 'card', id: action.id }, arrivalId: action.id };
@@ -297,8 +322,11 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
     }
     case 'placed':
       return { ...state, carried: null };
-    case 'saved':
+    case 'saved': {
+      const inHand = state.open?.kind === 'draft' ? state.open.serial : state.listed?.serial;
+      if (inHand !== action.serial) return state;
       return { ...endDraft(state, false), madeId: action.id };
+    }
     case 'expand':
       return expand(state, action.comment, action.kept);
     case 'collapse':
@@ -307,6 +335,17 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       return { ...state, filter: action.filter };
     case 'deleted':
       return { ...show(state, null), expandedId: null };
+    case 'restore': {
+      const base = action.replace ? endDraft(state, false) : state;
+      if (!action.kept) return base;
+      const { draft, text, forAgent, to } = action.kept;
+      const serial = base.serial + 1;
+      const words = { serial, text, forAgent, to, confirmDiscard: false };
+      if (action.behind || base.open?.kind === 'card' || base.landing) return { ...base, ...words, listed: { draft, serial } };
+      // Placed as a box carried onto a new version is: at its pin once the
+      // page says where that is, or in the list where it cannot show.
+      return { ...show(base, { kind: 'draft', draft, serial }), ...words, listed: null, carried: base.doc };
+    }
     default:
       return state;
   }

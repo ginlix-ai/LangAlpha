@@ -60,11 +60,15 @@ export function useLayerSending({ workspaceId, doc, draft, ui, to, onTo }: Layer
     });
     onTo(null);
   };
-  const picked = to ?? forDraft.fallback;
+  // A pick counts while the menu offers it. One kept with a draft from an
+  // earlier visit (the chat beside it since moved on, or its thread
+  // archived) goes nowhere the "To:" line does not name: the default instead.
+  const offered = to && forDraft.choices.some((c) => c.key === targetKey(to)) ? to : null;
+  const picked = offered ?? forDraft.fallback;
 
   return {
     layer: { actions, besideThreadId: beside, destinations, runningFor },
-    draftRoute: (intent) => forDraft.targetFor(null, intent, to),
+    draftRoute: (intent) => forDraft.targetFor(null, intent, offered),
     destination: {
       choices: forDraft.choices,
       selected: picked ? targetKey(picked) : '',

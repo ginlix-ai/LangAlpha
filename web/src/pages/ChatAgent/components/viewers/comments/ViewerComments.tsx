@@ -27,7 +27,7 @@ export interface ViewerCommentsTarget extends ArtifactTarget {
  * covers the viewport's box without scrolling with the content, as the layer
  * over a frame does; the parent is the viewport's positioned box.
  */
-export function ViewerComments({ scroller, content, strategy, target, modeHint, title, pictures = null, keepSpotClear }: {
+export function ViewerComments({ scroller, content, strategy, target, modeHint, title, pictures = null, keepSpotClear, openOther }: {
   scroller: HTMLElement | null;
   content: HTMLElement | null;
   strategy: SpotStrategy | null;
@@ -39,6 +39,8 @@ export function ViewerComments({ scroller, content, strategy, target, modeHint, 
   pictures?: PictureWriter | null;
   /** A comment's box opens over or under its spot, so what was boxed stays in view. */
   keepSpotClear?: boolean;
+  /** Shows a comment on another of a chart's timeframes (`CommentLayer`). */
+  openOther?: (path: string, commentId: string) => void;
 }) {
   const { bridge, view: pageView, pickWords, holdsWords } = useViewerPage({ scroller, content, strategy, path: target.path, title });
   const { workspaceId, path } = target;
@@ -64,6 +66,7 @@ export function ViewerComments({ scroller, content, strategy, target, modeHint, 
         holdsWords={holdsWords}
         beforeSave={writePictures}
         keepSpotClear={keepSpotClear}
+        openOther={openOther}
       />
     </Suspense>,
     host,

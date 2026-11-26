@@ -79,9 +79,9 @@ export interface CommentPopoverProps {
   replaced: boolean;
   /**
    * The current box is a new comment being written: words written in it are
-   * not let go for a press or focus elsewhere (`onAskDiscard` asks instead).
+   * not let go for a press or focus outside the box.
    */
-  draft?: { words: boolean; onAskDiscard: () => void } | null;
+  draft?: { words: boolean } | null;
   /** Fades and lets clicks through to the page under it: the add key is held to add a part the box may cover. */
   seeThrough?: boolean;
   onDismiss: () => void;
@@ -172,12 +172,13 @@ export function CommentPopover({
           e.preventDefault();
           if (!isImeComposing(e)) onEscape();
         }}
+        // A press outside the box leaves words written as they are: on the
+        // chat, a toolbar or a menu it is about something else. One on the
+        // page asks whether to discard them, as a click away does in a design
+        // tool, but that press reaches the layer as the page's own report
+        // (`page:press`) and a pin's as its own click, never here.
         onPointerDownOutside={(e) => {
-          if (onVersionPicker(e)) e.preventDefault();
-          else if (draft?.words) {
-            e.preventDefault();
-            draft.onAskDiscard();
-          }
+          if (onVersionPicker(e) || draft?.words) e.preventDefault();
         }}
         // Words already written are not thrown away for focus going
         // elsewhere in the app. Focus going into the page never lands

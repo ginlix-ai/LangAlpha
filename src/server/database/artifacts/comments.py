@@ -7,6 +7,7 @@ package docstring for why that orders the thread and keeps ``delivery`` true.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -525,23 +526,92 @@ async def update_comment(
     return comment, current["thread_id"]
 
 
-async def delete_comment(
-    *, user_id: str, artifact_id: str, comment_id: str
-) -> tuple[bool, str | None]:
-    """Delete a comment and its messages; its number is never reused.
-    Returns whether it was there, and the thread it waited for or went to."""
+@dataclass(frozen=True)
+class DeletedComment:
+    #: The thread it waited for or went to.
+    thread_id: str | None
+    workspace_id: str
+    #: The pictures it named, workspace-relative, which its computer may drop
+    #: once no comment left in the workspace names them (``unnamed_pictures``).
+    pictures: tuple[str, ...]
+
+
+#: Where a comment's picture is written for the agent: the workspace's own
+#: comments folder, so a stored path can only name a picture the app wrote.
+PICTURE_PATH = r"^\.agents/comments/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.(png|jpg|jpeg)$"
+
+
+def anchor_pictures(anchor: dict[str, Any]) -> list[str]:
+    """The pictures an anchor names: a box's on an image or a PDF, a
+    region's on a chart. Only what a saved anchor may name counts: the
+    anchor is stored as the client sent it, and its pictures are deleted
+    with it."""
+    parts = [*(anchor.get("boxes") or ()), *(anchor.get("marks") or ())]
+    named = (p.get("picture") for p in parts if isinstance(p, dict))
+    return list(
+        dict.fromkeys(
+            p for p in named if isinstance(p, str) and re.fullmatch(PICTURE_PATH, p)
+        )
+    )
+
+
+async def unnamed_pictures(workspace_id: str, pictures: list[str]) -> list[str]:
+    """Those of ``pictures`` no comment in the workspace names now, in order.
+
+    Asked after the delete has committed, just before the pictures go: a
+    comment saved since may name one, and two comments naming the same
+    picture deleted at once would each still see the other inside their own
+    transactions."""
+    if not pictures:
+        return []
     async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                DELETE FROM artifact_comments
-                 WHERE comment_id = %s AND artifact_id = %s AND user_id = %s
-                RETURNING thread_id::text
+                SELECT p.picture FROM unnest(%(pictures)s::text[]) AS p(picture)
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM artifact_comments c
+                       JOIN share_links l ON l.artifact_id = c.artifact_id
+                      WHERE l.workspace_id = %(workspace_id)s
+                        AND (c.anchor @> jsonb_build_object('boxes',
+                                jsonb_build_array(jsonb_build_object('picture', p.picture)))
+                          OR c.anchor @> jsonb_build_object('marks',
+                                jsonb_build_array(jsonb_build_object('picture', p.picture))))
+                 )
+                """,
+                {"pictures": pictures, "workspace_id": workspace_id},
+            )
+            unnamed = {r["picture"] for r in await cur.fetchall()}
+    return [p for p in pictures if p in unnamed]
+
+
+async def delete_comment(
+    *, user_id: str, artifact_id: str, comment_id: str
+) -> DeletedComment | None:
+    """Delete a comment and its messages; its number is never reused. None
+    when it was not there."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                WITH gone AS (
+                    DELETE FROM artifact_comments
+                     WHERE comment_id = %s AND artifact_id = %s AND user_id = %s
+                    RETURNING thread_id, artifact_id, anchor
+                )
+                SELECT gone.thread_id::text, l.workspace_id::text, gone.anchor
+                  FROM gone JOIN share_links l ON l.artifact_id = gone.artifact_id
                 """,
                 (comment_id, artifact_id, user_id),
             )
             row = await cur.fetchone()
-    return (row is not None, row[0] if row else None)
+    if row is None:
+        return None
+    return DeletedComment(
+        thread_id=row["thread_id"],
+        workspace_id=row["workspace_id"],
+        pictures=tuple(anchor_pictures(row["anchor"] or {})),
+    )
 
 
 async def list_queued_comments(*, user_id: str, thread_id: str) -> list[Comment]:

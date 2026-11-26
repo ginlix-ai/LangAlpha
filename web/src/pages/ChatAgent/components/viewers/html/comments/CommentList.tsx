@@ -19,6 +19,7 @@ import { scrollMotion } from '@/lib/reducedMotion';
 import type { ArtifactComment } from '@/types/api';
 import { LIST_FILTERS, filterCounts, inFilter, showsDraft, type ListFilter } from '../../../artifactComments/commentModel';
 import { PinBadge } from '../../../artifactComments/PinBadge';
+import { OtherTimeframes, type ElsewhereComments } from './OtherTimeframes';
 import './CommentList.css';
 
 /** No resize for this long: the card has landed. */
@@ -60,8 +61,13 @@ interface CommentListProps {
   /** The card, open or shut; `onToggle` opens and shuts it. */
   renderCard: (comment: ArtifactComment, open: boolean, onToggle: () => void) => React.ReactNode;
   onToggle: (comment: ArtifactComment) => void;
-  onMarkAllRead: () => void;
+  /** Marks everything read: this one's and its other timeframes'; null with nothing unread. */
+  onMarkAllRead: (() => void) | null;
   onClose: () => void;
+  /** The comments could not be read: the list says so rather than showing none. */
+  failed?: { onRetry: () => void } | null;
+  /** A chart's comments on its other timeframes, listed after its own. */
+  elsewhere?: ElsewhereComments | null;
 }
 
 /** Brings `row` into `scroller`'s view by the least scroll, and scrolls nothing else. */
@@ -83,13 +89,16 @@ function reveal(scroller: HTMLElement, row: HTMLElement): void {
  * everything read; a filter other than Open is named beside the title.
  */
 export function CommentList({
-  comments, filter, onFilter, expandedId, keptIds, draft, renderCard, onToggle, onMarkAllRead, onClose,
+  comments, filter, onFilter, expandedId, keptIds, draft, renderCard, onToggle, onMarkAllRead, onClose, failed = null, elsewhere = null,
 }: CommentListProps): React.ReactElement {
   const { t } = useTranslation();
   const shown = comments.filter((c) => inFilter(c, filter) || keptIds.has(c.comment_id));
   const draftCard = showsDraft(filter) ? draft : null;
-  const empty = shown.length === 0 && !draftCard;
-  const counts = filterCounts(comments);
+  const others = elsewhere ? elsewhere.comments.filter((o) => inFilter(o.comment, filter)) : [];
+  const nothingHere = shown.length === 0 && !draftCard;
+  const empty = nothingHere && others.length === 0;
+  // Counted as listed: this one's comments and the other timeframes' after them.
+  const counts = filterCounts(elsewhere ? [...comments, ...elsewhere.comments.map((o) => o.comment)] : comments);
 
   // A card opened from its pin may be far down the list. It is brought into
   // view once it has landed: while it folds open it is still growing, and the
@@ -119,27 +128,44 @@ export function CommentList({
       {showsDraft(filter) && <p>{t('pageViewer:comments.emptyHint')}</p>}
     </div>
   ) : (
-    // A comment that comes or goes while the list shows (written, resolved,
-    // reopened) folds in or out. Each fold carries the room under it, so the
-    // gap closes with the card rather than after it.
-    <div role="list">
-      <AnimatePresence initial={false}>
-        {draftCard && (
-          <PresenceFold key="draft" appear className="pb-1.5">
-            {draftCard}
-          </PresenceFold>
-        )}
-        {shown.map((c) => {
-          const expanded = expandedId === c.comment_id;
-          return (
-            <PresenceFold key={c.comment_id} appear className="pb-1.5">
-              <div role="listitem" ref={expanded ? setExpandedRow : undefined}>
-                {renderCard(c, expanded, () => onToggle(c))}
-              </div>
-            </PresenceFold>
-          );
-        })}
-      </AnimatePresence>
+    <>
+      {/* A comment that comes or goes while the list shows (written,
+          resolved, reopened) folds in or out. Each fold carries the room
+          under it, so the gap closes with the card rather than after it. */}
+      {!nothingHere && (
+        <div role="list">
+          <AnimatePresence initial={false}>
+            {draftCard && (
+              <PresenceFold key="draft" appear className="pb-1.5">
+                {draftCard}
+              </PresenceFold>
+            )}
+            {shown.map((c) => {
+              const expanded = expandedId === c.comment_id;
+              return (
+                <PresenceFold key={c.comment_id} appear className="pb-1.5">
+                  <div role="listitem" ref={expanded ? setExpandedRow : undefined}>
+                    {renderCard(c, expanded, () => onToggle(c))}
+                  </div>
+                </PresenceFold>
+              );
+            })}
+          </AnimatePresence>
+        </div>
+      )}
+      {elsewhere && others.length > 0 && (
+        <OtherTimeframes elsewhere={elsewhere} shown={others} filter={filter} noneHere={nothingHere} />
+      )}
+    </>
+  );
+
+  // Said instead of an empty list, which would read as no comments at all.
+  const failure = failed && (
+    <div role="alert" className="flex items-center gap-2 px-1.5 py-2 text-[12.5px]" style={{ color: 'var(--color-icon-danger)' }}>
+      <span className="min-w-0 flex-1">{t('pageViewer:comments.loadFailed')}</span>
+      <button type="button" className="page-comment-retry shrink-0" onClick={failed.onRetry}>
+        {t('common.retry')}
+      </button>
     </div>
   );
 
@@ -187,7 +213,7 @@ export function CommentList({
             </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />
             {/* Its icon takes the checks' column, so every label starts at one x. */}
-            <DropdownMenuItem disabled={counts.unread === 0} onSelect={onMarkAllRead}>
+            <DropdownMenuItem disabled={!onMarkAllRead} onSelect={onMarkAllRead ?? undefined}>
               <CheckCheck className="h-3.5 w-3.5 shrink-0" aria-hidden />
               {t('pageViewer:comments.markAllRead')}
             </DropdownMenuItem>
@@ -206,9 +232,12 @@ export function CommentList({
       <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto px-2 pt-0.5 pb-0.5">
         {/* The other filter's comments crossfade in, taking their own height
             at once so the scroller never holds the taller list's. */}
-        <SwapCell as="div" sizeToIncoming swapKey={empty ? `${filter}:empty` : filter}>
-          {body}
-        </SwapCell>
+        {failure}
+        {failed && empty ? null : (
+          <SwapCell as="div" sizeToIncoming swapKey={empty ? `${filter}:empty` : nothingHere ? `${filter}:elsewhere` : filter}>
+            {body}
+          </SwapCell>
+        )}
       </div>
     </motion.aside>
   );
@@ -276,3 +305,4 @@ export function DraftCard({ label, quote, tag, onLeave, onEscape, children }: Dr
     </div>
   );
 }
+

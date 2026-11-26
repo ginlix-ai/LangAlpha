@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowUp, Check, MessageSquare, MessageSquarePlus } from 'lucide-react';
+import { ArrowUp, Check, CircleAlert, MessageSquare, MessageSquarePlus } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { InPlaceSwap, SwapCell } from '@/components/ui/crossfade';
-import { useArtifactComments, useArtifactRecord } from '@/hooks/useArtifact';
+import { readFailed, useArtifactComments, useArtifactRecord } from '@/hooks/useArtifact';
 import { useLocale } from '@/hooks/useLocale';
 import { ALL, refreshArtifactComments } from '@/lib/artifactCache';
 import { unreadComments } from '@/lib/artifactCommentReads';
@@ -23,6 +23,7 @@ import { queuedBatches, refusalReason, sendBatches, type BatchOutcome } from '..
 import { SendingGlyph } from './SendingGlyph';
 import { sameTarget, targetKey, threadOf } from '../../../artifactComments/destinations';
 import { useCommentDestinations } from '../../../artifactComments/useCommentDestinations';
+import { useOtherTimeframeRecords } from '../../../artifactComments/useOtherTimeframes';
 import type { CommentUi } from './useCommentUi';
 import './CommentTools.css';
 
@@ -130,17 +131,23 @@ function CountBadge({ text, count, fold, className, title }: {
  * not read. Mounted once the comments are in, so the counts a tab opens with
  * draw settled, and only a change after that moves.
  */
-function Counts({ open, unread, bar }: { open: number; unread: number; bar: boolean }): React.ReactElement {
+function Counts({ open, unread, bar, failed = false }: { open: number; unread: number; bar: boolean; failed?: boolean }): React.ReactElement {
   const { t } = useTranslation();
   const space = bar ? 'pl-1.5' : 'pl-1';
   return (
     <AnimatePresence initial={false}>
-      {open > 0 && (
+      {/* No count where the comments could not be read, which would read as none. */}
+      {failed && (
+        <Grow key="failed" space={space}>
+          <CircleAlert className="h-3 w-3" style={{ color: 'var(--color-icon-danger)' }} aria-hidden />
+        </Grow>
+      )}
+      {!failed && open > 0 && (
         <Grow key="open" space={space}>
           <Tally n={open} />
         </Grow>
       )}
-      {unread > 0 && (
+      {!failed && unread > 0 && (
         <Grow key="unread" space={space}>
           <CountBadge
             className="page-comment-unread-badge"
@@ -237,6 +244,15 @@ function SendAll({ comments, artifactId, workspaceId, doc, sends, bar, besideHol
     return () => clearTimeout(timer);
   }, [outcome]);
 
+  // Where Send all takes them, named as the "To:" menu names each thread.
+  const goesTo = [...new Set(
+    queuedBatches(queued.map((c) => ({ ...c, workspace_id: workspaceId })), destinations.targetFor).map(({ to, comments: batch }) =>
+      destinations.nameOf(to, 'threadId' in to ? batch.find((c) => c.thread_id === to.threadId)?.thread_title : null)),
+  )];
+  const sendAllTitle = goesTo.length > 0
+    ? t('pageViewer:comments.sendAllTo', { count: queued.length, threads: formatList(goesTo, locale) })
+    : t('pageViewer:comments.sendAllTitle', { count: queued.length });
+
   const sendAll = () => {
     if (busy) return;
     // A card already sending its comment keeps that send.
@@ -292,7 +308,7 @@ function SendAll({ comments, artifactId, workspaceId, doc, sends, bar, besideHol
                     aria-disabled={busy || undefined}
                     // Its name where its words fold away.
                     aria-label={busy ? t('pageViewer:comments.sending') : t('pageViewer:comments.sendAll')}
-                    title={t('pageViewer:comments.sendAllTitle', { count: queued.length })}
+                    title={sendAllTitle}
                     onClick={sendAll}
                   >
                     <InPlaceSwap
@@ -336,18 +352,27 @@ export function CommentTools({
   const rootDir = useWorkspaceFolders()?.rootDir;
   const opened = targetFor(target.kind, target.path, rootDir);
   const doc: ArtifactTarget = { kind: opened.kind, path: ui.docOf(tabId, opened.path) };
-  const { data: artifact } = useArtifactRecord(workspaceId, doc);
+  const recordQuery = useArtifactRecord(workspaceId, doc);
+  const artifact = recordQuery.data;
   const commentsQuery = useArtifactComments(artifact?.artifact_id);
   const comments = artifact === null ? NONE : commentsQuery.data;
-  const open = comments ? openComments(comments).length : 0;
-  const unread = comments ? unreadComments(comments) : 0;
+  // A chart counts every timeframe of its ticker, each kept on a record of
+  // its own: its pins show only on their own, so the count says what the
+  // others hold. This timeframe's comes from its comments, which move first.
+  const others = useOtherTimeframeRecords(workspaceId, doc, variant === 'chart');
+  const open = (comments ? openComments(comments).length : 0) + others.records.reduce((n, c) => n + c.open_comments, 0);
+  const unread = (comments ? unreadComments(comments) : 0) + others.records.reduce((n, c) => n + c.unread, 0);
+  const failed = readFailed(recordQuery) || readFailed(commentsQuery) || others.failed;
   const mode = ui.modeTab === tabId && !modeDisabled;
   const listOpen = ui.listTab === tabId;
   const openLabel = t('pageViewer:comments.listLabel', { count: open });
-  const listLabel = unread > 0
-    ? t('pageViewer:comments.listLabelUnread', { label: openLabel, unread: t('pageViewer:comments.unreadTitle', { count: unread }) })
-    : openLabel;
-  const counts = comments && <Counts open={open} unread={unread} bar={variant === 'bar'} />;
+  const listLabel = failed
+    ? t('pageViewer:comments.loadFailedLabel')
+    : unread > 0
+      ? t('pageViewer:comments.listLabelUnread', { label: openLabel, unread: t('pageViewer:comments.unreadTitle', { count: unread }) })
+      : openLabel;
+  // Drawn once there is something to say: the counts, or that they could not be read.
+  const counts = (comments || failed) && <Counts open={open} unread={unread} bar={variant === 'bar'} failed={failed} />;
   const sendAll = comments && artifact && (
     <SendAll
       comments={comments}

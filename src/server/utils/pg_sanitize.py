@@ -65,14 +65,14 @@ def uuid_text(value: str) -> str:
     return normalized
 
 
-def _drop_non_finite(value: Any) -> Any:
+def drop_non_finite(value: Any) -> Any:
     """Recursively replace non-finite floats (NaN/Inf) with None."""
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, dict):
-        return {k: _drop_non_finite(v) for k, v in value.items()}
+        return {k: drop_non_finite(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_drop_non_finite(v) for v in value]
+        return [drop_non_finite(v) for v in value]
     return value
 
 
@@ -81,7 +81,7 @@ def finite_json_dumps(value: Any, **kwargs: Any) -> str:
 
     Fast path: single dumps with allow_nan=False; only on the non-finite
     ValueError does it pay one tree walk to null out non-finite floats. Other
-    ValueErrors (circular reference) re-raise — _drop_non_finite would recurse
+    ValueErrors (circular reference) re-raise — drop_non_finite would recurse
     forever on them.
     """
     try:
@@ -89,7 +89,7 @@ def finite_json_dumps(value: Any, **kwargs: Any) -> str:
     except ValueError as e:
         if "Out of range float" not in str(e):
             raise
-        return json.dumps(_drop_non_finite(value), allow_nan=False, **kwargs)
+        return json.dumps(drop_non_finite(value), allow_nan=False, **kwargs)
 
 
 def _safe_dumps(value: Any) -> str:

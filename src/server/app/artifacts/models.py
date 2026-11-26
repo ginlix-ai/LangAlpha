@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -16,7 +15,7 @@ from chartkit.schema import (
     Title,
     parse_time,
 )
-from fastapi import HTTPException
+from fastapi.exceptions import RequestValidationError
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -30,6 +29,7 @@ from pydantic import (
 )
 
 from src.server.database.artifacts import RecordKind, one_line
+from src.server.database.artifacts.comments import PICTURE_PATH
 from src.server.services.artifacts import snapshot
 from src.server.utils.pg_sanitize import uuid_text
 
@@ -96,6 +96,10 @@ class ArtifactLookupResponse(BaseModel):
     artifact: ArtifactResponse | None
 
 
+class ChartRecordsResponse(BaseModel):
+    charts: list[ArtifactResponse]
+
+
 #: Room for a symbol, a colon and a timeframe; ``normalize_chart_id`` judges it.
 CHART_ID_CHARS = 64
 
@@ -154,6 +158,11 @@ class DestinationsResponse(BaseModel):
     bound: ArtifactThreadResponse | None
     beside: ArtifactThreadResponse | None
     creator: ArtifactThreadResponse | None
+    #: The Home a new Chief of Staff thread may take a comment in: the
+    #: owner's, for a file the caller owns. Null for a chart, whose comments
+    #: stay with its workspace, and for a member of a shared workspace, whose
+    #: Home is not the owner's.
+    home_workspace_id: str | None = None
 
 
 class ShareFileEntryResponse(BaseModel):
@@ -302,19 +311,18 @@ def _anchor_text(limit: int):
     return Field(default=None, max_length=limit)
 
 
+#: Every part of an anchor: nothing it does not name, and only finite
+#: numbers. A body is read by Python's JSON, which takes a raw ``NaN`` or
+#: ``Infinity``, and none of them places anything or can be stored as JSONB.
+_ANCHOR_CONFIG = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
 class AnchorPoint(BaseModel):
     """Where on the anchored element the pin sits, for drawing it again."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _ANCHOR_CONFIG
     x: float
     y: float
-
-    @field_validator("x", "y")
-    @classmethod
-    def _finite(cls, v: float) -> float:
-        if not math.isfinite(v):
-            raise ValueError("must be finite")
-        return v
 
 
 def _ascending(v: str) -> str:
@@ -336,7 +344,7 @@ class AreaElement(BaseModel):
     """One element of an area, named as an element anchor names it, or a
     Markdown block as a block anchor names it."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _ANCHOR_CONFIG
     lines: SourceLines | None = None
     path: str | None = _anchor_text(1000)
     label: str | None = _anchor_text(300)
@@ -356,7 +364,7 @@ _MAX_ROW = 1048576
 class CellRange(BaseModel):
     """A range of a sheet's cells and the values it showed, in reading order."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _ANCHOR_CONFIG
     range: str = Field(
         max_length=32,
         pattern=r"^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$",
@@ -380,16 +388,11 @@ class CellRange(BaseModel):
 class AreaRect(BaseModel):
     """Where an area sat, as fractions of the document's scroll size."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _ANCHOR_CONFIG
     x: float = Field(ge=0, le=1)
     y: float = Field(ge=0, le=1)
     w: float = Field(ge=0, le=1)
     h: float = Field(ge=0, le=1)
-
-
-#: Where a box's picture is written for the agent: the workspace's own
-#: comments folder, so a stored path can only name a picture the app wrote.
-_PICTURE_PATH = r"^\.agents/comments/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.(png|jpg|jpeg)$"
 
 
 class RegionBox(BaseModel):
@@ -398,13 +401,13 @@ class RegionBox(BaseModel):
     of the box written for the agent, absent for a point or where it could
     not be written."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _ANCHOR_CONFIG
     page: int | None = Field(default=None, ge=1, le=100_000)
     x: float = Field(ge=0, le=1)
     y: float = Field(ge=0, le=1)
     w: float = Field(ge=0, le=1)
     h: float = Field(ge=0, le=1)
-    picture: str | None = Field(default=None, pattern=_PICTURE_PATH)
+    picture: str | None = Field(default=None, pattern=PICTURE_PATH)
 
     @model_validator(mode="after")
     def _on_its_surface(self) -> RegionBox:
@@ -418,8 +421,6 @@ class RegionBox(BaseModel):
         return self
 
 
-#: A mark's prices are finite, as a chart layer's are.
-_MARK_CONFIG = ConfigDict(extra="forbid", allow_inf_nan=False)
 #: Past any price a chart plots, and short of the digits a huge one would
 #: print where the agent reads it back.
 MarkPrice = Annotated[float, Field(ge=-1e12, le=1e12)]
@@ -429,13 +430,13 @@ class ChartRegionMark(BaseModel):
     """A span of a chart's time and price. ``picture`` is the chart cut to it,
     written for the agent where it could be."""
 
-    model_config = _MARK_CONFIG
+    model_config = _ANCHOR_CONFIG
     type: Literal["region"]
     start: LayerTime
     end: LayerTime
     low: MarkPrice
     high: MarkPrice
-    picture: str | None = Field(default=None, pattern=_PICTURE_PATH)
+    picture: str | None = Field(default=None, pattern=PICTURE_PATH)
 
     @model_validator(mode="after")
     def _forwards(self) -> ChartRegionMark:
@@ -449,7 +450,7 @@ class ChartRegionMark(BaseModel):
 class ChartPointMark(BaseModel):
     """A click on an empty part of the chart: a time and a price."""
 
-    model_config = _MARK_CONFIG
+    model_config = _ANCHOR_CONFIG
     type: Literal["point"]
     time: LayerTime
     price: MarkPrice
@@ -463,7 +464,7 @@ class ChartElementMark(BaseModel):
     with where the user clicked on it. ``index`` is its place in that kind's
     list, which finds it when it has no id or name."""
 
-    model_config = _MARK_CONFIG
+    model_config = _ANCHOR_CONFIG
     type: Literal["element"]
     layer: Annotated[str, Field(pattern=LAYER_ID_PATTERN)]
     layer_title: Title
@@ -523,7 +524,7 @@ class CommentAnchor(BaseModel):
     read off the file or the chart's layers; the comment's own path names the
     file or the chart."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _ANCHOR_CONFIG
 
     @model_validator(mode="before")
     @classmethod
@@ -702,13 +703,23 @@ class CreateCommentRequest(BaseModel):
 
     def check_against(self, kind: RecordKind) -> None:
         """Refuse an anchor of the other kind of record: a chart's marks find
-        nothing in a file, and a file's anchor nothing on a chart."""
+        nothing in a file, and a file's anchor nothing on a chart. Refused as
+        the body's own validation refuses, so a client reads one shape of 422."""
         if (self.anchor.kind == "chart") != (kind == "chart"):
-            raise HTTPException(
-                status_code=422,
-                detail="A chart takes a chart anchor"
+            reason = (
+                "a chart takes a chart anchor"
                 if kind == "chart"
-                else "A file takes no chart anchor",
+                else "a file takes no chart anchor"
+            )
+            raise RequestValidationError(
+                [
+                    {
+                        "type": "value_error",
+                        "loc": ("body", "anchor", "kind"),
+                        "msg": f"Value error, {reason}",
+                        "input": self.anchor.kind,
+                    }
+                ]
             )
 
     def file_fields(self, kind: RecordKind) -> tuple[str | None, str | None]:

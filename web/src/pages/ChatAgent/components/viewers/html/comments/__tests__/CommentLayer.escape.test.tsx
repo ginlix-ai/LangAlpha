@@ -28,7 +28,7 @@ import CommentLayer from '../CommentLayer';
 function setup() {
   let send: (message: PageToViewer) => void = () => {};
   const post = vi.fn();
-  const ui = { modeTab: 't', listTab: null, showDoc: () => () => {}, showWriting: () => {}, setList: vi.fn(), setMode: vi.fn() };
+  const ui = { modeTab: 't', listTab: null, showDoc: () => () => {}, setList: vi.fn(), setMode: vi.fn() };
   const bridge = {
     session: 's',
     path: 'r.html',

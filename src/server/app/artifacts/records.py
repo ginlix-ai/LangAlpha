@@ -12,6 +12,7 @@ workspace's managers allow (``shared_workspaces.share_out``)."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
@@ -27,6 +28,8 @@ from src.server.app.artifacts.models import (
     AudienceRequest,
     ArtifactVersionResponse,
     BindRequest,
+    CHART_ID_CHARS,
+    ChartRecordsResponse,
     DefaultDestination,
     DestinationsResponse,
     DriftResponse,
@@ -44,8 +47,9 @@ from src.server.services.workspace_files import owner_work_dir
 from src.server.database import artifacts as artifacts_db
 from src.server.database.artifacts import Artifact, RecordKind
 from src.server.database.conversation import thread_reach
+from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.share_codes import share_path
-from src.server.models.chart_layer import normalize_chart_id
+from src.server.models.chart_layer import normalize_chart_id, normalize_chart_symbol
 from src.server.services.artifacts import snapshot
 from src.server.services.artifacts.events import publish_artifact_change
 from src.server.services.artifacts.grants import (
@@ -237,6 +241,30 @@ def artifact_path(workspace: dict[str, Any], path: str) -> tuple[str, str]:
     return str(workspace["workspace_id"]), relative
 
 
+async def _reached_workspace(
+    workspace_id: str, user_id: str, *, on_computer: bool
+) -> dict[str, Any]:
+    """The workspace row, its owner's or a shared workspace's member's.
+    Another user's workspace, or a deleted one, is not found, as every owner
+    route answers. Only a file's routes need it on a computer: a chart is no
+    file."""
+    from src.server.database.workspace import get_workspace
+
+    try:
+        if on_computer:
+            workspace, _ = await reached_workspace_on_computer(workspace_id, user_id)
+        else:
+            workspace = await get_workspace(workspace_id)
+            await workspace_access(workspace, user_id)
+    except HTTPException as e:
+        if e.status_code == 403:
+            raise not_found("Workspace") from None
+        raise
+    if workspace.get("status") == "deleted":
+        raise not_found("Workspace")
+    return workspace
+
+
 async def _record_key(
     workspace_id: str, place: ArtifactPathRequest, user_id: str
 ) -> tuple[str, RecordKind, str, str]:
@@ -252,20 +280,9 @@ async def _record_key(
             raise HTTPException(
                 status_code=400, detail="A chart is named SYMBOL:timeframe"
             )
-    from src.server.database.workspace import get_workspace
-
-    try:
-        if chart_id is None:
-            workspace, _ = await reached_workspace_on_computer(workspace_id, user_id)
-        else:
-            workspace = await get_workspace(workspace_id)
-            await workspace_access(workspace, user_id)
-    except HTTPException as e:
-        if e.status_code == 403:
-            raise not_found("Workspace") from None
-        raise
-    if workspace.get("status") == "deleted":
-        raise not_found("Workspace")
+    workspace = await _reached_workspace(
+        workspace_id, user_id, on_computer=chart_id is None
+    )
     owner_id = str(workspace["user_id"])
     if chart_id is not None:
         return str(workspace["workspace_id"]), "chart", chart_id, owner_id
@@ -290,6 +307,33 @@ async def find_artifact(
     artifact = await artifacts_db.find_record(ws_id, kind, key)
     return ArtifactLookupResponse(
         artifact=await _response(artifact, owner_id, x_user_id) if artifact else None
+    )
+
+
+@workspace_router.get(
+    "/{workspace_id}/artifacts/charts", response_model=ChartRecordsResponse
+)
+async def find_chart_records(
+    workspace_id: str,
+    x_user_id: CurrentUserId,
+    symbol: str = Query(
+        ..., min_length=1, max_length=CHART_ID_CHARS, description="A chart's symbol."
+    ),
+) -> ChartRecordsResponse:
+    """Every chart record the workspace holds for the symbol, one per
+    timeframe it has one for, by chart id. Never makes one."""
+    normalized = normalize_chart_symbol(symbol)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail="Not a chart's symbol")
+    workspace = await _reached_workspace(workspace_id, x_user_id, on_computer=False)
+    owner_id = str(workspace["user_id"])
+    records = await artifacts_db.list_chart_records(
+        str(workspace["workspace_id"]), normalized
+    )
+    return ChartRecordsResponse(
+        charts=await asyncio.gather(
+            *(_response(record, owner_id, x_user_id) for record in records)
+        )
     )
 
 
@@ -439,6 +483,11 @@ async def get_destinations(
         bound=_thread(found.bound),
         beside=_thread(found.beside),
         creator=_thread(found.creator),
+        home_workspace_id=(
+            get_home_workspace_id(access.owner_id)
+            if found.artifact.kind == "file" and not access.is_shared
+            else None
+        ),
     )
 
 

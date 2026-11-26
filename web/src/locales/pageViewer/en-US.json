@@ -75,7 +75,6 @@
     "discardConfirm": "Discard this comment?",
     "cancelDraft": "Cancel this comment",
     "cancelDraftTitle": "Cancel (Esc)",
-    "discardOnSwitch": "Switching drops the comment you're writing on this chart.",
     "keepWriting": "Keep writing",
     "discard": "Discard",
     "pinPreview": "#{{number}} · {{words}}",
@@ -122,6 +121,20 @@
     "sentAllPartNew": "{{count}} to a new thread",
     "sentAll": "Sent {{parts}}",
     "sentShort": "Sent",
-    "notSentCount": "{{count}} not sent"
+    "notSentCount": "{{count}} not sent",
+    "newChiefOfStaff": "New Chief of Staff chat",
+    "loadFailed": "Couldn't load the comments.",
+    "loadFailedLabel": "Comments couldn't load",
+    "emptyOpenOn": "No open comments on {{timeframe}}.",
+    "emptyUnreadOn": "No new replies on {{timeframe}}.",
+    "emptyResolvedOn": "No resolved comments on {{timeframe}}.",
+    "emptyAllOn": "No comments on {{timeframe}}.",
+    "otherTimeframesCount_one": "{{count}} on another timeframe:",
+    "otherTimeframesCount_other": "{{count}} on other timeframes:",
+    "emptyHereElsewhere": "{{none}} {{elsewhere}}",
+    "otherTimeframes": "On other timeframes",
+    "showOnTimeframe": "Show it on {{timeframe}}",
+    "sendAllTo_one": "Send the queued comment to {{threads}} now",
+    "sendAllTo_other": "Send {{count}} queued comments to {{threads}} now"
   }
 }

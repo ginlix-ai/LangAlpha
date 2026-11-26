@@ -43,7 +43,7 @@ export function threadOf(target: CommentTarget | null): string | null {
 
 /** A target's identity, to tell a pick from the default and to dedupe the menu. */
 export function targetKey(target: CommentTarget): string {
-  return 'threadId' in target ? `thread:${target.threadId}` : 'new';
+  return 'threadId' in target ? `thread:${target.threadId}` : `new:${target.newThreadIn}`;
 }
 
 /** A thread as the menus name it: the one beside as "This thread", else its title. */
@@ -72,6 +72,8 @@ export interface CommentDestinations {
   choices: DestinationChoice[];
   /** Binding the file to the thread beside would change where its comments go. */
   canBind: boolean;
+  /** A destination as the "To:" menu names it; one the menu leaves out (a comment's own thread) by its `title`. */
+  nameOf: (target: CommentTarget, title?: string | null) => string;
   /**
    * Where `intent` takes the words: a new comment's (`comment` null) to the
    * thread picked in its "To:" menu, else the default; an existing one's to
@@ -115,6 +117,11 @@ export function commentDestinations(
       : { newThreadIn: destinations.default.workspace_id };
 
   const choices: DestinationChoice[] = [];
+  const nameOf = (target: CommentTarget, title: string | null = null): string =>
+    choices.find((c) => c.key === targetKey(target))?.label
+    ?? ('threadId' in target
+      ? threadLabel(t, { thread_id: target.threadId, title }, besideThreadId)
+      : t(sameTarget(beside, target) ? 'pageViewer:comments.thisThread' : 'pageViewer:comments.newThread'));
   if (destinations) {
     const add = (target: CommentTarget, label: string, isDefault: boolean) => {
       const key = targetKey(target);
@@ -126,10 +133,18 @@ export function commentDestinations(
     if (destinations.default.thread) addThread(destinations.default.thread, true);
     else {
       const fresh = { newThreadIn: destinations.default.workspace_id };
-      add(fresh, t(sameTarget(beside, fresh) ? 'pageViewer:comments.thisThread' : 'pageViewer:comments.newThread'), true);
+      add(fresh, nameOf(fresh), true);
     }
     addThread(destinations.beside);
     addThread(destinations.bound);
+    // A file's comment can also start a Chief of Staff chat, in the Home the
+    // server names. Already there where the default is a new thread in Home;
+    // beside a new Chief of Staff chat it is that chat's first message.
+    const home = destinations.home_workspace_id;
+    if (home) {
+      const chief = { newThreadIn: home };
+      add(chief, t(sameTarget(beside, chief) ? 'pageViewer:comments.thisThread' : 'pageViewer:comments.newChiefOfStaff'), false);
+    }
   }
 
   // The server names the thread beside only when the owner may send there.
@@ -149,5 +164,5 @@ export function commentDestinations(
     return 'threadId' in to ? { kind: 'queue', threadId: to.threadId } : null;
   };
 
-  return { fallback, choices, canBind, targetFor };
+  return { fallback, choices, canBind, nameOf, targetFor };
 }

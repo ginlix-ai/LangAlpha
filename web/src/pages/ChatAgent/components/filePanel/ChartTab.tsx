@@ -1,6 +1,7 @@
 import React, { Suspense, useCallback, useMemo } from 'react';
 import { ExternalLink, TextSelect } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { chartParts } from '@/lib/bars/chartId';
 import { ChartToolButton } from '@/pages/MarketView/components/ChartToolButton';
 import { QuoteListDrawer } from '@/pages/MarketView/components/quoteList/QuoteListDrawer';
 import type { ContextPayload } from '@/components/ui/chat-input.types';
@@ -70,10 +71,19 @@ export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketV
     [onOpenInMarketView, symbol, timeframe, tab.workspaceId],
   );
 
-  const comments = useMemo(
-    () => (commentUi ? { ui: commentUi, tabId: id, active } : null),
-    [commentUi, id, active],
-  );
+  // A comment on another of the chart's timeframes, from its list, comes
+  // forward as one the chat names does: the tab moves to that timeframe and
+  // the layer opens its card once its pin is placed.
+  const comments = useMemo(() => {
+    if (!commentUi) return null;
+    const openComment = (chartId: string, commentId: string) => {
+      const chart = chartParts(chartId);
+      if (!chart) return;
+      rememberInterval(chart.timeframe);
+      commentUi.requestFocus({ kind: 'chart', path: chartId, commentId });
+    };
+    return { ui: commentUi, tabId: id, active, openComment };
+  }, [commentUi, id, active, rememberInterval]);
 
   const headerActions = useMemo(() => (
     <>

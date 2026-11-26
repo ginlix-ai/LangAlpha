@@ -96,14 +96,24 @@ _NOT_A_PATH = re.compile(r"(^/|(^|/)\.\.?(/|$)|//)")
 
 def normalize_chart_id(value: str) -> str | None:
     """``SYMBOL:timeframe`` as ``ChartRef`` spells it, so one chart is always
-    named alike, or None when it names no chart: a symbol a layer would refuse,
-    one holding the colon that ends it, one a stored path may not be, or one
-    with an invisible format character (``Cf``, a zero-width space or a
-    direction mark), which would make a look-alike second record."""
+    named alike, or None when it names no chart (``normalize_chart_symbol``,
+    or a timeframe a chart does not draw)."""
     symbol, sep, timeframe = value.strip().rpartition(":")
     if not sep or timeframe not in TIMEFRAMES:
         return None
-    symbol = normalize_symbol(symbol)
+    symbol = normalize_chart_symbol(symbol)
+    if symbol is None:
+        return None
+    return make_chart_id(symbol, timeframe)
+
+
+def normalize_chart_symbol(value: str) -> str | None:
+    """A chart id's symbol as ``normalize_chart_id`` spells it, or None when
+    no chart could be named by it: a symbol a layer would refuse, one holding
+    the colon that ends it, one a stored path may not be, or one with an
+    invisible format character (``Cf``, a zero-width space or a direction
+    mark), which would make a look-alike second record."""
+    symbol = normalize_symbol(value.strip())
     try:
         _SYMBOL.validate_python(symbol)
     except ValidationError:
@@ -112,7 +122,7 @@ def normalize_chart_id(value: str) -> str | None:
         return None
     if any(unicodedata.category(c) == "Cf" for c in symbol):
         return None
-    return make_chart_id(symbol, timeframe)
+    return symbol
 
 
 def layer_number(x: float) -> str:

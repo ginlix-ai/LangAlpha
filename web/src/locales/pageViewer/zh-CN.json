@@ -73,7 +73,6 @@
     "discardConfirm": "放弃这条评论？",
     "cancelDraft": "取消这条评论",
     "cancelDraftTitle": "取消（Esc）",
-    "discardOnSwitch": "切换会放弃你正在这张图表上写的评论。",
     "keepWriting": "继续编辑",
     "discard": "放弃",
     "pinPreview": "#{{number}} · {{words}}",
@@ -115,6 +114,18 @@
     "sentAllPartNew": "{{count}} 条发往新对话",
     "sentAll": "已发送：{{parts}}",
     "sentShort": "已发送",
-    "notSentCount": "{{count}} 条未发送"
+    "notSentCount": "{{count}} 条未发送",
+    "newChiefOfStaff": "Chief of Staff Agent 的新对话",
+    "loadFailed": "评论加载失败。",
+    "loadFailedLabel": "评论加载失败",
+    "emptyOpenOn": "{{timeframe}} 周期没有未解决的评论。",
+    "emptyUnreadOn": "{{timeframe}} 周期没有新回复。",
+    "emptyResolvedOn": "{{timeframe}} 周期没有已解决的评论。",
+    "emptyAllOn": "{{timeframe}} 周期还没有评论。",
+    "otherTimeframesCount_other": "其他周期有 {{count}} 条：",
+    "emptyHereElsewhere": "{{none}}{{elsewhere}}",
+    "otherTimeframes": "其他周期",
+    "showOnTimeframe": "切换到 {{timeframe}} 周期查看",
+    "sendAllTo_other": "立即把 {{count}} 条待发送评论发往 {{threads}}"
   }
 }

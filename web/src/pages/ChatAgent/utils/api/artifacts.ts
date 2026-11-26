@@ -66,6 +66,12 @@ export async function ensureArtifact(workspaceId: string, target: ArtifactTarget
   return asRecord(data);
 }
 
+/** The record of each timeframe of `symbol`'s chart the workspace has, each with its own counts. */
+export async function listSymbolCharts(workspaceId: string, symbol: string): Promise<Artifact[]> {
+  const { data } = await api.get<{ charts: Wire<Artifact>[] }>(`${workspaceArtifactsPath(workspaceId)}/charts`, { params: { symbol } });
+  return data.charts.map(asRecord);
+}
+
 /** 404 when it is not the caller's. */
 export async function getArtifact(artifactId: string): Promise<Artifact> {
   const { data } = await api.get<Wire<Artifact>>(artifactPath(artifactId));
