@@ -1,13 +1,15 @@
 import { act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getChanges } from '@/api/drive';
+import { getChanges, getVersionText } from '@/api/drive';
 import { renderHookWithProviders } from '@/test/utils';
-import type { DriveChanges, DriveEntry } from '@/types/drive';
-import { CHANGES_POLL_MS, useDriveChanges } from '../useDrive';
+import { queryKeys } from '@/lib/queryKeys';
+import type { DriveChanges, DriveEntry, DriveVersionText } from '@/types/drive';
+import { CHANGES_POLL_MS, useDriveChanges, useDriveVersionText } from '../useDrive';
 
 vi.mock('@/api/drive', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/drive')>()),
   getChanges: vi.fn(),
+  getVersionText: vi.fn(),
 }));
 
 const entry = { id: 'e1', path: 'a.md' } as DriveEntry;
@@ -87,6 +89,15 @@ describe('useDriveChanges', () => {
     expect(sinces()).toEqual([10, 50]);
   });
 
+  it("asks again who wrote a changed memo's lines, kept apart from the space: a clear elsewhere leaves its head as it was", async () => {
+    vi.mocked(getChanges).mockResolvedValueOnce(answer(5, [entry])).mockResolvedValueOnce(answer(6, [], true)).mockResolvedValue(answer(6));
+    const { invalidate } = follow(4);
+    await advance(0);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['drive', 'attribution', 'personal', 'e1'] });
+    await advance(CHANGES_POLL_MS);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['drive', 'attribution', 'personal'] });
+  });
+
   it('reads nothing again while the cursor stays where it was', async () => {
     vi.mocked(getChanges).mockResolvedValue(answer(10));
     const { onChanged, invalidate } = follow(10);
@@ -154,5 +165,21 @@ describe('useDriveChanges', () => {
     unmount();
     await advance(CHANGES_POLL_MS * 3);
     expect(sinces()).toEqual([10]);
+  });
+});
+
+describe('useDriveVersionText', () => {
+  const read = (status: DriveVersionText['status']): DriveVersionText => ({ seq: 2, sha256: 'b', source: 'extracted', status, text: status === 'ok' ? 'text' : null, truncated: false });
+
+  it.each([['failed', true], ['ok', false], ['empty', false]] as const)('a %s read goes stale: %s', async (status, stale) => {
+    vi.mocked(getVersionText).mockResolvedValue(read(status));
+    const { queryClient } = renderHookWithProviders(() => useDriveVersionText('personal', 'e1', 'report.pdf', { seq: 2, sha: 'b' }));
+    await advance(0);
+    const query = queryClient.getQueryCache().find({ queryKey: queryKeys.drive.versionText('personal', 'e1', 'report.pdf', 2, 'b') })!;
+    expect((query.state.data as DriveVersionText).status).toBe(status);
+    expect(query.isStale()).toBe(false);
+    // The server tries a failed read again later, so only that answer is asked for again.
+    await advance(61_000);
+    expect(query.isStale()).toBe(stale);
   });
 });

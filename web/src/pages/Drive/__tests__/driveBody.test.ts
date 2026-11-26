@@ -19,7 +19,7 @@ vi.mock('@/lib/rangedRead', async (importOriginal) => ({
 function file(name: string, size: number, version = 3): DriveEntry {
   return {
     id: 'e1', path: name, name, kind: 'file', size, sha256: 'a'.repeat(64), content_type: null, is_text: name.endsWith('.md'),
-    version, created_at: '2026-11-01T00:00:00Z', modified_at: '2026-11-01T00:00:00Z', modified_by: null, deleted_at: null,
+    version, created_at: '2026-11-01T00:00:00Z', modified_at: '2026-11-01T00:00:00Z', modified_by: null, deleted_at: null, memo: null, undo_until: null,
   };
 }
 
