@@ -39,6 +39,9 @@ _MCP_SHARED_RUNTIME_FILES: tuple[str, ...] = (
     "_dates.py",
     "_envelope.py",
     "_extract.py",
+    "_ownership.py",
+    "_ownership_direct.py",
+    "_ownership_tools.py",
     "_schemas.py",
     "_yf_common.py",
 )

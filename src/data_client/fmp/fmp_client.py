@@ -477,6 +477,15 @@ class FMPClient:
             "insider-trading/search", params={"symbol": symbol, "limit": limit}
         )
 
+    async def get_institutional_holders(
+        self, symbol: str, year: int, quarter: int, page: int = 0, limit: int = 100
+    ) -> List[Dict]:
+        """One page of the 13F holders FMP extracted for a quarter (it serves at most 100 a page)."""
+        return await self._make_request(
+            "institutional-ownership/extract-analytics/holder",
+            params={"symbol": symbol, "year": year, "quarter": quarter, "page": page, "limit": limit},
+        )
+
     async def get_insider_trade_stats(self, symbol: str) -> List[Dict]:
         return await self._make_request(
             "insider-trading/statistics", params={"symbol": symbol}

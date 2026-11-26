@@ -32,6 +32,7 @@ from edgar_engine.filings import FilingRef, base_form, companyfacts_labels, refs
 from edgar_engine.statements import Financials
 from edgar_engine.submission import TruncatedSubmission
 
+from src.data_client.edgar_access import edgar_identity
 from src.data_client.ginlix_data.sec_filings import FilingCalendar, sec_filings_client
 
 from . import indexed
@@ -40,10 +41,7 @@ from .types import EIGHT_K_FORMS, PERIODIC_FORMS
 
 logger = logging.getLogger(__name__)
 
-if not os.getenv("EDGAR_IDENTITY"):
-    logger.warning("EDGAR_IDENTITY is not set: SEC asks every client to name itself with a name and an email "
-                   "(\"Jane Doe jane@example.com\"), and may block requests without one")
-    os.environ["EDGAR_IDENTITY"] = "OpenSource user@example.com"
+edgar_identity()
 
 #: EDGAR's recent page holds at least the last year or this many filings, so a page this long that starts within
 #: the 8-K window may not reach back to its start.

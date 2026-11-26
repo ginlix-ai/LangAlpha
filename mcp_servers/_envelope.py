@@ -51,6 +51,7 @@ ERROR_CODES = frozenset(
         "rate_limited",
         "upstream_error",
         "client_unavailable",
+        "rebuilt",
     }
 )
 
@@ -165,3 +166,21 @@ def error_from_exception(
             str(exc), status=getattr(exc, "status_code", None), **context
         )
     return make_error("upstream_error", fallback_detail, **context)
+
+
+def page_error(limit: int, offset: int, most: int, **context: Any) -> Optional[dict[str, Any]]:
+    """``invalid_argument`` for a paged read's ``limit`` outside 1 to *most* or a negative ``offset``, naming the
+    argument and its range; None when both are in range. A limit over the cap is refused, never clamped."""
+    if not 1 <= limit <= most:
+        return make_error("invalid_argument", f"limit must be between 1 and {most}, not {limit}", **context)
+    if offset < 0:
+        return make_error("invalid_argument", f"offset must be 0 or more, not {offset}", **context)
+    return None
+
+
+def page(rows: list[Any], offset: int, limit: int) -> tuple[list[Any], Optional[int]]:
+    """One page of a ranked list: the rows from *offset*, at most *limit*, and the offset the next page starts at,
+    None after the last page (an offset past the end is an empty last page)."""
+    part = rows[offset:offset + limit]
+    end = offset + len(part)
+    return part, end if end < len(rows) else None

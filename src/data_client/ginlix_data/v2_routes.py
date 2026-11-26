@@ -53,6 +53,14 @@ def path_segment(value: object) -> str:
     return segment.replace(".", "%2E") if segment in (".", "..") else segment
 
 
+def _page_params(
+    params: dict[str, Any], period: str | None, limit: int | None, offset: int, build: str | None
+) -> dict[str, Any]:
+    """A paged 13F route's query: the period, page size, offset and build the caller set."""
+    given = {"period": period, "limit": limit, "offset": offset or None, "build": build}
+    return {**params, **{k: v for k, v in given.items() if v is not None}}
+
+
 class GinlixDataV2Routes:
     async def _v2_get(
         self, path: str, params: dict[str, Any] | None = None, *, user_id: str | None = None
@@ -156,6 +164,43 @@ class GinlixDataV2Routes:
             f"/api/v2/data/fundamentals/{path_segment(instrument_key)}", params
         )
         return (body or {}).get("rows") or []
+
+    async def get_holders_page_v2(
+        self,
+        instrument_key: str,
+        *,
+        period: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        build: str | None = None,
+    ) -> dict[str, Any] | None:
+        """One page of a security's 13F holders, the route's body (``rows``, ``period``, ``total``, ``offset``,
+        ``next_offset``, ``build``, ``publisher``), or None when no vendor has the name. A *build* the period
+        no longer serves raises the route's 409."""
+        params = _page_params({"kind": "institutional_holders"}, period, limit, offset, build)
+        return await self._v2_json(
+            f"/api/v2/data/fundamentals/{path_segment(instrument_key)}", params
+        )
+
+    async def get_filer_holdings_v2(
+        self,
+        cik: int,
+        *,
+        period: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        build: str | None = None,
+    ) -> dict[str, Any] | None:
+        """One page of a 13F filer's positions against the period before, the route's body (``rows``, ``period``,
+        ``filer_name``, ``filing_date``, ``total``, ``offset``, ``next_offset``, ``build``, ``publisher``), or
+        None on a 404. A *build* the period no longer serves raises the route's 409."""
+        params = _page_params({}, period, limit, offset, build)
+        return await self._v2_json(f"/api/v2/data/institutional/filers/{int(cik)}", params)
+
+    async def find_filers_v2(self, name: str, *, period: str | None = None) -> dict[str, Any] | None:
+        """The 13F filers a manager's name means (``rows`` of ``filer_cik``, ``filer_name``, ``period``, and
+        ``total``), or None on a 404. The route searches every period it holds, so *period* is not sent."""
+        return await self._v2_json("/api/v2/data/institutional/filers", {"name": name})
 
     async def search_v2(self, query: str, *, market: str, limit: int = 10) -> list[dict[str, Any]]:
         body = await self._v2_json(

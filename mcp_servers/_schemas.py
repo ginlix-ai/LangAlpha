@@ -51,6 +51,7 @@ BOOL: dict[str, Any] = {"type": "boolean"}
 
 #: Echoed verbatim, so null when the caller omitted the value.
 NULLABLE_STR: dict[str, Any] = {"type": ["string", "null"]}
+NULLABLE_INT: dict[str, Any] = {"type": ["integer", "null"]}
 
 STR_LIST: dict[str, Any] = {"type": "array", "items": STR}
 

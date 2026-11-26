@@ -699,6 +699,290 @@
         }
       },
       {
+        "name": "get_institutional_holders",
+        "description": "Investment managers holding a US stock, from SEC Form 13F: each manager's share\nposition for one quarter and its change from the quarter before.\n13F covers managers with $100M+ in US equities, long share positions only.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\".\n    period: Quarter end \"YYYY-MM-DD\"; default the latest quarter at least\n        3 days past its 45-day filing deadline; a quarter before its\n        deadline is partial.\n    limit: Holders to return (default 100, at most 500).\n    offset: Holders to skip. Next page: offset=next_offset with the\n        answer's period and build. A build replaced since fails with error\n        rebuilt; start again at offset 0.\n\nReturns:\n    dict: {symbol, period, build, holders_total, offset, next_offset, count,\n    data, source}. data is a list of {holder, filer_cik, shares, value, pctheld,\n    pctchange, value_status, filing_date, accession, url}, most shares first;\n    next_offset is null on the last page. value is US dollars; pctheld (of\n    shares outstanding, null for multi-class issuers and ADRs) and pctchange\n    (null for a new holder, or when either quarter's reports are not all\n    held and readable) are fractions. value_status: as_filed, rescaled\n    (filed in thousands or with a unit error, now dollars), excluded\n    (value null) or null (units not checked). accession is \";\"-joined\n    when an amendment added lines; url is the 13F filing (the first listed\n    when accession holds several), null without an accession. Dates\n    \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "period": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Period"
+            },
+            "limit": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            },
+            "build": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Build"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_institutional_holdersArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "period": {
+              "description": "Quarter end the rows report, \"YYYY-MM-DD\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "build": {
+              "description": "Build of the period this page was read from; pass it back as build with next_offset. Null when the source has none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "offset": {
+              "description": "Holders skipped before this page.",
+              "type": "integer"
+            },
+            "next_offset": {
+              "description": "Offset of the next page; null on the last page.",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "holders_total": {
+              "description": "Holders in the whole ranked list.",
+              "type": "integer"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetInstitutionalHoldersOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_manager_holdings",
+        "description": "One investment manager's SEC Form 13F portfolio for a quarter, with what it bought\nand sold since the quarter before. 13F filers are managers (Berkshire Hathaway,\nVanguard Group), not single funds.\n\nArgs:\n    manager: SEC CIK, e.g. \"1067983\" or \"0001067983\", or the name as filed.\n        A name matching several managers returns invalid_argument with\n        candidates.\n    period: Quarter end \"YYYY-MM-DD\"; default the latest quarter at least\n        3 days past its 45-day filing deadline. A later quarter answers once\n        the manager has filed it.\n    limit: Positions to return (default 500, at most 5000).\n    offset: Positions to skip. Next page: offset=next_offset with the\n        answer's period and build. A build replaced since fails with error\n        rebuilt; start again at offset 0.\n\nReturns:\n    dict: {manager, filer_cik, period, build, filing_date, url, prior_url,\n    positions_total, offset, next_offset, count, data, source}. url is the\n    13F report's filing; prior_url the quarter before's, null when not\n    held. data is a list of {ticker, issuer, cusip, title_class, sh_prn,\n    put_call, shares, value, value_status, weight, change, shares_prior,\n    accession}, one per cusip, sh_prn and put_call,\n    largest value first, null values and sold_out last; next_offset is\n    null on the last page. value is US dollars; weight is a fraction of the\n    portfolio; change is new, increased, decreased, unchanged or sold_out\n    (shares 0). change and shares_prior are null when either quarter's\n    reports are not all held and readable. accession is the report a\n    position comes from, \";\"-joined when several, null for sold_out. On\n    error: {error: <code>, detail, manager, candidates?}.\n",
+        "inputSchema": {
+          "properties": {
+            "manager": {
+              "title": "Manager",
+              "type": "string"
+            },
+            "period": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Period"
+            },
+            "limit": {
+              "default": 500,
+              "title": "Limit",
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            },
+            "build": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Build"
+            }
+          },
+          "required": [
+            "manager"
+          ],
+          "title": "get_manager_holdingsArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "manager": {
+              "description": "The manager's name as filed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "filer_cik": {
+              "description": "The manager's SEC CIK, 10 digits.",
+              "type": "string"
+            },
+            "period": {
+              "description": "Quarter end the rows report, \"YYYY-MM-DD\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "build": {
+              "description": "Build of the period this page was read from; pass it back as build with next_offset. Null when the source has none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "offset": {
+              "description": "Positions skipped before this page.",
+              "type": "integer"
+            },
+            "next_offset": {
+              "description": "Offset of the next page; null on the last page.",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "filing_date": {
+              "description": "Latest filing date of the report, \"YYYY-MM-DD\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "url": {
+              "description": "The 13F report's filing on sec.gov.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prior_url": {
+              "description": "The quarter before's 13F filing on sec.gov; null when not held.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "positions_total": {
+              "description": "Positions in the whole ranked list.",
+              "type": "integer"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetManagerHoldingsOut",
+          "type": "object"
+        }
+      },
+      {
         "name": "get_dividends_and_splits",
         "description": "Fetch historical dividend payments and stock splits.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type, fallback_from?}. data is\n    {dividends, splits}, each a list, newest first; count is the total\n    across both. dividends fields: date, recordDate, paymentDate,\n    declarationDate, adjDividend (split-adjusted), dividend (as paid), yield\n    (percent, 0.34 = 0.34%), frequency. splits fields: date, numerator,\n    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\".\n    fallback_from: source that failed before FMP answered. On error:\n    {error: <code>, detail, symbol}.\n",
         "inputSchema": {

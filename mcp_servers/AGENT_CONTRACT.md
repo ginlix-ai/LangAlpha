@@ -61,6 +61,10 @@ Rules:
   always falls on the other, and drop a row identical to one already read. A
   vendor refusal part-way through such a walk fails the read: `truncated` means
   only a size cap.
+- **A paged read carries `offset` and `next_offset` (null on the last page) in
+  place of `truncated`**: the caller sized the page, so the read is not cut
+  short. `_envelope.page_error` refuses a `limit` over the tool's cap with
+  `invalid_argument`, and `_envelope.page` cuts a ranked list into pages.
 - **Bars missing inside the window say so**: `incomplete: true` beside `data`
   (`make_response(incomplete=...)`) when the source reports sessions missing
   within the window it was asked for (a CN refetch that failed), absent
@@ -80,7 +84,9 @@ Rules:
 ```
 
 `error` is one of: `invalid_argument | unsupported_interval | not_found |
-auth_failed | rate_limited | upstream_error | client_unavailable`. Raw exception
+auth_failed | rate_limited | upstream_error | client_unavailable | rebuilt`
+(`rebuilt`: a page asked of a build its source has since replaced; page again
+from offset 0). Raw exception
 text never lands in `error`; a sanitized summary may go in `detail`. Context keys
 (`symbol`, `supported`, `retry_after_seconds`, ...) are welcome.
 

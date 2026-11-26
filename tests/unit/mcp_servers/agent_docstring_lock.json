@@ -410,6 +410,47 @@
       "symbol"
     ]
   },
+  "mcp:fundamentals:get_institutional_holders": {
+    "doc_lines": [
+      "Investment managers holding a US stock, from SEC Form 13F: each manager's share",
+      "position for one quarter and its change from the quarter before.",
+      "13F covers managers with $100M+ in US equities, long share positions only.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\".",
+      "    period: Quarter end \"YYYY-MM-DD\"; default the latest quarter at least",
+      "        3 days past its 45-day filing deadline; a quarter before its",
+      "        deadline is partial.",
+      "    limit: Holders to return (default 100, at most 500).",
+      "    offset: Holders to skip. Next page: offset=next_offset with the",
+      "        answer's period and build. A build replaced since fails with error",
+      "        rebuilt; start again at offset 0.",
+      "",
+      "Returns:",
+      "    dict: {symbol, period, build, holders_total, offset, next_offset, count,",
+      "    data, source}. data is a list of {holder, filer_cik, shares, value, pctheld,",
+      "    pctchange, value_status, filing_date, accession, url}, most shares first;",
+      "    next_offset is null on the last page. value is US dollars; pctheld (of",
+      "    shares outstanding, null for multi-class issuers and ADRs) and pctchange",
+      "    (null for a new holder, or when either quarter's reports are not all",
+      "    held and readable) are fractions. value_status: as_filed, rescaled",
+      "    (filed in thousands or with a unit error, now dollars), excluded",
+      "    (value null) or null (units not checked). accession is \";\"-joined",
+      "    when an amendment added lines; url is the 13F filing (the first listed",
+      "    when accession holds several), null without an accession. Dates",
+      "    \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}."
+    ],
+    "params": [
+      "build",
+      "limit",
+      "offset",
+      "period",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
   "mcp:fundamentals:get_key_executives": {
     "doc_lines": [
       "Fetch key executives with title and compensation — identify the",
@@ -431,6 +472,50 @@
     ],
     "required": [
       "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_manager_holdings": {
+    "doc_lines": [
+      "One investment manager's SEC Form 13F portfolio for a quarter, with what it bought",
+      "and sold since the quarter before. 13F filers are managers (Berkshire Hathaway,",
+      "Vanguard Group), not single funds.",
+      "",
+      "Args:",
+      "    manager: SEC CIK, e.g. \"1067983\" or \"0001067983\", or the name as filed.",
+      "        A name matching several managers returns invalid_argument with",
+      "        candidates.",
+      "    period: Quarter end \"YYYY-MM-DD\"; default the latest quarter at least",
+      "        3 days past its 45-day filing deadline. A later quarter answers once",
+      "        the manager has filed it.",
+      "    limit: Positions to return (default 500, at most 5000).",
+      "    offset: Positions to skip. Next page: offset=next_offset with the",
+      "        answer's period and build. A build replaced since fails with error",
+      "        rebuilt; start again at offset 0.",
+      "",
+      "Returns:",
+      "    dict: {manager, filer_cik, period, build, filing_date, url, prior_url,",
+      "    positions_total, offset, next_offset, count, data, source}. url is the",
+      "    13F report's filing; prior_url the quarter before's, null when not",
+      "    held. data is a list of {ticker, issuer, cusip, title_class, sh_prn,",
+      "    put_call, shares, value, value_status, weight, change, shares_prior,",
+      "    accession}, one per cusip, sh_prn and put_call,",
+      "    largest value first, null values and sold_out last; next_offset is",
+      "    null on the last page. value is US dollars; weight is a fraction of the",
+      "    portfolio; change is new, increased, decreased, unchanged or sold_out",
+      "    (shares 0). change and shares_prior are null when either quarter's",
+      "    reports are not all held and readable. accession is the report a",
+      "    position comes from, \";\"-joined when several, null for sold_out. On",
+      "    error: {error: <code>, detail, manager, candidates?}."
+    ],
+    "params": [
+      "build",
+      "limit",
+      "manager",
+      "offset",
+      "period"
+    ],
+    "required": [
+      "manager"
     ]
   },
   "mcp:fundamentals:get_shares_float": {
