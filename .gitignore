@@ -156,3 +156,7 @@ data_routing.yaml
 # The chart render page chartkit snapshots with, built by `pnpm build:chart-render`
 # in web/ (and by the backend images' node stage)
 /libs/chartkit/chartkit/render/
+
+# The widget render page the backend checks ShowWidget widgets with, built by
+# `pnpm build:widget-render` in web/ (and by the backend images' node stage)
+/src/server/services/widget_render_page/

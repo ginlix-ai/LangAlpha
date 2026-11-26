@@ -387,7 +387,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
     ),
     "inline-widget": SkillDefinition(
         name="inline-widget",
-        description="Inline HTML widgets: charts, dashboards, data tables rendered directly in the chat via ShowWidget",
+        description="Inline HTML widgets: charts, dashboards, tables, calculators, galleries and questions the user answers by clicking, rendered in the chat via ShowWidget",
         skill_md_path="skills/inline-widget/SKILL.md",
     ),
     "interactive-dashboard": SkillDefinition(

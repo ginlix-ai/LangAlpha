@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/check-critical-path.mjs",
     "build:chart-render": "vite build --config vite.chart-render.config.js",
+    "build:widget-render": "vite build --config vite.widget-render.config.js",
     "typecheck": "tsc -b",
     "lint": "eslint . --cache --cache-location node_modules/.cache/eslint/ --concurrency=auto",
     "preview": "vite preview",

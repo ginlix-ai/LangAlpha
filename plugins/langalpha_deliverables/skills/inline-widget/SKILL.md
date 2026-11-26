@@ -1,310 +1,248 @@
 ---
 name: inline-widget
-description: "Inline HTML widgets: charts, dashboards, data tables rendered directly in the chat via ShowWidget"
+description: "Inline HTML widgets: charts, dashboards, tables, calculators, galleries and questions the user answers by clicking, rendered in the chat via ShowWidget"
 ---
 
 # Inline Widget
 
-Render interactive HTML/SVG widgets directly inside the chat conversation using `ShowWidget`. Widgets appear inline between text — no sandbox, no preview URL, no side panel. They run JavaScript, so lean into making them **interactive and explorable** where it helps — something the user can sort, filter, toggle, and hover over, not just a static picture.
+`ShowWidget` renders an HTML/SVG fragment inline in the chat, between your text. It runs JavaScript, so make it something the user can **explore**: sort, filter, toggle, hover, drag a slider. A static picture is the weaker answer.
 
-## When to Use
+## When to use
 
-- User wants a **quick visualization** embedded in the conversation (chart, metric card, data table)
-- The visualization is **self-contained** — all data is embedded in the HTML, no server needed
-- User wants **interactivity** within the chat: buttons, toggles, hover effects, animated charts
-- The output is a **single view** — not a multi-page app or dashboard that needs routing
+- A quick visual in the conversation: a chart, metric cards, a table, a payoff diagram, a gallery.
+- Interaction the user does in place: toggles, what-if inputs, tabs, click to enlarge.
+- A question the user answers by clicking, where seeing the data makes the choice easier (see Asking the user).
+- One view. A multi-page app or anything with a server of its own is `interactive-dashboard`; a document the user keeps or shares is an HTML report (`html-report`).
 
-**Use `interactive-dashboard` instead if:** User needs a multi-page web app, server-side data, live data refresh, or complex interactivity requiring React/FastAPI.
+Read `.agents/skills/ui-design/SKILL.md` for colour discipline and chart restraint. Its font pairings and type scale are for full documents; a widget uses the host-font rules below.
 
-Read `.agents/skills/ui-design/SKILL.md` for design quality — its color discipline, chart restraint, and anti-slop principles apply here too. Its font pairings and type scale, though, are for full documents; a widget sits on the chat surface, so use the host-font typography rules below instead.
+## What a widget can use
 
-## ShowWidget API
+- **Anything a web page loads**: libraries from any CDN (`cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `cdnjs.cloudflare.com` are reliable), public APIs, remote images, Google Fonts, stylesheets, WebAssembly (DuckDB, sql.js) and Web Workers. A third-party API still needs to allow cross-origin requests; one that does not fails in the browser, so give the widget that data yourself.
+- **Workspace files by relative URL**, at any size: `<img src="charts/q3.png">`, `fetch("data/bars.json")`, `new Worker("sim/worker.js")`. Paths are relative to the workspace folder. They load only for people who can open this workspace: a public share of the thread shows the widget without them, and a downloaded copy keeps the `<img>` files your markup names but not what your script loads. Use URLs for images and large data, and `data_files` for data the widget needs wherever it is opened.
+- **`localStorage`**, kept for this widget on the user's device (about 256 KB), for state worth keeping such as a checklist or the selected tab. `sessionStorage` and cookies live only in one view of the widget: full screen and a reload start them empty. IndexedDB reads as absent, so keep to `localStorage`.
+- **`sendPrompt(text, data?)`** sends a chat message as the user, with optional JSON `data` (up to 32 KB) attached for you to read, so a form can hand you its values without you parsing prose.
+- **`draftPrompt(text, data?)`** adds `text` to the user's message box, after anything already typed there, with `data` attached and without sending, so the user can add to it first.
+- **`startThread(text, data?)`** opens a new thread in this workspace with `text` as its first message and `data` attached, and takes the user there, for a line of work that should not continue in this thread.
+- These three work only from a click or key press in the widget, one call per click; called on load or from a timer, they are ignored.
+- **`data-zoom`** on an `<img>` (or `data-zoom="<url>"` on any element) opens it in the app's full-screen image viewer on click.
+- **Forms** handled by a `submit` listener (a form never navigates), **`alert`/`confirm`, writing to the clipboard and `requestFullscreen()`.**
+- **Links**: a link to another site opens in a new tab. A link to a workspace file opens nothing unless it has `download`, which saves the file; so does a `download` link to a `blob:` or `data:` URL your script makes.
+- **Theme variables** (below) for every colour, and a `themechange` event on `window` when the user switches theme.
 
-```
-ShowWidget(html: str, title: str | None = None, data_files: list[str] | None = None)
-```
+A widget cannot read the app's cookies, storage or session, or navigate the chat page.
 
-- `html`: Raw HTML fragment — no `<!DOCTYPE>`, `<html>`, `<head>`, or `<body>` tags
-- `title`: Optional metadata (not displayed to user)
-- `data_files`: Optional list of sandbox file paths to make available as `window.__WIDGET_DATA__`
+## After the call
 
-The HTML is rendered in a sandboxed iframe with:
-- **CDN libraries**: `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, `unpkg.com`, `esm.sh`
-- **CSS theme variables**: automatically injected (see Theme section)
-- **`sendPrompt('text')`**: global function to trigger follow-up chat messages
-- **`window.__WIDGET_DATA__`**: dict of filename→content for files passed via `data_files`
-- **No network to non-CDN origins**: `fetch()` / `XMLHttpRequest` to arbitrary URLs are blocked by CSP — only CDN domains (cdnjs, jsdelivr, unpkg, esm.sh) are allowed. Use `data_files` for sandbox files, or embed small data directly in HTML
+The user sees the widget as soon as the call runs. If the report or screenshot shows an error, a failed load, a blank widget or a layout problem, fix it and call `ShowWidget` again, and say in your text that the new widget replaces the first. The check renders at 768 px in the light theme and measures the widget again at phone width, so the dark theme depends on the theme variables below.
 
-## Layout Rules (CRITICAL)
+## Layout
 
-The widget sits directly on the chat surface inside a transparent iframe. Follow these rules for seamless integration:
+The widget sits on the chat surface in a frame that grows to fit its content and fills the chat column: up to 768 px wide on a desktop, and about 350 px on a phone, in the phone app and in the market view's chat panel. Lay it out first for the device this turn's surface line names, and keep it working across that whole range, since the user may reopen the thread on another device.
 
-### Outer Element — Transparent Shell
+- **Fluid widths**: size with `%`, `fr` and `minmax()`. A grid of cards written as `repeat(auto-fit, minmax(150px, 1fr))` wraps to fewer columns as the frame narrows. Keep any fixed width under 320 px.
+- **Wide content**: put a table with many columns in a wrapper with `overflow-x: auto`, and leave out columns a phone reader does not need.
+- **Charts**: set the height on the wrapper and let the width follow; keep axis labels and the legend short enough to fit at 350 px.
+- **Touch**: a phone has no hover, so detail shown on hover also shows on tap.
 
-The **outermost HTML element** must have:
-- **NO background** (or `background: transparent`)
-- **NO border**
-- **NO border-radius**
-- **NO box-shadow**
-- **NO padding** — add padding on inner sections only
+Elements you leave unstyled already match the app in both themes: 14 px body text, headings, links, full-width tables with row rules and tabular figures, buttons, inputs, selects, checkboxes, code, and images, SVGs and canvases capped at the frame's width. These defaults have zero specificity, so any style you write wins, except on the outer element (below); style what the design needs rather than every element.
 
-```html
-<!-- CORRECT: transparent outer shell -->
-<div>
-  <div style="background: var(--color-bg-card, #ffffff); border-radius: 8px; padding: 16px; ...">
-    ...inner card content...
-  </div>
-</div>
-
-<!-- WRONG: styled outer wrapper — will be rejected -->
-<div style="background: var(--color-bg-page); border: 1px solid ...; border-radius: 8px; padding: 20px;">
-  ...content...
-</div>
-```
-
-### Inner Elements — Use Theme Variables
-
-Inner cards, sections, and components should use CSS variables for styling, always in the fallback form:
+- **Outer element** (the first element after your `<style>`): the host keeps it transparent, with no border, radius or shadow, so it blends into the chat. Put cards and padding on inner elements.
+- **Cards** use theme variables:
 
 ```css
 /* Card */
-background: var(--color-bg-card, #ffffff);
-border: 0.5px solid var(--color-border-muted, #e4e1dc);
+background: var(--color-bg-card);
+border: 0.5px solid var(--color-border-muted);
 border-radius: 8px;
 padding: 16px;
 
 /* Metric card */
-background: var(--color-bg-subtle, #f4f2ee);
-border: 0.5px solid var(--color-border-muted, #e4e1dc);
+background: var(--color-bg-subtle);
 border-radius: 8px;
 ```
 
-In chat the variables are always injected, so the fallback never shows there — it is what renders when the widget is saved as a workspace `.html` file and previewed before theme injection or opened standalone. Use the light literals from the html-report skill's table.
+- **No `position: fixed`.** It places an element against the widget's own frame, which is only as tall as its in-flow content, so a fixed overlay covers the widget or collapses it. Use `data-zoom` to enlarge an image, keep an overlay in flow, or call `requestFullscreen()` on an element.
+- **Let the frame grow** rather than scrolling inside it.
+- Use `position: relative` for chart containers.
 
-### Positioning
+## Theme variables
 
-- **NO `position: fixed`** — breaks iframe auto-sizing (elements collapse to 0 height)
-- Use `position: relative` for chart containers
-- No nested scrolling — the iframe auto-sizes to fit all content
+Injected in both light and dark mode:
 
-## Theme Variables
-
-These CSS variables are automatically injected and resolve correctly in both light and dark mode:
-
-| Variable | Purpose |
-|----------|---------|
+| Variable | Use |
+|----------|-----|
 | `--color-bg-page` | Page background |
-| `--color-bg-card` | Card/panel background |
-| `--color-bg-elevated` | Elevated surface |
-| `--color-bg-subtle` | Subtle/muted background |
-| `--color-bg-hover` | Hover state background |
-| `--color-text-primary` | Primary text |
-| `--color-text-secondary` | Secondary/muted text |
-| `--color-text-tertiary` | Hint/label text |
-| `--color-border-muted` | Default border (use with 0.5px) |
-| `--color-accent-primary` | Brand/accent color |
-| `--color-profit` | Positive/gain (green) |
-| `--color-loss` | Negative/loss (red) |
-| `--color-warning` | Warning (amber) |
-| `--color-info` | Info (blue) |
-| `--color-success` | Success (green) |
+| `--color-bg-card` | Card background |
+| `--color-bg-elevated` | Raised surface |
+| `--color-bg-subtle` | Muted background, metric cards |
+| `--color-bg-surface` | Panel surface |
+| `--color-bg-input` | Field background |
+| `--color-bg-hover` | Hover background |
+| `--color-text-primary` | Body text |
+| `--color-text-secondary` | Supporting text |
+| `--color-text-tertiary` | Labels, hints |
+| `--color-text-quaternary`, `--color-text-muted` | Faint text |
+| `--color-border-muted` | Default hairline (use at 0.5px) |
+| `--color-border-default`, `--color-border-subtle`, `--color-border-elevated` | Stronger, fainter and raised borders |
+| `--color-accent-primary`, `--color-accent-soft` | Accent and its tint |
+| `--color-profit`, `--color-profit-soft` | Gain and its tint |
+| `--color-loss`, `--color-loss-soft` | Loss and its tint |
+| `--color-warning`, `--color-info`, `--color-success` | Status |
+| `--color-chart-1` to `--color-chart-8` | Chart series, in this order: blue, orange, aqua, yellow, magenta, green, violet, red |
 
-**Never hardcode colors** like `#333` or `rgb(...)` for text, backgrounds, or borders — they break in dark mode. Author every color as `var(--color-x, #lightLiteral)`: the injected variable always wins in chat, and the fallback keeps the widget legible on its secondary surfaces. The only exception is chart canvas colors — Chart.js canvas cannot read CSS variables; resolve them via `getComputedStyle` with a literal fallback.
+**Never hardcode a colour**; write `var(--color-x)`. The variables are set wherever the widget is shown (the chat, full screen, a download, a PDF) and switch with the theme, while a literal stays the same and disappears or glares in the other theme. A canvas or an SVG drawn from script cannot use `var()`, so read the values with `pick()` (below) when drawing and redraw on `themechange`.
+
+Give series the chart colours in order, one per series, and keep a series' colour when a filter hides others. Past eight series, group the rest as Other. Three of the light colours are faint on white, so name every series in a legend or a direct label, and never let colour alone carry meaning: write the sign on a change (`+1.2%`) beside its profit or loss colour.
+
+What still breaks in one theme or on one device:
+
+- **SVG text and shapes are black by default.** Set `fill` and `stroke` from `pick()` (in D3, `.attr('fill', pick('--color-text-secondary'))`) and redraw on `themechange`.
+- **An image keeps its own background.** A chart saved as a PNG with a white background is a white box in dark mode, and its text stays dark. Draw the chart in the widget instead of embedding a picture of it.
+- **`vh` sizes against the widget's own frame,** which is only as tall as its content. Set heights in px.
+- **A library imported as an ES module** (`import Chart from "https://esm.sh/chart.js"`) does not get the theme defaults below; load Chart.js with `<script src>`.
 
 ## Charts (Chart.js)
 
-Load Chart.js from CDN and follow these rules:
+Chart.js loaded with `<script src>` follows the theme by itself: its text, grid lines and font use the theme, a dataset you give no colour gets the next chart colour, and all of it switches with the theme. Colour a dataset yourself only when the colour means something, such as profit and loss, and then repaint it on `themechange`.
 
 ```html
-<!-- Wrapper div with explicit height — REQUIRED -->
-<div style="position: relative; height: 200px;">
-  <canvas id="myChart"></canvas>
+<div style="position: relative; height: 220px;">
+  <canvas id="perf"></canvas>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-  // Read CSS variables for chart colors (canvas can't use var());
-  // the literal fallback covers the widget opened outside the chat surface.
-  var cs = getComputedStyle(document.documentElement);
-  function pick(name, fallback) { return cs.getPropertyValue(name).trim() || fallback; }
-  var accent = pick('--color-accent-primary', '#1f5fb4');
-  var border = pick('--color-border-muted', '#e4e1dc');
-
-  new Chart(document.getElementById('myChart'), {
+  function pick(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  var chart = new Chart(document.getElementById('perf'), {
     type: 'line',
     data: {
-      labels: [...],
-      datasets: [{
-        data: [...],
-        borderColor: accent,
-        backgroundColor: accent + '20',
-        tension: 0.4,
-        fill: true
-      }]
+      labels: ['Jan', 'Feb', 'Mar', 'Apr'],
+      datasets: [
+        { label: 'NVDA', data: [100, 112, 108, 121], tension: 0.3 },
+        { label: 'AMD', data: [100, 96, 104, 110], tension: 0.3 },
+        { label: 'S&P 500', data: [100, 101, 103, 104], tension: 0.3, borderDash: [4, 4] }
+      ]
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: true } },
-      scales: {
-        y: { grid: { color: border } },
-        x: { grid: { display: false } }
-      }
-    }
+    options: { responsive: true, maintainAspectRatio: false, scales: { x: { grid: { display: false } } } }
   });
 </script>
 ```
 
-**Key rules:**
-- Set height on the **wrapper div**, never on the canvas
-- Always use `responsive: true, maintainAspectRatio: false`
-- Use UMD build from CDN (sets `window.Chart` global)
-- Read CSS variables via `getComputedStyle` with a literal fallback (`pick()`) for chart colors
+- Set the height on the wrapper, never on the canvas.
+- Use `responsive: true, maintainAspectRatio: false`.
+- For another library (ECharts, Plotly, D3), read the colours with `pick()` and redraw on `themechange`.
 
 ## Typography
 
-- Font: inherited from host (`-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`)
-- Weight: favor **400** (regular) and **500** (medium); use 600 sparingly for a key figure or heading. Avoid 700 — it reads heavy on the chat surface
-- Heading sizes: h1 = 22px, h2 = 18px, h3 = 16px (all weight 500)
-- Body: 14-16px, weight 400
-- Use **sentence case** — no Title Case or ALL CAPS (except short metric labels)
+- The font, body size and heading sizes (h1 22 px, h2 18 px, h3 16 px, weight 500) come from the frame; set a font family only when the design calls for one.
+- Weights 400 and 500; 600 sparingly for a key figure. Avoid 700.
+- Sentence case. No Title Case or ALL CAPS, except short metric labels.
 
 ## Interactivity
 
-### Make it explorable
+When the data supports it, reach for:
 
-A widget runs JavaScript, so prefer something the user can **poke at**, not just read. When the data supports it, reach for:
+- **Sortable and filterable tables**: sort by P&L or weight, filter to a sector.
+- **Series and metric toggles**: show or hide series, price vs % change, 1M / 6M / 1Y.
+- **Hover detail**: tooltips with the underlying numbers.
+- **What-if inputs**: a slider or field that recomputes a figure live.
+- **Tabs or segmented views** for a dense widget.
 
-- **Sortable / filterable tables** — click a header to sort by P&L or weight; filter to a sector or watchlist.
-- **Series & metric toggles** — show/hide chart series, switch price ↔ % change, flip timeframe (1M / 6M / 1Y).
-- **Hover detail** — tooltips on chart points and table rows that surface the underlying numbers.
-- **What-if inputs** — a slider or field that recomputes a figure live (drag a growth rate, watch the projection update).
-- **Tabs / segmented views** — split a dense widget (Overview / Holdings / Performance) so the reader drills in.
-
-It all runs **client-side over the embedded data** — never `fetch()` a non-CDN origin (CSP blocks it; use `data_files` for anything large). Keep a meaningful default state so the widget reads correctly before any interaction. Use `sendPrompt()` only when the next step genuinely belongs back in the chat (a new query, a deeper analysis) — handle exploration the widget can do itself in-place.
-
-### sendPrompt()
-
-Call `sendPrompt('text')` from buttons to trigger a follow-up chat message:
+Keep a meaningful default state, so the widget reads correctly before anyone touches it. Handle exploration in the widget; use `sendPrompt()` only when the next step needs you (a new query, a deeper analysis), and mark those buttons with **↗**:
 
 ```html
-<button onclick="sendPrompt('Show detailed revenue breakdown')"
-        style="padding: 8px 16px; background: var(--color-accent-primary); color: white;
-               border: none; border-radius: 6px; cursor: pointer;">
-  Revenue Details ↗
-</button>
+<button onclick="sendPrompt('Break down revenue by segment')">Revenue by segment ↗</button>
+
+<form onsubmit="event.preventDefault(); sendPrompt('Draft this alert', {symbol: this.symbol.value, above: +this.above.value})">
+  <input name="symbol" value="NVDA"> <input name="above" type="number" value="160">
+  <button>Draft alert ↗</button>
+</form>
 ```
 
-Add a **↗ arrow** on buttons that call `sendPrompt()` to signal they trigger a chat action.
+`setInterval` and `requestAnimationFrame` work for animation. A widget's data is what you gave it when you drew it; for fresh market data, draw it again.
 
-### Refresh / Animation
+## Asking the user
 
-`setInterval` and `requestAnimationFrame` work normally for animations and live tickers:
+A widget can ask the user a question while showing what the answer depends on: scenarios side by side, rows picked from a screen, a few assumptions to set. Draw the data and the options, say in your reply what you are waiting for, and end your turn. The user's choice arrives as their next message with its `data` attached, and a typed reply works as well.
 
-```javascript
-setInterval(function() {
-  // Update prices, rotate data, animate
-  updateDisplay();
-}, 3000);
+- Give each option a button that sends it with `sendPrompt`, carrying what was chosen in `data`.
+- Offer "Add a note first" with `draftPrompt` when the user may want to qualify the choice.
+- Offer a new thread with `startThread` for an option that opens separate work, such as researching one name from a screen.
+- Make the options mutually exclusive, and mark one as your recommendation where you have one.
+
+```html
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px;">
+  <div style="border: 1px solid var(--color-border-default); border-radius: 8px; padding: 12px;">
+    <h4>Base</h4>
+    <p style="color: var(--color-text-secondary);">+38% revenue, data center flat</p>
+    <button onclick="sendPrompt('Model the base case', {scenario: 'base', growth: 0.38})">Choose ↗</button>
+  </div>
+  <div style="border: 2px solid var(--color-accent-primary); border-radius: 8px; padding: 12px;">
+    <h4>Bull (recommended)</h4>
+    <p style="color: var(--color-text-secondary);">+71% revenue, Blackwell ramp</p>
+    <button onclick="sendPrompt('Model the bull case', {scenario: 'bull', growth: 0.71})">Choose ↗</button>
+  </div>
+</div>
+<p style="margin-top: 10px;">
+  <button onclick="draftPrompt('Model the bull case, but ', {scenario: 'bull'})">Add a note first</button>
+  <button onclick="startThread('Research the bear case for NVDA: export limits and their revenue impact', {scenario: 'bear'})">Bear case in a new thread ↗</button>
+</p>
 ```
 
-## File Data
+## File data
 
-Use `data_files` to load data from sandbox files instead of inlining everything in the HTML string. This is especially useful for larger datasets.
-
-### Workflow
-
-1. Generate data files via Python
-2. Pass file paths to `ShowWidget` via `data_files`
-3. Access data in the widget via `window.__WIDGET_DATA__["filename"]`
+Write the data with Python, then hand the file to the widget, by URL for anything large:
 
 ```python
-# Step 1: Generate data
-import json
-data = {"labels": ["Q1", "Q2", "Q3"], "values": [100, 150, 200]}
-with open("<task_name>/chart_data.json", "w") as f:
-    json.dump(data, f)
-
-# Step 2: Agent calls ShowWidget with data_files
-ShowWidget(
-    html='<div id="chart">...</div><script>var d = JSON.parse(__WIDGET_DATA__["chart_data.json"]); ...</script>',
-    data_files=["<task_name>/chart_data.json"]
-)
+df.to_json("q3_review/bars.json", orient="records")
 ```
 
-### Widget access
-
-```javascript
-// Text files (json, csv, txt, etc.) — returned as strings
-var data = JSON.parse(window.__WIDGET_DATA__["chart_data.json"]);
-var csvText = window.__WIDGET_DATA__["results.csv"];
-
-// Binary files (png, jpg, etc.) — returned as data URLs
-document.getElementById("img").src = window.__WIDGET_DATA__["chart.png"];
+```html
+<script>
+  fetch("q3_review/bars.json").then(r => r.json()).then(draw);
+</script>
 ```
 
-### Supported file types
+or embed small files, which travel with the widget into a share or a download, with `data_files=["q3_review/summary.json"]` and read `JSON.parse(window.__WIDGET_DATA__["summary.json"])`.
 
-- **Text** (returned as strings): `.json`, `.csv`, `.txt`, `.html`, `.xml`, `.svg`, `.md`, `.yaml`, `.yml`, `.tsv`, `.geojson`, `.topojson`
-- **Binary** (returned as data URLs): `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.ico`
+## Design patterns
 
-### Size limits
-
-Total inline data is capped at 500KB across all files. Keep datasets concise — aggregate or sample large files before passing them.
-
-## Blocked Patterns
-
-The following will cause `ShowWidget` to **reject** your HTML with an error. Fix and retry:
-
-| Pattern | Why blocked |
-|---------|-------------|
-| `new ResizeObserver(...)` | Host handles iframe sizing — your observer creates infinite resize loops |
-| `parent.postMessage(...)` | Use `sendPrompt()` instead — direct postMessage bypasses the bridge |
-| `window.top.*` / `window.parent.*` | Sandboxed iframe — parent access is blocked |
-| `position: fixed` | Breaks iframe auto-sizing |
-| Background/border on outermost element | Breaks seamless integration with chat surface |
-
-## Design Patterns
-
-### Metric Cards Row
+### Metric cards row
 
 ```html
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px;">
-  <div style="background: var(--color-bg-subtle); padding: 14px 16px; border-radius: 8px; border: 0.5px solid var(--color-border-muted);">
-    <div style="font-size: 11px; color: var(--color-text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;">Revenue</div>
+  <div style="background: var(--color-bg-subtle); padding: 14px 16px; border-radius: 8px;">
+    <div style="font-size: 12px; color: var(--color-text-tertiary); margin-bottom: 6px;">Revenue</div>
     <div style="font-size: 24px; font-weight: 500;">$2.4M</div>
     <div style="font-size: 12px; color: var(--color-profit);">+12.5%</div>
   </div>
-  <!-- more cards... -->
 </div>
 ```
 
-### Data Table
+### Data table
+
+The frame already styles a plain table; add only alignment and colour that carry meaning:
 
 ```html
-<table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-  <thead>
-    <tr style="border-bottom: 0.5px solid var(--color-border-muted);">
-      <th style="text-align: left; padding: 8px; color: var(--color-text-secondary); font-weight: 500; font-size: 12px;">Symbol</th>
-      <th style="text-align: right; padding: 8px; color: var(--color-text-secondary); font-weight: 500; font-size: 12px;">Price</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr style="border-bottom: 0.5px solid var(--color-border-muted);">
-      <td style="padding: 8px; font-weight: 500;">AAPL</td>
-      <td style="text-align: right; padding: 8px;">$213.18</td>
-    </tr>
-  </tbody>
-</table>
+<div style="overflow-x: auto;">
+  <table>
+    <thead><tr><th>Symbol</th><th style="text-align: right;">Price</th><th style="text-align: right;">Change</th></tr></thead>
+    <tbody>
+      <tr><td>AAPL</td><td style="text-align: right;">$213.18</td><td style="text-align: right; color: var(--color-profit);">+1.2%</td></tr>
+      <tr><td>MSFT</td><td style="text-align: right;">$441.06</td><td style="text-align: right; color: var(--color-loss);">−0.4%</td></tr>
+    </tbody>
+  </table>
+</div>
 ```
 
-### Section with Chart
+### Image gallery
 
 ```html
-<div style="background: var(--color-bg-card); border-radius: 8px; border: 0.5px solid var(--color-border-muted); padding: 16px; margin-bottom: 16px;">
-  <div style="font-size: 16px; font-weight: 500; margin-bottom: 12px;">Performance</div>
-  <div style="position: relative; height: 200px;">
-    <canvas id="perfChart"></canvas>
-  </div>
+<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px;">
+  <img src="charts/revenue_by_segment.png" data-zoom alt="Revenue by segment, FY2021 to FY2025" style="width: 100%; border-radius: 6px;">
+  <img src="charts/gross_margin.png" data-zoom alt="Gross margin by quarter" style="width: 100%; border-radius: 6px;">
 </div>
 ```

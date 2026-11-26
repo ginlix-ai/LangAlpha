@@ -7,16 +7,19 @@ import json
 import mimetypes
 import os
 import re
-from typing import Any
-from uuid import uuid4
+from typing import TYPE_CHECKING, Annotated, Any
 
 import structlog
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, InjectedToolCallId
 
 from src.tools.turn_tool import turn_tool
 from src.utils.storage import is_storage_enabled, upload_bytes
 
 from ..backends.sandbox import SandboxBackend
+from ..middleware._utils import configurable
+
+if TYPE_CHECKING:
+    from src.server.services.widget_render import WidgetRenderReport
 
 logger = structlog.get_logger(__name__)
 
@@ -35,113 +38,6 @@ _TEXT_EXTENSIONS = frozenset({
     ".json", ".csv", ".txt", ".html", ".xml", ".svg",
     ".md", ".yaml", ".yml", ".tsv", ".geojson", ".topojson",
 })
-
-
-# ---------------------------------------------------------------------------
-# Validation rules — each returns (violation_name, detail) or None
-# ---------------------------------------------------------------------------
-
-_RULES: list[tuple[str, re.Pattern[str], str]] = [
-    (
-        "ResizeObserver",
-        re.compile(r"new\s+ResizeObserver\b", re.IGNORECASE),
-        "Do not create ResizeObserver — the host handles iframe sizing automatically.",
-    ),
-    (
-        "position:fixed",
-        re.compile(r"position\s*:\s*fixed", re.IGNORECASE),
-        "Do not use position:fixed — the iframe auto-sizes to content; fixed elements collapse to 0 height.",
-    ),
-    (
-        "parent.postMessage",
-        re.compile(r"parent\.postMessage\b"),
-        "Do not call parent.postMessage directly — use the provided sendPrompt('text') global instead.",
-    ),
-    (
-        "frame escape",
-        re.compile(r"window\.(top|parent)\s*\."),
-        "Do not access window.top or window.parent — the widget runs in a sandboxed iframe.",
-    ),
-]
-
-
-def _detect_outer_wrapper_issues(html: str) -> list[str]:
-    """Check if the outermost element has background, border, or border-radius.
-
-    We parse the first opening tag's style attribute. This is intentionally
-    simple — it only looks at the very first HTML element.
-    """
-    issues: list[str] = []
-    # Find the first HTML tag with a style attribute
-    m = re.search(r"<\w+[^>]*\sstyle\s*=\s*[\"']([^\"']*)[\"']", html, re.DOTALL)
-    if not m:
-        return issues
-    style = m.group(1).lower()
-    # Only flag if this is the first substantial tag (skip whitespace)
-    prefix = html[: m.start()].strip()
-    if prefix:
-        return issues  # not the outermost element
-
-    if re.search(r"(?<!-)background\s*:", style):
-        bg_val = re.search(r"background\s*:\s*([^;]+)", style)
-        if bg_val and "transparent" not in bg_val.group(1):
-            issues.append(
-                "Outermost element must NOT have a background — it must be transparent so the widget sits seamlessly on the chat surface."
-            )
-    if re.search(r"(?<![a-z-])border\s*:", style):
-        border_val = re.search(r"(?<![a-z-])border\s*:\s*([^;]+)", style)
-        if border_val and "none" not in border_val.group(1):
-            issues.append(
-                "Outermost element must NOT have a border — only inner cards/sections should have borders."
-            )
-    if re.search(r"border-radius\s*:", style):
-        issues.append(
-            "Outermost element must NOT have border-radius — only inner cards/sections should be rounded."
-        )
-    return issues
-
-
-def _validate_html(html: str) -> list[str]:
-    """Return a list of violation descriptions, empty if HTML is clean."""
-    violations: list[str] = []
-    for name, pattern, detail in _RULES:
-        if pattern.search(html):
-            violations.append(f"[{name}] {detail}")
-    violations.extend(_detect_outer_wrapper_issues(html))
-    return violations
-
-
-# ---------------------------------------------------------------------------
-# Guidance text sent back on validation failure
-# ---------------------------------------------------------------------------
-
-_SKILL_CONTENT_CACHE: str | None = None
-
-
-def _load_widget_guidelines() -> str:
-    """Load the inline-widget SKILL.md as the canonical guideline source."""
-    global _SKILL_CONTENT_CACHE  # noqa: PLW0603
-    if _SKILL_CONTENT_CACHE is not None:
-        return _SKILL_CONTENT_CACHE
-
-    try:
-        from ptc_agent.agent.middleware.skills import load_skill_content
-
-        content = load_skill_content("inline-widget")
-        if content:
-            _SKILL_CONTENT_CACHE = content
-            return content
-    except Exception:
-        pass
-
-    # Fallback: minimal inline rules if skill file can't be loaded
-    # Don't cache the fallback — retry loading on next call
-    return (
-        "Outermost element: NO background/border/border-radius (transparent shell). "
-        "Inner cards use var(--color-bg-card), 0.5px border. "
-        "No ResizeObserver, no parent.postMessage, no position:fixed. "
-        "Charts: wrap canvas in div with explicit height, use responsive:true, maintainAspectRatio:false."
-    )
 
 
 def _is_text_file(path: str) -> bool:
@@ -169,104 +65,96 @@ async def _read_one_file(
         return path, None
 
 
+def _kb(size: int) -> str:
+    return f"{size / 1024:,.0f} KB" if size >= 1024 else f"{size} bytes"
+
+
+class DataFilesRefused(Exception):
+    """Some data_files cannot be delivered; ``problems`` names each, with sizes."""
+
+    def __init__(self, problems: list[str]) -> None:
+        super().__init__("; ".join(problems))
+        self.problems = problems
+
+
 async def _resolve_data_files(
     backend: SandboxBackend,
     data_files: list[str],
 ) -> dict[str, str]:
-    """Read *data_files* via *backend* and return inline data dict.
+    """The inline data for *data_files*, keyed by file name.
 
-    Returns a mapping of filename → content string.  Text files are
-    returned as raw strings; binary files as ``data:{mime};base64,...``
-    data-URLs.  A cumulative size cap of ``_INLINE_DATA_CAP`` is enforced.
-
-    All sandbox reads are dispatched concurrently via ``asyncio.gather``
-    to avoid sequential-await latency.
+    A widget missing a file it reads renders broken with nothing to say why,
+    so a file that cannot be delivered refuses the call (``DataFilesRefused``)
+    rather than being left out: every problem is named at once, with sizes, so
+    one retry fixes them all. Text files stay strings; binary files become
+    data URLs, counted at their base64 size against ``_INLINE_DATA_CAP``.
     """
-    import asyncio
+    paths = [p for p in data_files if p and os.path.basename(p)]
+    results = await asyncio.gather(*(_read_one_file(backend, p) for p in paths))
 
-    # Filter out empty basenames before issuing I/O
-    valid_paths = [p for p in data_files if os.path.basename(p)]
-    if not valid_paths:
-        return {}
-
-    # Read all files concurrently
-    results = await asyncio.gather(
-        *(_read_one_file(backend, p) for p in valid_paths)
-    )
-
-    # Post-process: encode and apply size cap (order-preserving)
-    inline_data: dict[str, str] = {}
-    inline_total = 0
-    seen_basenames: set[str] = set()
+    #: file name -> (path, value, size in bytes)
+    taken: dict[str, tuple[str, str, int]] = {}
+    total = 0
+    problems: list[str] = []
 
     for path, content in results:
         if content is None:
+            problems.append(f"{path}: not found")
             continue
         filename = os.path.basename(path)
-        is_text = _is_text_file(path)
-
-        if filename in seen_basenames:
-            logger.warning(
-                "ShowWidget data_files: duplicate basename, skipping",
-                path=path,
-                basename=filename,
+        if filename in taken:
+            problems.append(
+                f"{path}: same file name as {taken[filename][0]}, and the data is "
+                "keyed by file name; copy one under another name"
             )
             continue
-        seen_basenames.add(filename)
-
+        is_text = _is_text_file(path)
         mime = mimetypes.guess_type(filename)[0] or (
             "text/plain" if is_text else "application/octet-stream"
         )
 
-        # Build inline value
         if is_text:
             value = content  # type: ignore[assignment]
-            # Sanitize non-standard JSON tokens (NaN/Infinity) that Python's
-            # json.dumps emits by default — these break browser JSON.parse.
-            _, ext = os.path.splitext(path)
-            # Sanitizing shrinks text by at most 5/9 (`-Infinity` -> `null`), so
-            # text longer than 9/4 of the remaining budget is over the cap
-            # either way; skip the scan, whose per-token cost is ~20 bytes of
-            # memory per input character on dense short-string JSON. Text with
-            # neither spelling, which is most data, has nothing to rewrite, and
-            # skipping it keeps this synchronous scan off the event loop.
+            # Python's json.dumps writes NaN/Infinity, which browser JSON.parse
+            # rejects. Sanitizing shrinks text by at most 5/9 (`-Infinity` ->
+            # `null`), so text past 9/4 of the remaining budget is over the cap
+            # either way and skips the scan, whose per-token cost is ~20 bytes
+            # of memory per input character on dense short-string JSON.
             if (
-                ext.lower() in ('.json', '.geojson', '.topojson')
-                and len(value) * 4 <= (_INLINE_DATA_CAP - inline_total) * 9
+                os.path.splitext(path)[1].lower() in (".json", ".geojson", ".topojson")
+                and len(value) * 4 <= max(_INLINE_DATA_CAP - total, 0) * 9
                 and ("NaN" in value or "Infinity" in value)
             ):
-                # Match quoted strings first so names and labels stay intact.
-                # Avoid a parse/dump round trip that could alter numeric precision.
-                # The closing quote is optional and a backslash escapes any
-                # character, so the string branch can never backtrack after it
-                # starts: a truncated string (malformed JSON) stays linear and
-                # is left byte-for-byte intact. The possessive `*+` states
-                # that to the engine, which then keeps no per-iteration
-                # backtrack state; a plain `*` costs ~120 bytes of memory per
-                # character of the longest string, and this runs on the whole
-                # file before the inline cap is applied.
+                # Quoted strings match first so names and labels stay intact,
+                # and no parse/dump round trip can alter numeric precision. The
+                # closing quote is optional and a backslash escapes any
+                # character, so the string branch never backtracks once it
+                # starts: truncated JSON stays linear and byte-for-byte intact.
+                # The possessive `*+` keeps the engine from holding
+                # per-iteration backtrack state (~120 bytes per character of
+                # the longest string with a plain `*`).
                 value = re.sub(
                     r'"(?:\\[\s\S]|[^"\\])*+"?|(?P<constant>(?<!\w)(?:NaN|-?Infinity)\b)',
                     lambda token: "null" if token.group("constant") else token.group(0),
                     value,
                 )
         else:
-            b64 = base64.b64encode(content).decode()  # type: ignore[arg-type]
-            value = f"data:{mime};base64,{b64}"
+            value = f"data:{mime};base64,{base64.b64encode(content).decode()}"  # type: ignore[arg-type]
 
-        entry_size = len(value.encode())
-        if inline_total + entry_size > _INLINE_DATA_CAP:
-            logger.warning(
-                "ShowWidget data_files: inline cap exceeded, skipping",
-                path=path,
-                cap=_INLINE_DATA_CAP,
-                current=inline_total,
-            )
-            continue
-        inline_total += entry_size
-        inline_data[filename] = value
+        size = len(value.encode())
+        taken[filename] = (path, value, size)
+        total += size
 
-    return inline_data
+    if total > _INLINE_DATA_CAP:
+        listed = ", ".join(f"{path} {_kb(size)}" for path, _, size in taken.values())
+        problems.append(
+            f"data_files come to {_kb(total)} ({listed}); they carry "
+            f"{_kb(_INLINE_DATA_CAP)} in all, binary files counted as base64. "
+            "Load large files by relative URL instead"
+        )
+    if problems:
+        raise DataFilesRefused(problems)
+    return {filename: value for filename, (_, value, _) in taken.items()}
 
 
 def widget_data_storage_key(thread_id: str, sha_hex: str) -> str:
@@ -293,13 +181,7 @@ async def _attach_widget_data(
         return
 
     sha = hashlib.sha256(payload).hexdigest()
-    try:
-        from langgraph.config import get_config
-
-        thread_id = (get_config().get("configurable") or {}).get("thread_id") or ""
-    except Exception:
-        thread_id = ""
-    key = widget_data_storage_key(thread_id, sha)
+    key = widget_data_storage_key(configurable().get("thread_id") or "", sha)
     if await asyncio.to_thread(upload_bytes, key, payload, "application/json"):
         artifact["data_ref"] = {"key": key, "sha256": sha, "size": len(payload)}
         logger.debug("ShowWidget data uploaded", key=key, size=len(payload))
@@ -310,54 +192,170 @@ async def _attach_widget_data(
         artifact["data"] = resolved_data
 
 
+async def _render(html: str, data: dict[str, str] | None) -> "WidgetRenderReport | None":
+    """What the widget did in a headless browser, or None where none runs.
+
+    The user already has the widget by now; this only tells the agent whether
+    it works, so any failure here costs the report, never the widget.
+    """
+    # Imported here: the tool module stays importable without the server's
+    # render stack loaded.
+    from src.server.services.widget_render import WidgetRenderError, render_widget
+
+    run = configurable()
+    try:
+        return await render_widget(
+            html=html,
+            data=data,
+            workspace_id=run.get("workspace_id"),
+            user_id=run.get("user_id"),
+        )
+    except WidgetRenderError as e:
+        logger.info("ShowWidget render check unavailable", reason=type(e).__name__)
+        return None
+    except Exception:
+        logger.warning("ShowWidget render check failed", exc_info=True)
+        return None
+
+
+def _listed(label: str, items: list[str], limit: int = 8) -> list[str]:
+    if not items:
+        return []
+    lines = [f"{label}:"] + [f"  - {item}" for item in items[:limit]]
+    if len(items) > limit:
+        lines.append(f"  - and {len(items) - limit} more")
+    return lines
+
+
+def _describe(name: str, report: "WidgetRenderReport") -> str:
+    """The render report as the agent reads it: problems first, then what
+    rendered, so a broken widget is the first thing it sees."""
+    seen = report.seen
+    problems: list[str] = []
+    problems += _listed("Errors", report.errors)
+    problems += _listed("Failed to load", report.load_failed)
+    problems += _listed("Blocked", report.blocked)
+    if seen.images.broken:
+        problems.append(f"{seen.images.broken} of {seen.images.total} images did not load.")
+    if report.blank:
+        problems.append("It looks blank: no text, image, canvas or SVG rendered.")
+    if seen.fixed_elements:
+        problems.append(
+            f"{seen.fixed_elements} "
+            + ("element uses" if seen.fixed_elements == 1 else "elements use")
+            + " position: fixed, which sits against the widget's own frame, and that "
+            "frame is only as tall as its in-flow content, so a fixed overlay is cut "
+            "off. To enlarge an image, put data-zoom on the <img> instead."
+        )
+    if overflow := report.overflow:
+        problems.append(
+            f"Content is {overflow.content} px wide in a {overflow.frame} px frame, "
+            "so it scrolls sideways."
+        )
+    if narrow := report.narrow_overflow:
+        problems.append(
+            f"On a phone ({narrow.frame} px) its content is {narrow.content} px wide, so it "
+            "scrolls sideways there."
+        )
+    if report.hung:
+        problems.append(
+            "It never finished loading: a script may be stuck in a loop or "
+            "blocking the page."
+        )
+    elif report.unsettled:
+        problems.append(
+            "It was still changing when the check stopped waiting, so the "
+            "screenshot may show it part-drawn."
+        )
+
+    lines = [f"Shown to the user: {name}."]
+    size = " x ".join("?" if n is None else str(n) for n in (report.width, report.height))
+    size += " px"
+    made = [
+        f"{n} {one if n == 1 else many}"
+        for n, one, many in (
+            (seen.canvases, "canvas", "canvases"),
+            (seen.svgs, "SVG", "SVGs"),
+            (seen.images.total, "image", "images"),
+        )
+        if n
+    ]
+    lines.append(f"Rendered {size}" + (f" with {', '.join(made)}" if made else "") + ".")
+    if seen.data_keys:
+        lines.append(f"__WIDGET_DATA__ keys: {', '.join(seen.data_keys)}.")
+    # Not a problem: the check caps what it loads and the user's browser does
+    # not, so this is no reason for a new call.
+    if report.too_large:
+        lines.append("")
+        lines += _listed(
+            "Too large for this check to load, though they load for the user",
+            report.too_large,
+        )
+    if problems:
+        lines.append("")
+        lines += problems
+    if report.screenshot:
+        lines.append("")
+        lines.append("Below is how it looks in the light theme.")
+    return "\n".join(lines)
+
+
 def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
     """Factory function to create ShowWidget tool."""
 
     @turn_tool(response_format="content_and_artifact")
     async def ShowWidget(
         html: str,
+        tool_call_id: Annotated[str, InjectedToolCallId],
         title: str | None = None,
         data_files: list[str] | None = None,
-    ) -> tuple[str, dict[str, Any]]:
-        """Render an interactive HTML/SVG widget inline in the chat.
+    ) -> tuple[str | list[dict[str, Any]], dict[str, Any]]:
+        """Show an interactive HTML/SVG widget inline in the chat: a chart, table, dashboard, calculator or gallery the user can explore, or a choice the user answers by clicking.
 
-        Use this to display charts, dashboards, data tables, or any interactive
-        visualization directly in the conversation.
+        Read `.agents/skills/inline-widget/SKILL.md` before your first widget.
 
-        Read `.agents/skills/inline-widget/SKILL.md` before your first widget; it
-        carries the layout and styling rules.
-
-        CSP blocks every non-CDN origin: fetch() and XMLHttpRequest to arbitrary
-        URLs will fail. Pass workspace files through data_files, or embed small
-        data directly in the HTML.
-
-        Available in the widget:
-        - CDN libraries: cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com, esm.sh
-        - CSS variables: var(--color-bg-page), var(--color-text-primary), etc. for theme matching
-        - sendPrompt('text'): trigger a follow-up chat message from a button click
-        - window.__WIDGET_DATA__: dict of filename→content for files passed via data_files
+        A widget runs like a web page: it loads libraries from any CDN, public APIs, fonts and workers, and opens a file in this workspace at any size by its path relative to the workspace folder, as `<img src="charts/q3.png">` or `fetch("data/bars.json")`.
 
         Args:
-            html: Raw HTML string to render. No DOCTYPE/html/head/body tags needed.
-            title: Optional display title shown above the widget.
-            data_files: Optional list of sandbox file paths whose contents will be
-                made available in the widget as ``window.__WIDGET_DATA__["filename"]``.
-                Text files (json/csv/txt/…) are strings; binary files (png/jpg/…)
-                become data-URL strings.
+            html: An HTML fragment, without <html>, <head> or <body>. Put <style> first, the content next and <script> last: the user sees it build as you write it, and scripts run once the call completes.
+            title: Names the widget for its download and full-screen view, and labels the data it sends you. It is not shown above the widget.
+            data_files: Workspace files to embed as `window.__WIDGET_DATA__["<file name>"]`: a text file as a string, any other file as a data: URL. Up to 500 KB in all, a binary file counted at its base64 size; past that the call is refused.
+
+        Returns:
+            A render report at 768 px wide, with a check at phone width (errors, failed loads, size, the __WIDGET_DATA__ keys received), and a screenshot in the light theme.
+
+        The user sees the widget as soon as the call runs, so a fix is a new call, which shows a second widget.
         """
-        # Validate HTML before rendering
-        violations = _validate_html(html)
-        if violations:
-            error_lines = "\n".join(f"  - {v}" for v in violations)
-            msg = (
-                f"Widget HTML rejected — fix the following issues and call ShowWidget again:\n"
-                f"{error_lines}\n\n{_load_widget_guidelines()}"
-            )
-            logger.warning(
-                "ShowWidget HTML rejected",
-                violations=[v.split("]")[0].strip("[") for v in violations],
-            )
-            return msg, {}
+        if not html or not html.strip():
+            return "Widget not shown: html is empty.", {}
+        # Imported here: the runtime_context package imports the tools package.
+        from ..middleware.runtime_context.surface import chat_app_name
+
+        chat_app = chat_app_name(configurable().get("platform"))
+        if chat_app:
+            return (
+                f"Widget not shown: this turn came from {chat_app}, which cannot "
+                "show widgets. Send a chart as an image file with send_message instead."
+            ), {}
+
+        resolved: dict[str, str] = {}
+        if data_files and backend is not None:
+            try:
+                resolved = await _resolve_data_files(backend, data_files)
+            except DataFilesRefused as refused:
+                logger.info("ShowWidget data_files refused", count=len(refused.problems))
+                return (
+                    "Widget not shown. Some data_files cannot be delivered:\n"
+                    + "\n".join(f"  - {line}" for line in refused.problems)
+                ), {}
+
+        name = title or "widget"
+        artifact: dict[str, Any] = {"type": "html_widget", "html": html, "title": title or ""}
+        # Replay reads only the checkpointed artifact: large payloads go to
+        # object storage as a content-addressed data_ref so state carries
+        # pointers, not bulk data.
+        if resolved:
+            await _attach_widget_data(artifact, resolved)
 
         try:
             from langgraph.config import get_stream_writer
@@ -365,38 +363,27 @@ def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
             writer = get_stream_writer()
         except Exception:
             writer = None
-
-        widget_id = f"widget_{uuid4().hex[:8]}"
-        display_title = title or ""
-
-        artifact: dict[str, Any] = {
-            "type": "html_widget",
-            "html": html,
-            "title": display_title,
-        }
-
-        # Resolve data files into the checkpointed artifact, which is all
-        # replay reads: large payloads go to object storage as a
-        # content-addressed data_ref so state carries pointers, not bulk data.
-        resolved_data: dict[str, str] | None = None
-        if data_files and backend is not None:
-            resolved_data = await _resolve_data_files(backend, data_files) or None
-        if resolved_data:
-            await _attach_widget_data(artifact, resolved_data)
-
         if writer:
-            stream_payload = artifact
-            if resolved_data:
-                stream_payload = {**artifact, "data": resolved_data}
+            # The call's own id, as replay uses, so the live widget replaces
+            # the preview streamed from this call's arguments in place.
             writer({
                 "artifact_type": "html_widget",
-                "artifact_id": widget_id,
-                "payload": stream_payload,
+                "artifact_id": tool_call_id,
+                "payload": {**artifact, "data": resolved} if resolved else artifact,
             })
 
-        logger.debug("Rendered inline widget", widget_id=widget_id, title=display_title)
+        report = await _render(html, resolved or None)
+        if report is None:
+            return f"Shown to the user: {name}. Its rendering could not be checked, so there is no report or screenshot.", artifact
 
-        content = f"Widget rendered: {display_title or widget_id}"
-        return content, artifact
+        text = _describe(name, report)
+        if not report.screenshot:
+            return text, artifact
+        image = base64.b64encode(report.screenshot).decode()
+        mime = report.media_type
+        return [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image}"}},
+        ], artifact
 
     return ShowWidget

@@ -17,6 +17,14 @@ COPY web/scripts/react-plugins.ts scripts/react-plugins.ts
 COPY web/src/ src/
 RUN CHART_RENDER_OUT_DIR=/chart-render pnpm run build:chart-render
 
+# The widget render page the backend runs a ShowWidget widget in, to tell the
+# agent what it drew (src/server/services/widget_render.py). Built on the chart
+# page's stage, whose install and sources it shares. Without it the tool result
+# carries no render.
+FROM chart-render AS widget-render
+COPY web/widget-render.html web/vite.widget-render.config.js ./
+RUN WIDGET_RENDER_OUT_DIR=/widget-render pnpm run build:widget-render
+
 # 3.13 is a floor, not a preference: the Redis cache and stream-reader pools are
 # BlockingConnectionPool, whose waiter queue is an asyncio.Condition. Before
 # 3.13, a waiter cancelled at its own deadline consumed a notify without
@@ -69,12 +77,17 @@ RUN extras=""; \
 # Install browsers for Scrapling crawling
 # patchright: Chromium for DynamicFetcher (Tier 2)
 # scrapling install: Camoufox for StealthyFetcher (Tier 3)
+# Playwright's own headless shell too, for the PDF and widget renders: it is
+# what a plain Playwright launch looks for, and patchright pins its revision
+# apart from Playwright's, so the two need not match. A no-op when they do.
 RUN uv run patchright install --with-deps chromium \
+    && uv run playwright install --only-shell chromium \
     && uv run scrapling install
 
 # Copy application source
 COPY src/ src/
 COPY --from=chart-render /chart-render/ libs/chartkit/chartkit/render/
+COPY --from=widget-render /widget-render/ src/server/services/widget_render_page/
 COPY server.py .
 COPY scripts/ scripts/
 RUN chmod +x scripts/docker_entrypoint.sh

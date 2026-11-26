@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import overload
 
+from src.server.database.shared_workspaces import is_holder
 from src.server.services.member_grants import VIEWER
 from src.server.services.signed_grants import GrantCodec
 
@@ -35,6 +37,7 @@ __all__ = [
     "seconds_left",
     "verify_file_grant",
     "verify_grant_viewer",
+    "viewer_file_grant",
 ]
 
 # Long enough for a chat left open all day; the web app re-mints well before
@@ -103,6 +106,41 @@ async def mint_shared_file_grant(
     """A member's grant to a shared workspace, bound to them."""
     token, expires_at = await _SHARED.mint((workspace_id, viewer_id), ttl=ttl, now=now)
     return FileGrant(token, workspace_id, expires_at, viewer_id)
+
+
+@overload
+async def viewer_file_grant(
+    workspace_id: str, owner_user_id: object, viewer_id: str, *, ttl: int | None = None
+) -> FileGrant: ...
+
+
+@overload
+async def viewer_file_grant(
+    workspace_id: str, owner_user_id: object, viewer_id: str | None, *, ttl: int | None = None
+) -> FileGrant | None: ...
+
+
+async def viewer_file_grant(
+    workspace_id: str,
+    owner_user_id: object,
+    viewer_id: str | None,
+    *,
+    ttl: int | None = None,
+) -> FileGrant | None:
+    """The grant ``viewer_id``'s own viewer gets for the workspace its owner
+    ``owner_user_id`` holds: bound to them in a shared workspace, the owner's
+    otherwise. None for a shared workspace with no viewer to bind it to,
+    since an unbound grant there would open it for anyone holding the URL.
+    ``ttl`` defaults to each kind's own lifetime."""
+    if is_holder(owner_user_id):
+        if not viewer_id:
+            return None
+        return await mint_shared_file_grant(
+            workspace_id, viewer_id, ttl=SHARED_TTL_SECONDS if ttl is None else ttl
+        )
+    return await mint_file_grant(
+        workspace_id, ttl=DEFAULT_TTL_SECONDS if ttl is None else ttl
+    )
 
 
 async def _verified(token: str, *, now: int | None) -> FileGrant:
