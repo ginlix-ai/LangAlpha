@@ -2,32 +2,12 @@ import { createWriteStream, existsSync, mkdtempSync, readdirSync, rmSync, statSy
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { CliError, Exit, usage } from "../errors.js";
-import { p } from "../http.js";
-import { print, printable, table } from "../output.js";
 import type { Flag } from "../args.js";
-import { type Command, command, type Ctx, type Row } from "./command.js";
-import { bytesOf, type Entry, findSpace, getFile, maxUpload, putFile } from "./driveTransfer.js";
-
-interface Who {
-  kind: string;
-  agent?: string | null;
-  thread_id?: string | null;
-}
-
-interface Version {
-  seq: number;
-  size: number;
-  created_at: string;
-  actor: Who;
-  note: string | null;
-  restored_from: number | null;
-  /** When this old version goes; null for the current one and one kept without a limit. */
-  expires_at?: string | null;
-  /** Whether this version's bytes are text; absent from a server that does not say. */
-  is_text?: boolean;
-}
-
+import { CliError, Exit, usage } from "../errors.js";
+import { print, printable, table } from "../output.js";
+import type { Command, Row } from "./command.js";
+import { base, by, driveCommand, type Entry, type Memo, NOTE, noteOf, sh, SPACE, stat, type Version, versionNote, when } from "./driveApi.js";
+import { bytesOf, findSpace, getFile, maxUpload, putFile } from "./driveTransfer.js";
 
 interface TrashItem {
   trash_id: string;
@@ -39,19 +19,7 @@ interface TrashItem {
 /** The most trash items one answer lists (the route's own ceiling). */
 const TRASH_LIST_MAX = 1000;
 
-const SPACE: Flag = { type: "string", value: "SPACE", help: "the Drive space (default: personal)" };
 const REV: Flag = { type: "int", value: "N", help: "an older version of the file, its number from `drive history`" };
-
-const base = (ctx: Pick<Ctx, "api" | "args">) => p`/api/v1/drive/${ctx.args.str("space") ?? "personal"}`;
-
-const when = (iso: string) => iso.slice(0, 16).replace("T", " ");
-
-/** A person, or the agent that wrote it, with its name when the server has it. */
-function by(who: Who | null | undefined): string {
-  if (!who) return "-";
-  if (who.kind !== "agent") return who.kind;
-  return who.agent ? `agent ${who.agent}` : "agent";
-}
 
 const entryRow = (e: Entry, name: "name" | "path") => ({
   [name]: e.kind === "folder" ? `${e[name]}/` : e[name],
@@ -59,11 +27,8 @@ const entryRow = (e: Entry, name: "name" | "path") => ({
   size: bytesOf(e.size),
   modified: when(e.modified_at),
   by: by(e.modified_by),
+  memo: e.memo?.marked ? (e.memo.status ?? "memo") : "",
 });
-
-async function stat(ctx: Pick<Ctx, "api" | "args">, path: string): Promise<Entry> {
-  return ctx.api.json<Entry>("GET", `${base(ctx)}/entry`, { query: { path } });
-}
 
 function fileOnly(e: Entry, verb: string): void {
   if (e.kind === "folder") throw new CliError(`${e.path} is a folder; ${verb} takes a file`, Exit.usage);
@@ -88,7 +53,7 @@ function filesUnder(dir: string, rel = ""): string[] {
 }
 
 export const drive: Command[] = [
-  command({
+  driveCommand({
     words: ["drive", "ls"],
     summary: "list a Drive folder (the root when no path is given); use -r for everything under it",
     operands: ["path?"],
@@ -103,12 +68,12 @@ export const drive: Command[] = [
         query: { path: args.opt("path") ?? "", recursive: recursive || undefined },
       });
       const name = recursive ? "path" : "name";
-      print(json, entries, () =>
-        table(entries.map((e) => entryRow(e, name)) as Row[], [name, "kind", "size", "modified", "by"]),
-      );
+      const columns = [name, "kind", "size", "modified", "by"];
+      if (entries.some((e) => e.memo?.marked)) columns.push("memo");
+      print(json, entries, () => table(entries.map((e) => entryRow(e, name)) as Row[], columns));
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "cat"],
     summary: "print a text file from the Drive; a binary file is refused, use `drive get` for it",
     operands: ["path"],
@@ -126,11 +91,11 @@ export const drive: Command[] = [
         known = versions.find((v) => v.seq === rev)?.is_text;
       }
       if (known === false) {
-        throw new CliError(`${entry.path} is a binary file; download it with: la drive get ${entry.path}`);
+        throw new CliError(`${entry.path} is a binary file; download it with: la drive get ${sh(entry.path)}`);
       }
       const bytes = await ctx.api.bytes("GET", `${base(ctx)}/content`, { query: { path, seq: rev } });
       if (!(rev !== undefined && known === true) && bytes.includes(0)) {
-        throw new CliError(`${entry.path} is a binary file; download it with: la drive get ${entry.path}`);
+        throw new CliError(`${entry.path} is a binary file; download it with: la drive get ${sh(entry.path)}`);
       }
       // An escape sequence in a file anyone with Drive access can write must
       // not reach a terminal; a pipe gets the bytes as they are.
@@ -138,7 +103,7 @@ export const drive: Command[] = [
       else process.stdout.write(bytes);
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "get"],
     summary: "download a Drive file's bytes to a local file (default: its name here); use for binary files",
     operands: ["path"],
@@ -164,12 +129,12 @@ export const drive: Command[] = [
       print(ctx.json, done, () => `Saved ${entry.path} to ${done.output} (${bytesOf(done.size)}).`);
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "put"],
     summary: "upload a local file, or every file under a folder, to a Drive path; any size, and run again to continue an interrupted upload; FILE - reads stdin",
     operands: ["file", "path"],
     flags: {
-      note: { type: "string", value: "WHY", help: "why you changed it; shown in the file's history" },
+      note: NOTE,
       new: { type: "bool", help: "fail if the path already exists" },
       "if-match": { type: "string", value: "SHA256", help: "fail if the file changed since this content hash (sha256 in `ls --json`)" },
       space: SPACE,
@@ -179,6 +144,7 @@ export const drive: Command[] = [
       const file = args.op("file");
       const dest = args.op("path");
       const ifMatch = args.str("if-match");
+      const note = noteOf(args.str("note"));
       if (args.has("new") && ifMatch !== undefined) throw usage("Pass --new or --if-match, not both");
       const spool = file === "-" ? mkdtempSync(join(tmpdir(), "la-drive-")) : undefined;
       try {
@@ -200,12 +166,13 @@ export const drive: Command[] = [
             file: one.from,
             size: statSync(one.from).size,
             path: one.to,
-            note: args.str("note"),
+            note,
             ifMatch,
             ifNone: args.has("new"),
             limit,
             quiet: json,
           }).catch((e) => {
+            // A folder's refusal says which file it was about.
             throw folder && e instanceof CliError ? new CliError(`${one.to}: ${e.message}`, e.code, e) : e;
           });
           saved.push(entry);
@@ -217,7 +184,7 @@ export const drive: Command[] = [
       }
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "mkdir"],
     summary: "create a Drive folder, with any folders above it",
     operands: ["path"],
@@ -227,7 +194,7 @@ export const drive: Command[] = [
       print(ctx.json, entry, () => `Created ${entry.path}/.`);
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "mv"],
     summary: "rename or move a Drive file, or a folder with everything in it",
     operands: ["from", "to"],
@@ -239,7 +206,7 @@ export const drive: Command[] = [
       print(ctx.json, entry, () => `Moved ${ctx.args.op("from")} to ${entry.path}.`);
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "rm"],
     summary: "move a Drive file or folder to the trash (kept 14 days; undo with `drive trash restore`)",
     operands: ["path"],
@@ -250,7 +217,7 @@ export const drive: Command[] = [
       print(ctx.json, { trash_id }, () => `Moved ${path} to the trash. Undo: la drive trash restore ${trash_id}`);
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "history", "clear"],
     summary: "delete a file's earlier versions for good, keeping its current content; frees the room they take",
     operands: ["path"],
@@ -270,18 +237,26 @@ export const drive: Command[] = [
       );
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "history"],
-    summary: "list a file's versions, newest first, with who changed it, why, and when each earlier one goes",
+    summary: "list a file's versions, newest first; a file keeps its last earlier copy for 7 days, a memo keeps every version",
     operands: ["path"],
     flags: { space: SPACE },
     async run(ctx) {
       const path = ctx.args.op("path");
-      const listing = await ctx.api.json<{ versions: Version[]; history_bytes: number; too_large_for_history?: boolean }>(
+      const listing = await ctx.api.json<{
+        versions: Version[];
+        memo: Memo | null;
+        history_bytes: number;
+        too_large_for_history?: boolean;
+      }>(
         "GET",
         `${base(ctx)}/versions`,
         { query: { path } },
       );
+      // Whatever the server lists is shown: a memo keeps every version, a plain file at most a few for the week after the one-copy rule began.
+      // The closing line depends on whether the file ever was a memo (a former one keeps its record).
+      const memo = listing.memo != null;
       const { versions } = listing;
       const rows = versions.map((v, i) => ({
         version: v.seq,
@@ -290,20 +265,22 @@ export const drive: Command[] = [
         thread: v.actor.thread_id,
         size: bytesOf(v.size),
         goes: i === 0 ? "current" : v.expires_at ? when(v.expires_at) : "kept",
-        note: v.restored_from ? [`restored from v${v.restored_from}`, v.note].filter(Boolean).join(": ") : v.note,
+        note: versionNote(v),
       }));
       print(ctx.json, listing, () => {
         const lines = [table(rows, ["version", "when", "who", "thread", "size", "goes", "note"])];
         if (listing.too_large_for_history) {
           lines.push(`${path} is too large to keep earlier versions: saving over it replaces it.`);
-        } else if (versions.length > 1) {
-          lines.push(`Earlier versions take ${bytesOf(listing.history_bytes)}. Drop them with: la drive history clear ${path}`);
+        } else if (memo) {
+          lines.push(`Who changed what and why: la drive record ${sh(path)}`);
+        } else {
+          lines.push(`${path} keeps one earlier copy, for 7 days after a save. To keep every version, mark it as a memo: la drive memo mark ${sh(path)}`);
         }
         return lines.join("\n");
       });
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "usage"],
     summary: "show how much of the Drive's space is used; the trash is shown apart and does not count",
     flags: { space: SPACE },
@@ -320,20 +297,26 @@ export const drive: Command[] = [
       );
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "restore"],
     summary: "make an older version the file's current content (recorded as a new version)",
     operands: ["path"],
-    flags: { rev: { ...REV, required: true }, space: SPACE },
+    flags: {
+      rev: { ...REV, required: true },
+      note: NOTE,
+      space: SPACE,
+    },
     async run(ctx) {
       const entry = await stat(ctx, ctx.args.op("path"));
       fileOnly(entry, "restore");
       const seq = ctx.args.int("rev")!;
-      const restored = await ctx.api.json<Entry>("POST", `${base(ctx)}/versions/restore`, { body: { id: entry.id, seq } });
+      const restored = await ctx.api.json<Entry>("POST", `${base(ctx)}/versions/restore`, {
+        body: { id: entry.id, seq, note: noteOf(ctx.args.str("note")) },
+      });
       print(ctx.json, restored, () => `Restored ${restored.path} to version ${seq} (now version ${restored.version}).`);
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "trash", "restore"],
     summary: "put a trashed file or folder back, by the id `drive trash` shows",
     operands: ["trash_id"],
@@ -348,7 +331,7 @@ export const drive: Command[] = [
       });
     },
   }),
-  command({
+  driveCommand({
     words: ["drive", "trash"],
     summary: "list what is in the Drive trash, with the id to restore it by",
     flags: { space: SPACE },

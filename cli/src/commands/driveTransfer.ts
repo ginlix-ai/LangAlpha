@@ -6,23 +6,11 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { CliError, Exit } from "../errors.js";
+import { CliError, Exit, exitFor } from "../errors.js";
 import type { Api } from "../http.js";
 import { printable } from "../output.js";
 import { rawResponse } from "../rawHttp.js";
-
-export interface Entry {
-  id: string;
-  path: string;
-  name: string;
-  kind: "file" | "folder";
-  size: number | null;
-  sha256: string | null;
-  is_text: boolean | null;
-  version: number | null;
-  modified_at: string;
-  modified_by: { kind: string; agent?: string | null; thread_id?: string | null } | null;
-}
+import { type Entry, reword } from "./driveApi.js";
 
 const MIB = 1024 * 1024;
 /** The part size the server asks for below 10,000 parts; the md5 of each part is
@@ -156,18 +144,16 @@ const REFUSALS: Record<string, (limit?: number) => string> = {
   unavailable: () => "The Drive's storage did not answer. Run the same command again; it continues where it stopped.",
 };
 
-const REFUSAL_STATUS: Record<string, number> = { changed: 412, exists: 409, too_large: 413, over_quota: 507, mismatch: 422 };
+const refusalText = (reason: string, limit?: number) => REFUSALS[reason]?.(limit);
 
 export function explain(e: unknown, limit?: number): unknown {
-  if (!(e instanceof CliError) || !e.reason || !REFUSALS[e.reason]) return e;
-  return new CliError(REFUSALS[e.reason]!(limit), e.code, { status: e.status, detail: e.detail, reason: e.reason });
+  return reword(e, (reason) => refusalText(reason, limit));
 }
 
-function failedWith(type: string, message: string, limit?: number): CliError {
-  const known = REFUSALS[type];
-  const status = REFUSAL_STATUS[type] ?? 500;
-  const code = status === 409 || status === 412 ? Exit.conflict : Exit.error;
-  return new CliError(known ? known(limit) : message, code, { status, reason: type });
+/** A refusal that did not arrive as a response: an upload that failed after it
+ *  began, read from its status. It exits as the same refusal answered at once. */
+function failedWith(type: string, message: string, status: number, limit?: number): CliError {
+  return new CliError(refusalText(type, limit) ?? message, exitFor(status, type), { status, reason: type });
 }
 
 export interface Space {
@@ -365,7 +351,7 @@ export async function putFile(o: PutOptions): Promise<Entry> {
   const { api, base, size } = o;
   const progress = new Progress(`Reading ${basename(o.file)}`, size, o.quiet);
   try {
-    if (o.limit !== undefined && size > o.limit) throw failedWith("too_large", "", o.limit);
+    if (o.limit !== undefined && size > o.limit) throw failedWith("too_large", "", 413, o.limit);
     const unchanged = watch(o.file);
     const hashed = await hashFile(o.file, size, PART_GUESS, (n) => progress.update(n));
     progress.done();
@@ -519,7 +505,10 @@ async function putParts(
         if (st.entry) return st.entry;
         throw new CliError("The file landed, then was changed or removed before it could be read back; see `la drive ls`");
       }
-      if (st.state === "failed") throw failedWith(st.error?.type ?? "failed", st.error?.message ?? "The upload failed", o.limit);
+      if (st.state === "failed") {
+        const { type = "failed", message = "The upload failed", status = 500 } = st.error ?? {};
+        throw failedWith(type, message, status, o.limit);
+      }
       if (st.state === "aborted") throw new CliError("The upload was cancelled; run the command again to start it anew");
       if (st.state === "uploading") {
         // Reopened after the check began, by another sender's complete that found parts missing.
@@ -542,7 +531,7 @@ type UploadStatus =
   | { state: "uploading"; parts_held?: { part_number: number }[] }
   | { state: "verifying" | "aborted" }
   | { state: "done"; entry?: Entry }
-  | { state: "failed"; error?: { type: string; message: string } };
+  | { state: "failed"; error?: { type: string; message: string; status: number } };
 
 function missingParts(e: unknown): number[] | undefined {
   if (!(e instanceof CliError) || e.reason !== "parts_missing") return undefined;

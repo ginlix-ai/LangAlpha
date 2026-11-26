@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import { Args, asUsage, type Flag, type Flags, type Parsed, parse } from "../args.js";
 import { CliError, Exit, usage } from "../errors.js";
-import { bind as bindOperands, flagName, type Selection as GrammarSelection, select as selectIn } from "../grammar.js";
+import { bind as bindOperands, flagName, operandSpec, type Selection as GrammarSelection, select as selectIn } from "../grammar.js";
 import type { Api, Query } from "../http.js";
 import { print } from "../output.js";
 
@@ -28,7 +28,7 @@ export interface Ctx<F extends string = string, O extends string = string, P ext
 }
 
 type RequiredOperand<S> = S extends `${string}?` ? never : S extends `${infer N}...` ? N : S;
-type OptionalOperand<S> = S extends `${infer N}?` ? N : never;
+type OptionalOperand<S> = S extends `${infer N}...?` ? N : S extends `${infer N}?` ? N : never;
 
 /** A command, declared once: the parser accepts exactly what it declares and
  *  the help lists exactly that, so the two cannot drift apart. */
@@ -37,15 +37,18 @@ export interface Command<O extends readonly string[] = readonly string[], F exte
   summary: string;
   /** All required, in order, but a last one ending in ``?``, which may be
    *  left out; a last one ending in ``...`` takes the rest of the words,
-   *  joined, so a message needs no quotes. */
+   *  joined, so a message needs no quotes (``...?`` may also be left out). */
   operands?: O;
   flags?: F;
+  /** Rewrites the parsed words before they are bound, for a command whose operands
+   *  may be named in another form than the one it takes. */
+  prepare?(parsed: Parsed): Parsed;
   run(ctx: Ctx<Extract<keyof F, string>, RequiredOperand<O[number]>, OptionalOperand<O[number]>>): Promise<number | void>;
 }
 
 /** Infers the operand and flag names, so ``run`` is typed by its own spec. */
 export function command<const O extends readonly string[] = [], F extends Flags = {}>(c: Command<O, F>): Command<O, F> {
-  const optional = (c.operands ?? []).findIndex((o) => o.endsWith("?"));
+  const optional = (c.operands ?? []).findIndex((o) => operandSpec(o).optional);
   if (optional !== -1 && optional !== c.operands!.length - 1) {
     throw new Error(`${c.words.join(" ")}: optional operand <${c.operands![optional]}> must be last`);
   }
@@ -69,11 +72,16 @@ export function parseFor(command: Command | undefined, argv: readonly string[]):
 }
 
 export function bind(command: Command, parsed: Parsed): Args {
-  return new Args(parsed.values, asUsage(() => bindOperands(command, parsed)));
+  const prepared = command.prepare?.(parsed) ?? parsed;
+  return new Args(prepared.values, asUsage(() => bindOperands(command, prepared)));
 }
 
 export function synopsis(c: Command): string {
-  const parts = [...c.words, ...(c.operands ?? []).map((o) => (o.endsWith("?") ? `[${o.slice(0, -1)}]` : `<${o}>`))];
+  const parts = [...c.words, ...(c.operands ?? []).map((o) => {
+      const { name, rest, optional } = operandSpec(o);
+      const shown = name + (rest ? "..." : "");
+      return optional ? `[${shown}]` : `<${shown}>`;
+    })];
   for (const [name, flag] of Object.entries(c.flags ?? {})) {
     parts.push(flag.required ? flagName(name, flag) : `[${flagName(name, flag)}]`);
   }
