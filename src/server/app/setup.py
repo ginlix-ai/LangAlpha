@@ -28,12 +28,14 @@ import importlib
 import logging
 import os
 import re
+import signal
 import certifi
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -219,8 +221,96 @@ def _log_container_hardening() -> None:
 # ============================================================================
 # Lifespan Context Manager
 # ============================================================================
+async def _close_db_pools() -> None:
+    """Close the writer-guard, checkpointer and database pools.
+
+    Shutdown calls it after BTM shutdown; a startup refused after the pools
+    opened calls it too, since their workers keep the process from exiting.
+    """
+    # 6c. Close the writer-guard pool AFTER BTM shutdown: the final
+    # finalizes run on pinned guard sessions checked out of this pool.
+    try:
+        from src.server.services.writer_guard import close_writer_pool
+
+        await close_writer_pool()
+    except Exception as e:
+        logger.warning(f"Error closing writer-guard pool: {e}")
+
+    # 6d. Close the checkpointer pool AFTER BTM shutdown, for the same reason
+    # as 6b/6c: cancelling a live run flushes its checkpoint on the way out.
+    # Closing first left that flush — and the history projection behind it —
+    # retrying against a dead pool and falling back to a slow listing, which
+    # dragged graceful shutdown past the deploy's grace period.
+    if checkpointer is not None:
+        try:
+            from src.server.utils.checkpointer import close_checkpointer_pool
+
+            logger.info("Closing PTC Agent checkpointer pool...")
+            await close_checkpointer_pool(checkpointer)
+            logger.info("PTC Agent checkpointer pool closed")
+        except Exception as e:
+            logger.warning(f"Error closing PTC Agent checkpointer pool: {e}")
+
+    # 7. Close database pools, and the session folder holds share
+    try:
+        from src.server.database.session_lock import close_shared_lock_session
+
+        await close_shared_lock_session()
+    except Exception as e:
+        logger.warning(f"Error closing shared lock session: {e}")
+
+    try:
+        from src.server.database.pool import get_or_create_pool
+
+        conv_pool = get_or_create_pool()
+        if not conv_pool.closed:
+            logger.info("Closing conversation database pool...")
+            await conv_pool.close()
+            logger.info("Conversation database pool closed successfully")
+    except Exception as e:
+        logger.warning(f"Error closing conversation database pool: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Run the server; a startup that fails once the database pools are open
+    closes them, so the process exits instead of waiting on their workers.
+
+    Under several workers a refusal at launch also stops the supervisor
+    (server.py), which would otherwise start a new worker in its place for ever.
+    """
+    started = False
+    try:
+        async with _lifespan(app):
+            if refusals := os.environ.get("LANGALPHA_STARTUP_REFUSALS"):
+                Path(f"{refusals}.ready").touch()
+            started = True
+            yield
+    except BaseException as exc:
+        if not started:
+            await _close_db_pools()
+            if isinstance(exc, Exception):
+                _stop_supervisor(exc)
+        raise
+
+
+def _stop_supervisor(exc: Exception) -> None:
+    """Under several workers, a refusal before any worker started records why
+    and stops the supervisor (server.py), which exits non-zero with it, as one
+    worker would. A worker refused once others serve is left to uvicorn to
+    start again, since its failure may be its own."""
+    refusals = os.environ.get("LANGALPHA_STARTUP_REFUSALS")
+    if not refusals or os.path.exists(f"{refusals}.ready"):
+        return
+    try:
+        with open(refusals, "a") as f:
+            f.write(f"{type(exc).__name__}: {exc}\n")
+    finally:
+        os.kill(os.getppid(), signal.SIGTERM)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
     """Initialize resources when server starts, cleanup when stops."""
     global \
         agent_config, \
@@ -1216,48 +1306,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error draining activity writes: {e}")
 
-    # 6c. Close the writer-guard pool AFTER BTM shutdown: the final
-    # finalizes run on pinned guard sessions checked out of this pool.
-    try:
-        from src.server.services.writer_guard import close_writer_pool
-
-        await close_writer_pool()
-    except Exception as e:
-        logger.warning(f"Error closing writer-guard pool: {e}")
-
-    # 6d. Close the checkpointer pool AFTER BTM shutdown, for the same reason
-    # as 6b/6c: cancelling a live run flushes its checkpoint on the way out.
-    # Closing first left that flush — and the history projection behind it —
-    # retrying against a dead pool and falling back to a slow listing, which
-    # dragged graceful shutdown past the deploy's grace period.
-    if checkpointer is not None:
-        try:
-            from src.server.utils.checkpointer import close_checkpointer_pool
-
-            logger.info("Closing PTC Agent checkpointer pool...")
-            await close_checkpointer_pool(checkpointer)
-            logger.info("PTC Agent checkpointer pool closed")
-        except Exception as e:
-            logger.warning(f"Error closing PTC Agent checkpointer pool: {e}")
-
-    # 7. Close database pools, and the session folder holds share
-    try:
-        from src.server.database.session_lock import close_shared_lock_session
-
-        await close_shared_lock_session()
-    except Exception as e:
-        logger.warning(f"Error closing shared lock session: {e}")
-
-    try:
-        from src.server.database.pool import get_or_create_pool
-
-        conv_pool = get_or_create_pool()
-        if not conv_pool.closed:
-            logger.info("Closing conversation database pool...")
-            await conv_pool.close()
-            logger.info("Conversation database pool closed successfully")
-    except Exception as e:
-        logger.warning(f"Error closing conversation database pool: {e}")
+    # 6c-7. The writer-guard, checkpointer and database pools, AFTER BTM
+    # shutdown (see _close_db_pools).
+    await _close_db_pools()
 
     # 8. Close the Redis pools. All three, unconditionally — the status pubsub
     # pool used to be closed only when a workspace manager existed, so some

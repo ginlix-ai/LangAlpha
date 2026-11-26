@@ -3,7 +3,10 @@ Server script
 """
 
 import argparse
+import contextlib
 import logging
+import sys
+import tempfile
 import uvicorn
 
 logger = logging.getLogger(__name__)
@@ -119,6 +122,17 @@ if __name__ == "__main__":
     # each worker it would start again and again.
     import src.config.env  # noqa: F401
 
+    # A worker whose startup is refused before any worker started writes why
+    # here and stops this supervisor, which would otherwise replace it for ever
+    # (see the lifespan in src/server/app/setup.py); the server then exits as one
+    # worker would. --reload runs one worker whatever --workers says, and on
+    # Windows a signal to the supervisor kills it outright.
+    refusals = None
+    if args.workers > 1 and not reload and os.name == "posix":
+        fd, refusals = tempfile.mkstemp(prefix="langalpha-startup-refusals-")
+        os.close(fd)
+        os.environ["LANGALPHA_STARTUP_REFUSALS"] = refusals
+
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")
         uvicorn.run(
@@ -140,3 +154,14 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to start server: {str(e)}")
         exit(1)
+    finally:
+        reason = ""
+        if refusals:
+            with contextlib.suppress(FileNotFoundError), open(refusals) as f:
+                reason = f.read().strip()
+            for path in (refusals, f"{refusals}.ready"):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(path)
+    if reason:
+        logger.error(f"A worker refused to start, so the server stops: {reason}")
+        sys.exit(3)
