@@ -211,6 +211,15 @@ CREDIT_STOP_ERROR_TYPE = "credit_stop"
 # ledger, so neither may follow a name in code.
 RESTART_INTERRUPTED_META = "interrupted_by_restart"
 RESTART_STOP_ERROR_TYPE = "restart"
+# Beside the mark on a turn the system stopped for another reason than a
+# restart, to be resumed the same way: ``computer_lost`` for a Claude Code
+# turn whose CLI's computer stopped answering, which the resume words.
+RESTART_REASON_META = "interrupted_by"
+#: The reason, beside the mark, on a Claude Code turn stopped because its
+#: computer stopped answering, and the ``stopped_by`` of its ``run_end`` and of
+#: its replay's close. The turn's stop is no one's: a user's stop that lands
+#: first wins and keeps its own.
+COMPUTER_LOST_REASON = "computer_lost"
 # How long after a restart its work is still resumed: a resume that late would
 # surprise more than help.
 RESTART_RESUME_TTL = timedelta(hours=1)
@@ -224,6 +233,29 @@ def is_restart_interrupted(row: Optional[Mapping[str, Any]]) -> bool:
         return False
     metadata = row.get("metadata")
     return isinstance(metadata, dict) and bool(metadata.get(RESTART_INTERRUPTED_META))
+
+
+def is_computer_lost_stop(row: Optional[Mapping[str, Any]]) -> bool:
+    """True iff a run row was stopped because its Claude Code computer
+    stopped answering, and by nothing anyone asked for. The reason stays on
+    the row once a declined resume's settle takes the restart mark off."""
+    metadata = (row or {}).get("metadata")
+    return (
+        bool(row)
+        and row.get("status") == "cancelled"
+        and isinstance(metadata, dict)
+        and metadata.get(RESTART_REASON_META) == COMPUTER_LOST_REASON
+        and stopper_of(row) is None
+    )
+
+
+def run_end_stopper(row: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """The ``stopped_by`` a cancelled run's ``run_end``, and its replay's close,
+    name, so a reader tells the stop from the user's own: the account's
+    suspension, or a lost computer. None for anyone's other stop."""
+    if is_suspension_stop(row):
+        return SUSPENSION_STOPPER
+    return COMPUTER_LOST_REASON if is_computer_lost_stop(row) else None
 
 
 def restart_resume_expired(stopped_at: datetime) -> bool:

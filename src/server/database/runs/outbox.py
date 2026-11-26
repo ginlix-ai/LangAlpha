@@ -24,7 +24,7 @@ from typing import (
 
 from psycopg.rows import dict_row
 
-from src.server.contracts.status import Stopper, gives_back
+from src.server.contracts.status import RESTART_RESUME_TTL, Stopper, gives_back
 from src.server.database import pool
 # Re-exported so the hook_jobs split stays invisible to every call site.
 from src.server.database.runs.hook_jobs import (  # noqa: F401
@@ -1391,9 +1391,11 @@ async def release_for_reachable_computers() -> List[Dict[str, Any]]:
     The tunnel's liveness, which the gateway writes, is read in the same
     statement, so every worker may run it at once and a row is released
     once. A computer deleted meanwhile releases its jobs too: their
-    executors decide what is owed now. One a live turn holds is left to that
-    turn's confirm or ending. A steer is due by its ``due_at``, as every
-    pending steer is (``_STEER_DUE_SQL``).
+    executors decide what is owed now. So does a restart's resume past its
+    TTL, whose executor declines it now rather than when the computer is
+    back, so its stop settles and says why. One a live turn holds is left
+    to that turn's confirm or ending. A steer is due by its ``due_at``, as
+    every pending steer is (``_STEER_DUE_SQL``).
     """
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -1411,7 +1413,10 @@ async def release_for_reachable_computers() -> List[Dict[str, Any]]:
                   AND NOT (o.payload ? 'steered_run_id')
                   AND ({awaited_computer_back_sql(
                       f"o.payload->>'{AWAITS_COMPUTER}'", _TURN_WORKSPACE_SQL)}
-                       OR {_STAND_IN_SQL})
+                       OR {_STAND_IN_SQL}
+                       OR (o.hook_type = '{RESTART_RESUME_HOOK}'
+                           AND o.created_at < NOW() - make_interval(
+                               secs => {int(RESTART_RESUME_TTL.total_seconds())})))
                 RETURNING o.hook_outbox_id, o.hook_type, o.conversation_thread_id,
                           o.ordering_key
                 """
@@ -1433,7 +1438,9 @@ async def close_for_lost_computers() -> List[Dict[str, Any]]:
     alert (a wake, a price target's notice) is held for its thread's next
     turn instead, as one whose wake was refused is (``_exhaust_alerts``), so
     its notice still reaches the agent; it keeps naming the computer, so a
-    machine that does come back still brings its wake. One a live turn holds
+    machine that does come back still brings its wake. A restart's resume is
+    never left this long: its TTL releases it to its executor, which
+    declines and settles it (``release_for_reachable_computers``). One a live turn holds
     is left to that turn. Guarded statements in one transaction, so every
     worker may run them at once."""
     parked = (
@@ -1463,7 +1470,7 @@ async def close_for_lost_computers() -> List[Dict[str, Any]]:
                         SET status = 'done', completed_at = NOW(),
                             next_retry_at = NULL,
                             payload = o.payload - '{AWAITS_COMPUTER}'
-                        WHERE o.hook_type NOT IN {_sql_list(("steer", *ALERT_HOOK_TYPES))}
+                        WHERE o.hook_type NOT IN {_sql_list(("steer", RESTART_RESUME_HOOK, *ALERT_HOOK_TYPES))}
                           AND {parked}
                         RETURNING o.*
                     ),

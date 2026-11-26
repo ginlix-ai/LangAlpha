@@ -682,8 +682,9 @@ export type AssistantMessage = {
   unloaded?: boolean;
   /** Set when the turn was stopped (live finalize or history replay of a
    *  stopped turn): `true` when its user stopped it, which the "⏹ Stopped"
-   *  chip says, or `suspension` when the account's suspension ended it,
-   *  which its own chip says. */
+   *  chip says, `suspension` when the account's suspension ended it, or
+   *  `computer_lost` when its computer stopped answering and the turn was
+   *  not carried on, each of which its own chip says. */
   stopped?: TurnStop;
   /** The reply to a send the server refused before admitting it (see
    *  UserMessage.unadmitted). */
@@ -701,7 +702,7 @@ export type AssistantMessage = {
   completionObservedAt?: number;
 };
 
-export type TurnStop = true | 'suspension';
+export type TurnStop = true | 'suspension' | 'computer_lost';
 
 export type NotificationVariant = 'info' | 'success' | 'warning';
 

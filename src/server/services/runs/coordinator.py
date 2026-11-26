@@ -17,8 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional
 from uuid import uuid4
 
-from src.server.contracts.status import SUSPENSION_STOPPER, is_suspension_stop
-from src.server.contracts.status import unreachable_facts
+from src.server.contracts.status import run_end_stopper, unreachable_facts
 from src.server.contracts.turn_kinds import RUN_ORIGIN_META, classify_origin
 from src.server.database.runs import lifecycle as tl_db
 from src.server.database.runs.lifecycle import (  # re-exported for callers
@@ -560,7 +559,7 @@ class RunCoordinator:
                 run_id,
                 final_status,
                 error_frame=error_frame if final_status == "error" else None,
-                stopped_by=SUSPENSION_STOPPER if is_suspension_stop(result.run) else None,
+                stopped_by=run_end_stopper(result.run),
             )
         return result
 

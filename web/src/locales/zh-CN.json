@@ -1065,6 +1065,7 @@
     "worker": "工作者",
     "agentNotFound": "未找到 Agent",
     "stoppedChip": "已停止",
+    "computerLostChip": "已停止：计算机已离线",
     "workingFor": "工作中 {{duration}}",
     "workedFor": "已工作 {{duration}}",
     "worked": "工作过程",

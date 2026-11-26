@@ -1,7 +1,7 @@
 import { useSharedBubble } from './SharedThreadContext';
 import React, { useContext, useState, useEffect, useLayoutEffect, useRef, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Building2, Check, Copy, FileSearch, GitBranch, Info, Pencil, RefreshCw, RotateCcw, StopCircle, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { Building2, Check, Copy, FileSearch, GitBranch, Info, Pencil, RefreshCw, RotateCcw, StopCircle, ThumbsDown, ThumbsUp, WifiOff } from 'lucide-react';
 import { useAccount } from '@/hooks/useAccount';
 import { ThumbDownDialog } from '../ThumbDownSentDialog';
 import FigureEightLoading, { FADE_MS } from '@/components/ui/figure-eight-loading';
@@ -15,7 +15,7 @@ import { ReportFailure } from '@/components/ui/error-banner';
 import { isReportable } from '@/lib/upstreamFailure';
 import { SentMessageBody } from './SentMessageBody';
 import type { StructuredError } from '@/utils/rateLimitError';
-import { countDedupedSources, type CreditPauseState, type MessageProvenance, type UserMessage, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState } from '@/types/chat';
+import { countDedupedSources, type CreditPauseState, type MessageProvenance, type UserMessage, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState, type TurnStop } from '@/types/chat';
 import { TextShimmer } from '@/components/ui/text-shimmer';
 import { AttachmentCard, InlineSelectionCards, InlineWidgetDeck } from './attachments';
 import type { AttachmentData, WidgetChipShape } from './attachments';
@@ -71,17 +71,24 @@ function useStillFor(busy: boolean, ms: number): boolean {
   return still;
 }
 
-/** The stopped chip of a turn its account's suspension ended, in the same
- *  quiet ink as the user's own stop: neither theirs nor a fault. */
-function SuspensionStopChip(): React.ReactElement {
+/** The stopped chip closing a stopped turn, in quiet ink, not red: the
+ *  user's own stop, their account's suspension, or a computer that stopped
+ *  answering, none of them a fault of the turn. */
+function StopChip({ stop }: { stop: TurnStop }): React.ReactElement {
+  const { t } = useTranslation();
   const { orgT } = useAccount();
+  const [Icon, label] = stop === 'suspension'
+    ? [Building2, orgT('organization.suspended.turnStopped')]
+    : stop === 'computer_lost'
+      ? [WifiOff, t('chat.computerLostChip')]
+      : [StopCircle, t('chat.stoppedChip')];
   return (
     <div
       className="inline-flex items-center gap-1.5 self-start mt-1 text-xs"
       style={{ color: 'var(--color-text-tertiary)' }}
     >
-      <Building2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-      <span>{orgT('organization.suspended.turnStopped')}</span>
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span>{label}</span>
     </div>
   );
 }
@@ -831,23 +838,9 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
           />
         )}
 
-        {/* Per-message "⏹ Stopped" marker — the turn was hard-stopped by the
-            user (live finalize or replay of a stopped turn). Quiet ink, not
-            red: a stop is the user's own action, not a loss/error state. */}
-        {isAssistant && message.stopped && (
-          message.stopped === 'suspension' ? (
-            // Not the user's stop: their account's access ended mid-turn.
-            <SuspensionStopChip />
-          ) : (
-          <div
-            className="inline-flex items-center gap-1.5 self-start mt-1 text-xs"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          >
-            <StopCircle className="h-3.5 w-3.5 shrink-0" />
-            <span>{t('chat.stoppedChip')}</span>
-          </div>
-          )
-        )}
+        {/* The turn was stopped: by its user (live or replayed), by its
+            account's suspension, or by its computer going offline. */}
+        {isAssistant && message.stopped && <StopChip stop={message.stopped as TurnStop} />}
 
         {/* The assistant's meta row: what the turn drew on, and what you can do
             with it, on one line closing the turn.
