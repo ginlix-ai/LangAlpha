@@ -414,9 +414,9 @@ class TestSourceChoice:
     def test_ginlix_data_configured_ranks_by_its_tables(self, monkeypatch):
         import src.config.settings as settings
 
-        monkeypatch.setattr(settings, "GINLIX_DATA_ENABLED", True)
+        monkeypatch.setattr(settings, "LANGALPHA_DATA_ENABLED", True)
         assert isinstance(ss.traded_value(), ss.TableTradedValue)
-        monkeypatch.setattr(settings, "GINLIX_DATA_ENABLED", False)
+        monkeypatch.setattr(settings, "LANGALPHA_DATA_ENABLED", False)
         assert isinstance(ss.traded_value(), ss.QuoteTradedValue)
 
     @pytest.mark.asyncio

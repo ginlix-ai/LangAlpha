@@ -463,7 +463,7 @@ def test_hosted_daytona_env_excludes_plaintext_and_mounts_secret(monkeypatch):
         ("AWS_SECRET_ACCESS_KEY", True),
         ("GITHUB_TOKEN", True),
         ("DB_PASSWORD", True),
-        ("GINLIX_DATA_URL", False),
+        ("LANGALPHA_DATA_URL", False),
         ("GINLIX_TOKEN_FILE", False),
         ("MAX_TOKENS", False),
         ("PUBLIC_KEY_PATH", False),
@@ -490,9 +490,9 @@ def test_hosted_env_withholds_an_unbound_credential(monkeypatch):
     # With no catalog entry for it, a vendor key never reaches a hosted
     # sandbox as plaintext; non-secret env is untouched.
     monkeypatch.setenv("FMP_API_KEY", "real-fmp-value")
-    monkeypatch.setenv("GINLIX_DATA_URL", "http://data.test")
+    monkeypatch.setenv("LANGALPHA_DATA_URL", "http://data.test")
     config = _config(platform_secrets=())
-    config.mcp.servers[0].env["GINLIX_DATA_URL"] = "${GINLIX_DATA_URL}"
+    config.mcp.servers[0].env["LANGALPHA_DATA_URL"] = "${LANGALPHA_DATA_URL}"
     sandbox = _hosted_sandbox(monkeypatch, config)
 
     bindings = build_platform_secret_bindings(sandbox.config)
@@ -501,7 +501,7 @@ def test_hosted_env_withholds_an_unbound_credential(monkeypatch):
     assert bindings == {}
     assert "FMP_API_KEY" not in env_vars
     assert "real-fmp-value" not in env_vars.values()
-    assert env_vars["GINLIX_DATA_URL"] == "http://data.test"
+    assert env_vars["LANGALPHA_DATA_URL"] == "http://data.test"
 
 
 def test_hosted_env_withholds_a_credential_the_catalog_does_not_cover(

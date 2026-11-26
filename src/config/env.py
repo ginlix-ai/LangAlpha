@@ -43,23 +43,50 @@ DB_SSLMODE: str = os.getenv("DB_SSLMODE", "prefer")
 # Only enforced in platform mode; OSS deployments are ungated.
 SEARCH_PROVIDER_MIN_TIER: int = int(os.getenv("SEARCH_PROVIDER_MIN_TIER", "1"))
 
-# ginlix-data (real-time market data proxy)
-GINLIX_DATA_URL: str = os.getenv("GINLIX_DATA_URL", "")
-GINLIX_DATA_WS_URL: str = os.getenv("GINLIX_DATA_WS_URL", "") or (
-    GINLIX_DATA_URL.replace("http://", "ws://").replace("https://", "wss://")
-    if GINLIX_DATA_URL
+
+def _refuse_renamed(renamed: dict[str, str]) -> None:
+    """Fail the boot on a setting still under its former name.
+
+    A former name is never read. Beside its current name with the same value it
+    is left alone, so one env file serves a release on either side of the
+    rename. Removed in the release after the rename.
+    """
+    for former, name in renamed.items():
+        if former not in os.environ or os.environ[former] == os.environ.get(name):
+            continue
+        if name in os.environ:
+            raise RuntimeError(
+                f"{former} and {name} hold different values. {name} is the one read: "
+                f"give {former} the same value or remove it."
+            )
+        raise RuntimeError(f"{former} is renamed {name}. Set {name} to its value; {former} is not read.")
+
+
+_refuse_renamed({
+    "GINLIX_DATA_URL": "LANGALPHA_DATA_URL",
+    "GINLIX_DATA_WS_URL": "LANGALPHA_DATA_WS_URL",
+    "GINLIX_DATA_SEC_ENABLED": "LANGALPHA_DATA_SEC_ENABLED",
+})
+
+# LangAlpha Data, the hosted market-data service behind LangAlpha.ai. It runs only
+# as a hosted service; a stack without LANGALPHA_DATA_URL gets prices,
+# fundamentals and news from FMP and the other configured providers.
+LANGALPHA_DATA_URL: str = os.getenv("LANGALPHA_DATA_URL", "")
+LANGALPHA_DATA_WS_URL: str = os.getenv("LANGALPHA_DATA_WS_URL", "") or (
+    LANGALPHA_DATA_URL.replace("http://", "ws://").replace("https://", "wss://")
+    if LANGALPHA_DATA_URL
     else ""
 )
-GINLIX_DATA_ENABLED: bool = bool(GINLIX_DATA_URL)
-# Whether get_sec_filing reads filings from ginlix-data before SEC EDGAR, with
-# GINLIX_DATA_URL set. false reads them from EDGAR alone and leaves market data
-# on ginlix-data.
-GINLIX_DATA_SEC_ENABLED: bool = os.getenv("GINLIX_DATA_SEC_ENABLED", "true").lower() == "true"
+LANGALPHA_DATA_ENABLED: bool = bool(LANGALPHA_DATA_URL)
+# Whether get_sec_filing reads filings from LangAlpha Data before SEC EDGAR, with
+# LANGALPHA_DATA_URL set. false reads them from EDGAR alone and leaves market data
+# on LangAlpha Data.
+LANGALPHA_DATA_SEC_ENABLED: bool = os.getenv("LANGALPHA_DATA_SEC_ENABLED", "true").lower() == "true"
 
-# Where a sandbox reaches the platform's public API, ginlix-data included.
+# Where a sandbox reaches the platform's public API, LangAlpha Data included.
 # Sandboxes are remote, so this stays publicly reachable even when this server
 # reaches the same services over a private address; unset, they use
-# GINLIX_DATA_URL as this server does.
+# LANGALPHA_DATA_URL as this server does.
 PUBLIC_API_BASE_URL: str = os.getenv("PUBLIC_API_BASE_URL", "").rstrip("/")
 
 # Public base URL of this server (used in agent-generated URLs like preview links)

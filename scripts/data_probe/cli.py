@@ -400,7 +400,7 @@ async def run_probe(args: argparse.Namespace) -> int:
 
     sources = await build_sources(providers)
     if not sources:
-        print("no market-data provider is configured. Set FMP_API_KEY / GINLIX_DATA_URL, "
+        print("no market-data provider is configured. Set FMP_API_KEY / LANGALPHA_DATA_URL, "
               "or install yfinance", file=sys.stderr)
         return 1
     print(f"providers: {', '.join(sources)}", flush=True)

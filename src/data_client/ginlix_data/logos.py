@@ -17,10 +17,10 @@ _http: httpx.AsyncClient | None = None
 def _client() -> httpx.AsyncClient:
     global _http
     if _http is None:
-        from src.config.settings import GINLIX_DATA_URL
+        from src.config.settings import LANGALPHA_DATA_URL
 
         # Under the data service's own 20 s resolution deadline, so its 503 arrives first.
-        _http = httpx.AsyncClient(base_url=GINLIX_DATA_URL.rstrip("/"), timeout=25.0)
+        _http = httpx.AsyncClient(base_url=LANGALPHA_DATA_URL.rstrip("/"), timeout=25.0)
     return _http
 
 

@@ -203,7 +203,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
 
     def _load(self, stamp: tuple[int, int, int] | None) -> None:
         tokens = _load_tokens()
-        ginlix_url = tokens.get("ginlix_data_url") or os.getenv("GINLIX_DATA_URL", "")
+        ginlix_url = tokens.get("ginlix_data_url") or os.getenv("LANGALPHA_DATA_URL", "")
         access_token = tokens.get("access_token", "")
         if not (ginlix_url and access_token):
             # Nothing usable on disk: a client already built keeps the token

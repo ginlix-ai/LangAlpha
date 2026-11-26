@@ -34,10 +34,10 @@ async def get_ginlix_data_client() -> GinlixDataClient:
     global _client
     async with _lock:
         if _client is None:
-            from src.config.settings import GINLIX_DATA_URL
+            from src.config.settings import LANGALPHA_DATA_URL
 
             service_token = __import__("os").getenv("INTERNAL_SERVICE_TOKEN", "")
-            _client = GinlixDataClient(base_url=GINLIX_DATA_URL, service_token=service_token)
+            _client = GinlixDataClient(base_url=LANGALPHA_DATA_URL, service_token=service_token)
         return _client
 
 

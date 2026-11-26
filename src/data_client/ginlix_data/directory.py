@@ -166,10 +166,10 @@ async def display_names_many(
     symbols: Iterable[str],
 ) -> dict[str, tuple[str | None, str | None]]:
     """(local name, English name) per CN/HK listing via the host's ginlix-data client."""
-    from src.config.settings import GINLIX_DATA_URL
+    from src.config.settings import LANGALPHA_DATA_URL
 
     symbols = list(symbols)
-    if not GINLIX_DATA_URL:
+    if not LANGALPHA_DATA_URL:
         return {s: (None, None) for s in symbols}
     global _host
     if _host is None:

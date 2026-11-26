@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 
 
 def _ginlix_data_available() -> bool:
-    from src.config.settings import GINLIX_DATA_URL
+    from src.config.settings import LANGALPHA_DATA_URL
 
-    return bool(GINLIX_DATA_URL)
+    return bool(LANGALPHA_DATA_URL)
 
 
 def _fmp_available() -> bool:
@@ -405,7 +405,7 @@ async def get_financial_data_provider() -> FinancialDataProvider:
 
     Builds the composite from available backends:
     - :class:`FMPFinancialSource` if ``FMP_API_KEY`` is set.
-    - :class:`GinlixMarketIntelSource` if ``GINLIX_DATA_URL`` is configured.
+    - :class:`GinlixMarketIntelSource` if ``LANGALPHA_DATA_URL`` is configured.
     """
     global _financial_data_provider
     if _financial_data_provider is not None:

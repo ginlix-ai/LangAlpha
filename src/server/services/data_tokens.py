@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from src.config.env import AUTH_SERVICE_URL, GINLIX_DATA_URL, PUBLIC_API_BASE_URL
+from src.config.env import AUTH_SERVICE_URL, LANGALPHA_DATA_URL, PUBLIC_API_BASE_URL
 from src.server.auth import computer_token_core
 from src.server.database import computer_data_tokens as db
 from src.server.database.shared_workspaces import is_holder
@@ -75,7 +75,7 @@ class Minted:
 def configured() -> bool:
     return bool(
         AUTH_SERVICE_URL
-        and GINLIX_DATA_URL
+        and LANGALPHA_DATA_URL
         and os.getenv("INTERNAL_SERVICE_TOKEN", "")
     )
 
@@ -247,7 +247,7 @@ def _payload(minted: Minted) -> dict[str, Any]:
             "%Y-%m-%dT%H:%M:%SZ"
         ),
         # Sandboxes are remote, so they reach ginlix-data at its public address.
-        "ginlix_data_url": PUBLIC_API_BASE_URL or GINLIX_DATA_URL.rstrip("/"),
+        "ginlix_data_url": PUBLIC_API_BASE_URL or LANGALPHA_DATA_URL.rstrip("/"),
     }
 
 

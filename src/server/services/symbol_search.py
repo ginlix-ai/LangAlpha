@@ -299,10 +299,10 @@ class TableTradedValue:
 
 def traded_value() -> TradedValue:
     """ginlix-data's tables where it is configured, else today's quotes (a self-hosted stack)."""
-    from src.config.settings import GINLIX_DATA_ENABLED
+    from src.config.settings import LANGALPHA_DATA_ENABLED
 
     quotes = QuoteTradedValue()
-    if not GINLIX_DATA_ENABLED:
+    if not LANGALPHA_DATA_ENABLED:
         return quotes
     return TableTradedValue(get_liquidity_tables(), fallback=quotes)
 

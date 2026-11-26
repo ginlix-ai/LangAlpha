@@ -1706,10 +1706,10 @@ from src.server.app.mcp_servers import router as mcp_servers_router
 from src.server.app.search import router as search_router
 from src.server.app.web_dist import serve_web_dist
 
-# Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
-from src.config.settings import GINLIX_DATA_ENABLED
+# Conditionally import ginlix-data WS proxy (only when LANGALPHA_DATA_WS_URL is set)
+from src.config.settings import LANGALPHA_DATA_ENABLED
 
-if GINLIX_DATA_ENABLED:
+if LANGALPHA_DATA_ENABLED:
     from src.server.app.market_data_ws import router as market_data_ws_router
 
     logger.info("ginlix-data WS proxy enabled")
@@ -1724,7 +1724,7 @@ else:
     async def market_data_ws_status_disabled():
         return {"enabled": False}
 
-    logger.info("ginlix-data WS proxy disabled (GINLIX_DATA_URL not set)")
+    logger.info("ginlix-data WS proxy disabled (LANGALPHA_DATA_URL not set)")
 
 # The setup step exists only where the owner sets the server up in the app.
 from src.server.services.setup_settings import self_hosted

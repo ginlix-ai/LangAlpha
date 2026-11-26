@@ -9,8 +9,8 @@ on their symbol subscriptions.
 WS ticks are also written into the Redis OHLCV cache so that REST
 reads always reflect near-real-time data (WS-fed cache).
 
-The entire router is only registered when ``GINLIX_DATA_ENABLED`` is
-true (i.e. ``GINLIX_DATA_WS_URL`` is set) — see ``setup.py``.
+The entire router is only registered when ``LANGALPHA_DATA_ENABLED`` is
+true (i.e. ``LANGALPHA_DATA_WS_URL`` is set) — see ``setup.py``.
 """
 
 import asyncio
