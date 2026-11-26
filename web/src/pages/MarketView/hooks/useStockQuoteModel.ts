@@ -121,7 +121,7 @@ export function deriveStockQuote({
   const isLive = wsStatus === 'connected' && isUSEquity(symbol) && wsHasData;
   const status: QuoteStatus = marketPhase === 'closed' ? 'closed' : isLive ? 'live' : 'delayed';
   const providers = (marketStatus?.providers ?? []) as string[];
-  const activeSource = isLive ? 'ginlix-data' : (snapshot?.source ?? null);
+  const activeSource = isLive ? 'langalpha-data' : (snapshot?.source ?? null);
   const dataSources = activeSource ? [activeSource] : providers;
 
   const averageVolume = quoteData?.avgVolume ?? stockInfo?.AverageVolume ?? null;

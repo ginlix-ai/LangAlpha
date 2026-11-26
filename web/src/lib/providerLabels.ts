@@ -6,7 +6,7 @@ import type { TFunction } from 'i18next';
  * source with the same words. Brand names are not translated.
  */
 const PROVIDER_LABELS: Record<string, string> = {
-  'ginlix-data': 'Ginlix Data',
+  'langalpha-data': 'LangAlpha Data',
   fmp: 'FMP',
   yfinance: 'Yahoo Finance',
   tushare: 'Tushare',
