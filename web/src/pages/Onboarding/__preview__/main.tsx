@@ -23,7 +23,7 @@ import { ScenePreview } from './scenes';
  * replays the entrance animations after every control change.
  *
  * URL parameters, for screenshots without clicking: `theme`, `locale` and
- * `surface` (intro, whatsNew, guide; `rail` for the guide's rail) set the
+ * `surface` (intro, whatsNew, guide) set the
  * starting toggles; `scene=<visual id>` shows that one scene alone, live,
  * or with `frames=0,800,1600` (or `frames=8` for that many evenly spaced) as
  * a contact sheet of frozen frames. `cardStyle` (soft, balanced, terminal)
@@ -82,9 +82,6 @@ function Btn({
 
 function Preview() {
   const [surface, setSurface] = useState<(typeof SURFACES)[number]>(initialSurface);
-  const [guideVariant, setGuideVariant] = useState<'row' | 'rail'>(
-    params.has('rail') ? 'rail' : 'row'
-  );
   const [twoReleases, setTwoReleases] = useState(false);
   const [introId, setIntroId] = useState(PAGE_INTROS[0].id);
   const [theme, setTheme] = useState<(typeof THEMES)[number]>(initialTheme);
@@ -149,14 +146,6 @@ function Preview() {
         <Btn on={surface === 'guide'} onClick={() => setSurface('guide')}>
           guide
         </Btn>
-        {surface === 'guide' && (
-          <Btn
-            on={guideVariant === 'rail'}
-            onClick={() => setGuideVariant((v) => (v === 'row' ? 'rail' : 'row'))}
-          >
-            rail
-          </Btn>
-        )}
         <span style={{ width: 1, height: 18, background: 'var(--color-border-default)' }} />
         {THEMES.map((t) => (
           <Btn key={t} on={t === theme} onClick={() => setTheme(t)}>
@@ -171,7 +160,7 @@ function Preview() {
         ))}
       </div>
       {surface === 'guide' ? (
-        <GuidePreview key={`${guideVariant}-${locale}-${run}`} variant={guideVariant} done={2} />
+        <GuidePreview key={`${locale}-${run}`} done={2} />
       ) : surface === 'intro' ? (
         // The modal still suspends for a tick on each intro and language: the
         // loads below are done, but `use` meets each promise for the first time.

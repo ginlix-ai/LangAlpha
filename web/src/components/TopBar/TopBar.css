@@ -1,0 +1,205 @@
+/* The row across the top of the window (App.css explains the layout). Placed
+   in the layout but with no z-index of its own, so it makes no stacking
+   context: its corner rises over the sidebar, peeking too, while the tabs
+   past it stay under a peeking panel, as the page does. While it spans only
+   the corner, it is only as wide as the corner, so the page under the rest of
+   the row stays the page's. */
+.app-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: var(--topbar-height);
+  padding-right: 12px;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+.app-topbar--spans {
+  right: 0;
+}
+
+/* The brand, the toggle and history (in the desktop shell the toggle and back
+   and forward, beside the window buttons). Spanning, it is as wide as the
+   sidebar, so the tabs start where the page column does, and as wide as its
+   buttons while the sidebar is hidden. */
+.app-topbar-corner {
+  position: relative;
+  z-index: 1001;
+  flex: none;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 16px;
+  box-sizing: border-box;
+  transition: min-width var(--motion-fold) var(--ease-out);
+}
+
+.app-topbar--spans .app-topbar-corner {
+  min-width: calc(var(--sidebar-width) + 12px);
+}
+
+/* To the right of the window buttons, which reach ~73px. */
+html.desktop-mac .app-topbar-corner {
+  padding: 0 10px 0 84px;
+}
+
+html.desktop-mac .app-topbar-corner .sidebar-brand {
+  display: none;
+}
+
+/* The strip takes the room the bar has and gives each tab an even share of
+   it, as a browser's does, down to the point a name stops being legible.
+   Tabs are filled, the one in front a step lighter and edged, so the strip
+   reads as a row of pages on the window's ground. */
+.page-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Past their narrowest the tabs scroll sideways, with no bar drawn in the
+   window's chrome; the padding keeps a focused tab's ring inside the clip. */
+.page-tabs-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  padding: 3px;
+  margin: -3px;
+}
+
+.page-tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
+.page-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 220px;
+  min-width: 72px;
+  height: 28px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+
+.page-tab:hover {
+  background: var(--color-bg-hover);
+}
+
+.page-tab.is-active {
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-muted);
+  color: var(--color-text-primary);
+}
+
+.page-tab-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0 4px 0 9px;
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.page-tab-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--color-icon-muted);
+}
+
+.page-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Shown on the tab in front and on the one under the pointer, so a row of
+   tabs reads as names rather than as a row of crosses. */
+.page-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 4px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-icon-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.page-tab.is-active .page-tab-close,
+.page-tab:hover .page-tab-close,
+.page-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.page-tab-close:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.page-tab-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-icon-muted);
+  cursor: pointer;
+}
+
+.page-tab-new:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+/* A page's own controls (the dashboard's switcher and Edit). They are sized
+   for the page header they came from, so here they take the bar's 28px row. */
+.app-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding-left: 12px;
+  flex-shrink: 0;
+}
+
+.app-topbar-actions:empty {
+  display: none;
+}
+
+.app-topbar-actions button {
+  height: 28px;
+  min-width: 28px;
+}

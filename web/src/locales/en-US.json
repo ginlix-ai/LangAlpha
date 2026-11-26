@@ -141,10 +141,10 @@
     "newChat": "New chat",
     "workspaces": "Workspaces",
     "workspaceGallery": "Workspace gallery",
-    "collapse": "Collapse sidebar",
+    "collapse": "Hide sidebar",
     "back": "Back",
     "forward": "Forward",
-    "expand": "Expand sidebar",
+    "expand": "Show sidebar",
     "resize": "Resize sidebar",
     "plugins": "Plugins",
     "orders": "Orders",
@@ -3853,5 +3853,12 @@
     "openInBrowser": "Open in agent browser",
     "openInNewTab": "Open in new tab",
     "copyLink": "Copy link"
+  },
+  "pageTabs": {
+    "label": "Open pages",
+    "newTab": "New tab",
+    "close": "Close {{title}}",
+    "untitled": "LangAlpha",
+    "full": "{{count}} tabs are open. Close one to open another."
   }
 }

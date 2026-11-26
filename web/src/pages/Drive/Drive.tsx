@@ -5,6 +5,7 @@ import { objectUrlAt } from '@/api/drive';
 import { apiErrorStatus } from '@/api/errors';
 import { spaceRef, useDriveChanges, useDriveEntry, useDriveList, useDriveSpaces } from '@/hooks/useDrive';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { usePageTabLeaveGuard } from '@/components/PageTabs/usePageTabLeaveGuard';
 import { cn } from '@/lib/utils';
 import { driveHref, readDriveLocation, type DriveLocation } from '@/lib/driveLinks';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
@@ -74,6 +75,10 @@ function Drive() {
     if (editor.session && next.file !== file) leaveEditor(() => navigate(href, opts));
     else navigate(href, opts);
   };
+
+  // A page tab switched or closed asks the same, since a route change fires
+  // no beforeunload.
+  usePageTabLeaveGuard(editor.dirty ? (then) => leaveEditor(then) : null);
 
   // A tab closed or reloaded with unsaved edits asks the browser's own question.
   useEffect(() => {

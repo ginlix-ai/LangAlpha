@@ -173,11 +173,6 @@
   color: var(--color-text-secondary);
 }
 
-/* The rail's ring, above the avatar. */
-.sidebar-guide-rail {
-  margin-bottom: 4px;
-}
-
 .sidebar-guide-ring-arc {
   transition: stroke-dashoffset var(--motion-fold) var(--ease-out);
 }

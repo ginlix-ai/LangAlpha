@@ -1,8 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 import { ArrowUpRight, Check, ChevronDown, ChevronRight } from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { isDesktopShell } from '@/lib/desktop';
 import { cn, safeLocalStorage } from '@/lib/utils';
 import { STAMP_WAIT_MS } from '../consoleHandOff';
@@ -19,13 +18,6 @@ const OPEN_KEY = 'onboarding.guideOpen';
 
 const readOpen = () => safeLocalStorage.getItem(OPEN_KEY) !== '0';
 const writeOpen = (open: boolean) => safeLocalStorage.setItem(OPEN_KEY, open ? '1' : '0');
-
-/**
- * Set when the rail's ring expands the sidebar. The ring unmounts with the
- * rail, so the section that replaces it takes focus to the next task rather
- * than leaving it on the page body.
- */
-let focusNextOnMount = false;
 
 /** Progress as a ring, drawn in the sidebar where an icon would be. */
 function ProgressRing({
@@ -120,7 +112,6 @@ export function GettingStartedSection({
   const { t } = useTranslation();
   const [open, setOpen] = useState(() => defaultOpen ?? readOpen());
   const listId = useId();
-  const nextRef = useRef<HTMLButtonElement>(null);
   const next = tasks.findIndex((task) => !task.done);
   // Only the browser takes a cross-app task to a tab of its own.
   const newTab = !isDesktopShell();
@@ -129,12 +120,6 @@ export function GettingStartedSection({
     done: doneCount,
     total: tasks.length,
   });
-
-  useEffect(() => {
-    if (!focusNextOnMount) return;
-    focusNextOnMount = false;
-    nextRef.current?.focus();
-  }, []);
 
   const toggle = () => {
     setOpen(!open);
@@ -173,7 +158,6 @@ export function GettingStartedSection({
               return (
                 <li key={def.id}>
                   <button
-                    ref={isNext ? nextRef : undefined}
                     type="button"
                     disabled={done}
                     onClick={() => onSelect(def)}
@@ -213,69 +197,16 @@ export function GettingStartedSection({
 }
 
 /**
- * The rail's version: just the ring above the avatar. There is no room for
- * the list beside an icon rail, and a list floating over the page would cover
- * it, so the ring opens the sidebar with the list unfolded.
- */
-export function GettingStartedRail({
-  doneCount,
-  total,
-  onOpen,
-}: {
-  doneCount: number;
-  total: number;
-  onOpen: () => void;
-}) {
-  const { t } = useTranslation();
-  const title = t('onboarding.gettingStarted.title');
-  return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="sidebar-nav-item sidebar-guide-rail"
-            aria-label={`${title}, ${t('onboarding.gettingStarted.progress', {
-              done: doneCount,
-              total,
-            })}`}
-            onClick={() => {
-              writeOpen(true);
-              focusNextOnMount = true;
-              onOpen();
-            }}
-          >
-            <ProgressRing done={doneCount} total={total} className="sidebar-nav-icon" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="right" sideOffset={8}>
-          {title} · {doneCount}/{total}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
-
-export type GettingStartedLauncherProps =
-  | { variant: 'row' }
-  | { variant: 'rail'; onExpand: () => void };
-
-/**
- * The checklist, wired to the onboarding state: the section in the expanded
- * sidebar, the ring in the rail (`onExpand` opens the sidebar). Mounted by
- * GettingStartedGate, only while the list is visible.
+ * The checklist, wired to the onboarding state. Mounted by GettingStartedGate,
+ * only while the list is visible.
  *
  * Tasks complete via route visits or a derived signal (the saved investing
  * profile, a workspace); picking a pending one goes to it.
  */
-export function GettingStartedLauncher(props: GettingStartedLauncherProps) {
+export function GettingStartedLauncher() {
   const { gettingStarted } = useOnboarding();
   const navigate = useNavigate();
   const { tasks, doneCount, dismiss, completeTask } = gettingStarted;
-
-  if (props.variant === 'rail') {
-    return <GettingStartedRail doneCount={doneCount} total={tasks.length} onOpen={props.onExpand} />;
-  }
 
   const select = (def: GettingStartedTaskDef) => {
     if (!def.external) {

@@ -11,9 +11,7 @@ const guideChunkLoaded = vi.hoisted(() => vi.fn());
 vi.mock('../engine/GettingStarted', () => {
   guideChunkLoaded();
   return {
-    GettingStartedLauncher: ({ variant }: { variant: string }) => (
-      <div data-testid="guide">{variant}</div>
-    ),
+    GettingStartedLauncher: () => <div data-testid="guide" />,
   };
 });
 
@@ -26,14 +24,14 @@ describe('GettingStartedGate', () => {
   });
 
   it('renders nothing, and never imports the guide, once it is finished or hidden', () => {
-    const { container } = render(<GettingStartedGate variant="row" />);
+    const { container } = render(<GettingStartedGate />);
     expect(container).toBeEmptyDOMElement();
     expect(guideChunkLoaded).not.toHaveBeenCalled();
   });
 
   it('loads the guide while it has tasks to show', async () => {
     mockVisible = true;
-    render(<GettingStartedGate variant="rail" onExpand={vi.fn()} />);
-    expect(await screen.findByTestId('guide')).toHaveTextContent('rail');
+    render(<GettingStartedGate />);
+    expect(await screen.findByTestId('guide')).toBeInTheDocument();
   });
 });

@@ -23,6 +23,7 @@ import { useWatchedReadings } from './hooks/useWatchedReadings';
 import { automationToFormState } from './utils/form';
 import { AUTOMATION_TEMPLATES, type TemplateId, applyTemplate } from './utils/templates';
 import type { Automation } from '@/types/automation';
+import { usePageTabLeaveGuard } from '@/components/PageTabs/usePageTabLeaveGuard';
 import './Automations.css';
 
 const VIEW_STORAGE_KEY = 'automations:view';
@@ -125,6 +126,8 @@ export default function Automations() {
     },
     [form, draftDirty],
   );
+  // A page tab switched or closed asks the same, since it unmounts the form.
+  usePageTabLeaveGuard(form && draftDirty ? leaveForm : null);
 
   // Crossing views is a navigation the back button should undo; moving
   // within one is not. A run is only ever open within its automation.

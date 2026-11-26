@@ -17,44 +17,27 @@
   align-items: center;
   border-right: 1px solid var(--color-shell-edge, hsl(var(--sidebar-border)));
   z-index: 1000;
-  transition: width var(--motion-fold) var(--ease-out);
+  transition:
+    width var(--motion-fold) var(--ease-out),
+    transform var(--motion-fold) var(--ease-out),
+    box-shadow var(--motion-fold) var(--ease-out);
 }
 
-/* Mode-switch choreography: the aside persists (width transitions) while each
-   mode's content remounts via a keyed fragment (AppSidebar), so this mount
-   animation fades the incoming layout in just behind the width change instead
-   of the two layouts morphing into each other in place. */
-@keyframes sidebar-content-in {
-  from {
-    opacity: 0;
-    transform: translateX(var(--sidebar-content-shift, 0));
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+/* ====== Hidden (Arc-style) ======
+   Out of the layout: the panel keeps its width and slides off the left edge,
+   and slides back over the page (not beside it) while peeking. `transform`
+   rests at `none` whenever the panel is on screen, since any other value makes
+   it the containing block of its fixed descendants (the tree's drag overlay
+   among them). */
+.sidebar--hidden {
+  width: var(--sidebar-panel-width);
+  transform: translateX(-100%);
 }
 
-/* backwards (not both) fill: forwards fill would keep the interpolated
-   transform applied after the animation ends — computed as an identity matrix,
-   never `none` — permanently turning each child into a containing block for
-   fixed-position descendants (it re-anchored the workspace-drag DragOverlay in
-   .sidebar-tree, drifting the chip by the tree's viewport offset). Backwards
-   still covers the delay, and the end state equals the natural style. */
-.sidebar > * {
-  animation: sidebar-content-in var(--motion-quick) var(--ease-out) var(--motion-stagger) backwards;
+.sidebar--hidden[data-peek] {
+  transform: none;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.32);
 }
-
-/* Rail content settles leftward (panel shrank), panel content rightward. */
-.sidebar {
-  --sidebar-content-shift: 6px;
-}
-
-.sidebar--panel {
-  --sidebar-content-shift: -6px;
-}
-
-/* ====== Expanded panel mode (Codex-style single side panel) ====== */
 
 .sidebar--panel {
   align-items: stretch;
@@ -97,6 +80,7 @@ body.sidebar-resizing {
 
 body.sidebar-resizing .sidebar,
 body.sidebar-resizing .app-main,
+body.sidebar-resizing .app-topbar-corner,
 body.sidebar-resizing .sidebar-tracking {
   transition: none !important;
 }
@@ -123,30 +107,11 @@ html.desktop-mac .sidebar-window-drag {
   -webkit-app-region: drag;
 }
 
-/* Desktop shell: the expanded panel's header row moves up into the 38px titlebar
-   row, to the right of the window buttons, and carries the toggle and back and
-   forward only. The brand stays in the collapsed rail. */
-/* The macOS window buttons float over the rail and reach ~73px, so the desktop
-   shell keeps a rail that clears them; everywhere else it hugs its icons. */
-html.desktop-mac {
-  --sidebar-rail-width: 76px;
-}
-
+/* Desktop shell: the panel's top row moves up into the strip above, beside
+   the window buttons, where back and forward leave no room for the brand. */
 html.desktop-mac .sidebar--panel .sidebar-panel-header {
   position: relative;
   margin-top: -38px;
-  height: 38px;
-  padding: 0 10px 0 84px;
-  box-sizing: border-box;
-}
-html.desktop-mac .sidebar--panel .sidebar-collapse-btn { order: 1; }
-html.desktop-mac .sidebar--panel .sidebar-history { order: 2; }
-html.desktop-mac .sidebar--panel .sidebar-brand {
-  display: none;
-}
-/* Breathing room between the titlebar row and the first item. */
-html.desktop-mac .sidebar--panel .sidebar-panel-nav {
-  margin-top: 6px;
 }
 
 .sidebar-history {
@@ -167,20 +132,24 @@ html.desktop-mac .sidebar-history {
   cursor: default;
 }
 
+/* The panel's share of the top bar, as tall as it is. What shows in it is the
+   bar's corner over it (.app-topbar-corner). */
 .sidebar-panel-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 10px 10px 16px;
+  height: 38px;
   flex-shrink: 0;
+}
+
+/* Breathing room between the top bar's row and the first item. */
+.sidebar--panel .sidebar-panel-nav {
+  margin-top: 6px;
 }
 
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-  flex: 1;
+  flex: none;
   padding: 0;
   border: none;
   background: transparent;
@@ -196,8 +165,7 @@ html.desktop-mac .sidebar-history {
   white-space: nowrap;
 }
 
-.sidebar-collapse-btn,
-.sidebar-rail-toggle {
+.sidebar-collapse-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -212,14 +180,9 @@ html.desktop-mac .sidebar-history {
   flex-shrink: 0;
 }
 
-.sidebar-collapse-btn:hover,
-.sidebar-rail-toggle:hover {
+.sidebar-collapse-btn:hover {
   background: hsl(var(--sidebar-hover));
   opacity: 1;
-}
-
-.sidebar-rail-toggle {
-  margin: -4px auto 6px;
 }
 
 .sidebar-panel-nav {
@@ -261,7 +224,7 @@ html.desktop-mac .sidebar-history {
   color: var(--color-text-tertiary);
 }
 
-/* The open card styles keep the rail and drop the wash: full ink says it,
+/* The open card styles keep the fill and drop the wash: full ink says it,
    hovered too. */
 .sidebar-panel-item.active {
   background: var(--color-shell-fill, hsl(var(--sidebar-hover)));
@@ -282,7 +245,6 @@ html.desktop-mac .sidebar-history {
   background: hsl(var(--sidebar-indicator));
 }
 
-/* Matches .sidebar-nav-icon — nav icons keep their size across mode flips. */
 .sidebar-panel-item-icon {
   width: 18px;
   height: 18px;
@@ -466,121 +428,6 @@ html.desktop-mac .sidebar-history {
   white-space: nowrap;
 }
 
-.sidebar-logo {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 16px 0;
-  margin-bottom: 8px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-}
-
-.sidebar-nav {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 0 12px;
-}
-
-.sidebar-nav-item {
-  position: relative;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  border: none;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition:
-    background-color var(--motion-quick) var(--ease-out),
-    color var(--motion-quick) var(--ease-out),
-    scale var(--motion-press) var(--ease-out);
-  color: hsl(var(--sidebar-icon));
-}
-
-.sidebar-nav-item:hover {
-  background: hsl(var(--sidebar-hover));
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .sidebar-nav-item:active {
-    scale: var(--press-scale);
-  }
-}
-
-.sidebar-nav-item.active {
-  color: hsl(var(--sidebar-icon-selected));
-}
-
-/* Accent bar hugging the rail edge: the item is centred in the rail, so its
-   offset from the edge is half of what the rail has left over. */
-.sidebar-nav-item.active::before {
-  content: '';
-  position: absolute;
-  left: calc((40px - var(--sidebar-width)) / 2);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 28px;
-  border-radius: 0 3px 3px 0;
-  background: hsl(var(--sidebar-indicator));
-}
-
-/* Matches .sidebar-panel-item-icon — same optical size in both modes. */
-.sidebar-nav-icon {
-  width: 18px;
-  height: 18px;
-  stroke-width: 2;
-}
-
-.sidebar-bottom {
-  margin-top: auto;
-  width: 100%;
-  padding: 12px 14px 16px;
-  border-top: 1px solid hsl(var(--sidebar-border));
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-/* Same avatar size in both modes (see .sidebar-account-row-avatar). */
-.sidebar-account-trigger {
-  position: relative;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius);
-  border: 1px solid transparent;
-  background: var(--color-accent-soft);
-  color: var(--color-accent-light);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  overflow: hidden;
-  padding: 0;
-  transition: border-color var(--motion-quick) var(--ease-out), transform var(--motion-quick) var(--ease-out), box-shadow var(--motion-quick) var(--ease-out);
-}
-
-.sidebar-account-trigger:hover {
-  border-color: var(--color-accent-overlay);
-}
-
-.sidebar-account-trigger:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--color-focus-ring);
-}
-
-.sidebar-account-trigger[data-active='true'] {
-  border-color: var(--color-accent-primary);
-}
-
 .sidebar-account-avatar-img {
   width: 100%;
   height: 100%;
@@ -602,8 +449,7 @@ html.desktop-mac .sidebar-history {
 
 /* A finger's worth of row (web/AGENTS.md, .tap-target): the rows touch, so
    each grows rather than its hit area spilling onto its neighbours, as the
-   command palette's rows do. The rail's icons sit 8px apart and take
-   .tap-target instead, which keeps their square. */
+   command palette's rows do. */
 @media (pointer: coarse) {
   .sidebar-panel-item,
   .sidebar-account-row { min-height: 44px; }
