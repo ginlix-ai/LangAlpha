@@ -107,6 +107,12 @@ export async function getBrowserView(workspaceId: string, want: BrowserViewWant 
  */
 export type BrowserControlAction = 'take' | 'renew' | 'release';
 
+/** A viewer's view of the page, in page pixels. */
+export interface BrowserFit {
+  width: number;
+  height: number;
+}
+
 /** Act on `holder`'s hold on the page; resolves to whether it holds the page now.
  *  While held the agent's commands that act on it are refused. A hand-back lets
  *  go of `releases` first. */
@@ -119,7 +125,11 @@ export async function setBrowserControl(
   try {
     const { data } = await api.post<{ held: boolean }>(
       `/api/v1/workspaces/${workspaceId}/sandbox/browser-control`,
-      releases.length > 0 ? { holder, action, releases } : { holder, action },
+      {
+        holder,
+        action,
+        ...(releases.length > 0 ? { releases } : {}),
+      },
       { timeout: BROWSER_CONTROL_TIMEOUT_MS },
     );
     return data.held;
@@ -129,8 +139,35 @@ export async function setBrowserControl(
   }
 }
 
-/** Where the person holding the page takes it: to an address they typed, or back,
- *  forward or the same page again. */
+/** What the page did with a view's size. */
+export interface BrowserFitAnswer {
+  /** The size it took, in page pixels; null where it was left as it is for now
+   *  (another viewer holds it, a command runs, no browser is open). */
+  size: BrowserFit | null;
+  /** It keeps a size of its own until its browser closes (the agent's, or a
+   *  window's), so asking again changes nothing. */
+  kept: boolean;
+}
+
+/** Size the page to `viewer`'s view, so it fills the panel. A server with no
+ *  such route never sizes it, which reads as a page keeping its own. */
+export async function fitBrowser(workspaceId: string, viewer: string, size: BrowserFit): Promise<BrowserFitAnswer> {
+  try {
+    const { data } = await api.post<Partial<BrowserFitAnswer>>(
+      `/api/v1/workspaces/${workspaceId}/sandbox/browser-fit`,
+      { viewer, width: size.width, height: size.height },
+      { timeout: BROWSER_CONTROL_TIMEOUT_MS },
+    );
+    return { size: data.size ?? null, kept: data.kept === true };
+  } catch (err) {
+    if (routeMissing(err)) return { size: null, kept: true };
+    throw err;
+  }
+}
+
+/** Where the person holding the page takes it: to what they typed, which the
+ *  computer reads as an address bar does (an address, or a search for the
+ *  words), or back, forward or the same page again. */
 export type BrowserNavigation =
   | { action: 'open'; url: string }
   | { action: 'back' | 'forward' | 'reload' };
@@ -151,6 +188,25 @@ export async function navigateBrowser(
     { timeout: BROWSER_NAVIGATE_TIMEOUT_MS },
   );
   return data.done ? null : data.reason ?? 'failed';
+}
+
+/** Why a close left the browser open: someone else holds its page, or it did not end. */
+export type BrowserCloseRefusal = 'held' | 'failed';
+
+/** Close the computer's browser for `viewer`; resolves to why it is still open,
+ *  or null once it is closed. A request that fails is the caller's to read. */
+export async function closeBrowser(workspaceId: string, viewer: string): Promise<BrowserCloseRefusal | null> {
+  try {
+    const { data } = await api.post<{ done: boolean; reason?: BrowserCloseRefusal | null }>(
+      `/api/v1/workspaces/${workspaceId}/sandbox/browser-close`,
+      { viewer },
+      { timeout: BROWSER_NAVIGATE_TIMEOUT_MS },
+    );
+    return data.done ? null : data.reason ?? 'failed';
+  } catch (err) {
+    if (routeMissing(err)) return 'failed';
+    throw err;
+  }
 }
 
 /**

@@ -18,6 +18,8 @@ export interface FrameEvent {
 export interface PageEvent {
   kind: 'page';
   url: string | null;
+  /** The tab showing, which the engine sizes apart from the others; null when unsaid. */
+  tab: string | null;
 }
 
 export type StreamEvent = FrameEvent | PageEvent;
@@ -71,9 +73,13 @@ export function releaseOf(input: BrowserInput): BrowserRelease | null {
   return null;
 }
 
-/** Keeps a busy page near 2 Mbps with text as sharp as at 10, which a lower JPEG
- *  quality does not. A slower link is paced by the acks on top of this. */
-const MAX_FPS = 8;
+/** Frames a second the stream sends at most. A computer draws and encodes the
+ *  standard view at Chrome's 60 on its own loopback, at the same CPU whatever
+ *  the cap, so the cap only spends the viewer's link: a page redrawn every frame
+ *  sends about 27 Mbps at 30, one at rest almost nothing. A view on the machine
+ *  itself reads the loopback and gets all of Chrome's. With one frame in flight
+ *  the round trip paces a far viewer below these. */
+export const STREAM_FPS = { remote: 30, local: 60 } as const;
 const MOUSE_EVENTS = { move: 'mouseMoved', down: 'mousePressed', up: 'mouseReleased', wheel: 'mouseWheel' } as const;
 const KEY_EVENTS = { down: 'keyDown', up: 'keyUp' } as const;
 
@@ -160,19 +166,27 @@ export function describeBrowserCommand(command: string): BrowserDoing | null {
   return { key, detail: null };
 }
 
-export function streamSocketUrl(viewUrl: string): string {
+export function streamSocketUrl(viewUrl: string, maxFps: number = STREAM_FPS.remote): string {
   const url = new URL(viewUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('pacing', 'ack');
-  url.searchParams.set('maxFps', String(MAX_FPS));
+  url.searchParams.set('maxFps', String(maxFps));
   return url.toString();
 }
 
-function activeTabUrl(tabs: unknown): string | null {
-  if (!Array.isArray(tabs)) return null;
-  const active = tabs.find((tab) => (tab as { active?: unknown })?.active === true) ?? tabs[0];
-  const url = (active as { url?: unknown } | undefined)?.url;
-  return typeof url === 'string' ? url : null;
+function activeTab(tabs: unknown): PageEvent {
+  if (!Array.isArray(tabs)) return { kind: 'page', url: null, tab: null };
+  const active = (tabs.find((tab) => (tab as { active?: unknown })?.active === true) ?? tabs[0]) as
+    | { url?: unknown; targetId?: unknown; tabId?: unknown }
+    | undefined;
+  // The target outlives a tab's short name, which the engine gives again once
+  // that tab closes.
+  const tab = active?.targetId ?? active?.tabId;
+  return {
+    kind: 'page',
+    url: typeof active?.url === 'string' ? active.url : null,
+    tab: typeof tab === 'string' ? tab : null,
+  };
 }
 
 /** A message off the stream, or null for one the viewer has no use for. */
@@ -183,7 +197,7 @@ export function readStreamMessage(raw: unknown): StreamEvent | null {
   } catch {
     return null;
   }
-  if (message.type === 'tabs') return { kind: 'page', url: activeTabUrl(message.tabs) };
+  if (message.type === 'tabs') return activeTab(message.tabs);
   if (message.type !== 'frame' || typeof message.data !== 'string') return null;
   const width = message.metadata?.deviceWidth;
   return {

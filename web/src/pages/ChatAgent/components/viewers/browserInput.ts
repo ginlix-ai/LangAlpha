@@ -13,6 +13,12 @@ export function mouseButton(button: number): MouseButton {
   return 'left';
 }
 
+/** The one key kept from the page, so a keyboard alone can always leave it:
+ *  it hands the page back, from wherever the person is typing in the tab. */
+export function isHandBackKey(e: ModifierKeys & { key: string }): boolean {
+  return e.key === 'Escape' && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey;
+}
+
 type KeyEvent = ModifierKeys & { key: string; code: string; keyCode: number; getModifierState?: (key: string) => boolean };
 
 export function keyInput(event: 'down' | 'up', e: KeyEvent): BrowserInput {

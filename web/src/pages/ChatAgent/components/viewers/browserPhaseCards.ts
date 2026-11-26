@@ -11,30 +11,22 @@ export interface PhaseCard {
   action?: { run: 'open' | 'retry' | 'chrome'; labelKey: string };
 }
 
-/** The card each phase puts over the view. Live has none: the page is the view. */
-export const PHASE_CARDS: Record<BrowserPhase, PhaseCard | null> = {
+/** The phases with no card. Live shows the page; with no browser open or no
+ *  computer running the start page stands there instead, and going somewhere
+ *  from it opens both (`BrowserStartPage`). */
+type Uncarded = 'live' | 'idle' | 'stopped';
+
+/** The card each other phase puts over the view. */
+const PHASE_CARDS: Record<Exclude<BrowserPhase, Uncarded>, PhaseCard> = {
   checking: { icon: 'working', titleKey: 'filePanel:browser.checking' },
   starting: { icon: 'working', titleKey: 'filePanel:browser.starting' },
   connecting: { icon: 'working', titleKey: 'filePanel:browser.connecting' },
   reconnecting: { icon: 'working', titleKey: 'filePanel:browser.reconnecting' },
-  live: null,
-  idle: {
-    icon: Globe,
-    titleKey: 'filePanel:browser.idleTitle',
-    bodyKey: 'filePanel:browser.idleBody',
-    action: { run: 'open', labelKey: 'filePanel:browser.open' },
-  },
   low_memory: {
     icon: AlertCircle,
     titleKey: 'filePanel:browser.lowMemoryTitle',
     bodyKey: 'filePanel:browser.lowMemoryBody',
     action: { run: 'open', labelKey: 'filePanel:browser.retry' },
-  },
-  stopped: {
-    icon: Globe,
-    titleKey: 'filePanel:browser.stoppedTitle',
-    bodyKey: 'filePanel:browser.stoppedBody',
-    action: { run: 'open', labelKey: 'filePanel:browser.startAndOpen' },
   },
   outdated: { icon: Globe, titleKey: 'filePanel:browser.outdatedTitle', bodyKey: 'filePanel:browser.outdatedBody' },
   no_chrome: {
@@ -56,3 +48,7 @@ export const PHASE_CARDS: Record<BrowserPhase, PhaseCard | null> = {
     action: { run: 'retry', labelKey: 'filePanel:browser.retry' },
   },
 };
+
+export function cardOf(phase: BrowserPhase): PhaseCard | null {
+  return phase === 'live' || phase === 'idle' || phase === 'stopped' ? null : PHASE_CARDS[phase];
+}

@@ -3,12 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { isImeComposing } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 import type { Modifiers, MouseButton } from '../filePanel/browserProtocol';
-import { Globe, Hand } from 'lucide-react';
-import { isBlankPage, type BrowserPhase } from '../filePanel/browserPhase';
-import { PHASE_CARDS } from './browserPhaseCards';
+import { Hand } from 'lucide-react';
+import { isTransient, startStateOf, type BrowserPhase, type BrowserStartState } from '../filePanel/browserPhase';
+import { cardOf } from './browserPhaseCards';
 import type { BrowserViewSession } from '../filePanel/browserStream';
 import { useBrowserViewState } from '../filePanel/useBrowserView';
-import { keyInput, modifiersOf, mouseButton, pagePoint } from './browserInput';
+import { isHandBackKey, keyInput, modifiersOf, mouseButton, pagePoint } from './browserInput';
+import { BrowserStartPage } from './BrowserStartPage';
 import { StatusCard } from './StatusCard';
 import './BrowserViewer.css';
 
@@ -38,9 +39,16 @@ function useFrameCoalesced(run: () => void): [schedule: () => void, flush: () =>
 }
 
 /** The browser's live frames, with the reader's mouse and keys going to the page. */
-export function BrowserViewer({ view }: { view: BrowserViewSession }): React.ReactElement {
+export function BrowserViewer({
+  view,
+  computerName,
+}: {
+  view: BrowserViewSession;
+  /** The computer the browser runs on, for the start page; null where not shown. */
+  computerName: string | null;
+}): React.ReactElement {
   const { t } = useTranslation();
-  const { phase, control, pageUrl, agent } = useBrowserViewState(view);
+  const { phase, control, pageUrl, agent, visiting } = useBrowserViewState(view);
   const holding = control === 'held';
   // A click on a page that is not theirs yet says how to make it so, for a moment.
   const [nudgedAt, setNudgedAt] = useState<number | null>(null);
@@ -179,11 +187,24 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
   // Everything goes to the page, which is what a reader expects of a focused frame,
   // except paste: it arrives as an event of its own only if its key is let through.
   const isPasteKey = (e: React.KeyboardEvent) => (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v';
-  // The one key kept from the page, so a keyboard alone can always leave it: it
-  // hands the page back, and focus stays on the viewer for the next Tab to move on.
-  const isHandBackKey = (e: React.KeyboardEvent) =>
-    e.key === 'Escape' && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey;
   const stage = useRef<HTMLDivElement>(null);
+  // The page takes the stage's size, so it fills the panel and is drawn one to
+  // one rather than shrunk to fit.
+  useEffect(() => {
+    const element = stage.current;
+    if (!element) return;
+    const measure = () => {
+      const { width, height } = element.getBoundingClientRect();
+      view.setViewSize({ width, height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      view.setViewSize(null);
+    };
+  }, [view]);
   const onKey = (eventType: 'down' | 'up') => (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     e.stopPropagation();
     if (isImeComposing(e)) return;
@@ -192,6 +213,7 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
       if (eventType === 'up') return;
       // The Shift the page saw go down is let go with the hold.
       view.releaseControl();
+      // Focus stays on the viewer for the next Tab to move on.
       stage.current?.focus({ preventScroll: true });
       return;
     }
@@ -216,8 +238,14 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
     e.currentTarget.value = '';
   };
 
-  const blank = phase === 'live' && isBlankPage(pageUrl);
-  const showing = (phase === 'live' || phase === 'reconnecting') && !blank;
+  // No page to show: a blank tab, no browser open, or no computer running,
+  // which going somewhere opens. The start page stays while a visit is on its
+  // way through the phases that open the browser, saying where it set out from.
+  const startNow = startStateOf(phase, pageUrl);
+  const [setOutFrom, setSetOutFrom] = useState<BrowserStartState | null>(startNow);
+  if (startNow !== null && startNow !== setOutFrom) setSetOutFrom(startNow);
+  const start = startNow ?? (visiting !== null && isTransient(phase) ? setOutFrom : null);
+  const showing = (phase === 'live' || phase === 'reconnecting') && start === null;
   return (
     <div className="browser-viewer">
       {holding && (
@@ -259,17 +287,8 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
           onCompositionEnd={onCompositionEnd}
         />
       )}
-      {blank ? (
-        <StatusCard
-          icon={Globe}
-          title={t('filePanel:browser.blankTitle', 'No page open')}
-          body={t(
-            holding ? 'filePanel:browser.blankBodyHeld' : 'filePanel:browser.blankBody',
-            holding
-              ? 'Enter an address above to open a page.'
-              : 'Pages the agent opens show here. Take control to go to one yourself.',
-          )}
-        />
+      {start ? (
+        <BrowserStartPage view={view} state={start} computerName={computerName} />
       ) : (
         <BrowserNotice view={view} phase={phase} />
       )}
@@ -302,7 +321,7 @@ export function BrowserViewer({ view }: { view: BrowserViewSession }): React.Rea
 
 function BrowserNotice({ view, phase }: { view: BrowserViewSession; phase: BrowserPhase }): React.ReactElement | null {
   const { t } = useTranslation();
-  const card = PHASE_CARDS[phase];
+  const card = cardOf(phase);
   if (!card) return null;
   const { action } = card;
   return (

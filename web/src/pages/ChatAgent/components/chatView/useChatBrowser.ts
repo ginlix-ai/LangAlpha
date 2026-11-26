@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { Computer } from '@/types/api';
 import type { RouteLeaveGuard } from '../../contexts/RouteLeaveGuardContext';
 import type { BrowserUse } from '../../session/stream/browserUse';
-import { toastBrowserRefusal } from '../filePanel/browserRefusal';
+import { visitFor } from '../filePanel/browserRefusal';
 import type { BrowserViewSession } from '../filePanel/browserStream';
 import type { UnsequencedTarget } from '../filePanel/types';
 import { useBrowserViews } from '../filePanel/useBrowserView';
@@ -83,14 +83,11 @@ export function useChatBrowser({
   // A link the reader asked to open in the computer's browser: the panel comes
   // back to this workspace's files, whose browser it is, with the tab in front,
   // and the chat's own view goes there, never a sibling's the panel was showing.
-  // The tab says why a browser could not be opened; the rest is a toast.
   const openInBrowser = useCallback((url: string) => {
     const go = () => {
       if (showingSibling) setFilePanelWorkspaceId(null);
       land({ kind: 'browser', front: true });
-      void viewFor(workspaceId).visit(url).then((refusal) => {
-        if (refusal && refusal !== 'not_running') toastBrowserRefusal(t, refusal);
-      });
+      void visitFor(t, viewFor(workspaceId), url);
     };
     if (showingSibling) leave(go); else go();
   }, [showingSibling, setFilePanelWorkspaceId, land, viewFor, workspaceId, t, leave]);

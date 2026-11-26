@@ -6,23 +6,23 @@ import { showAddress } from './browserAddress';
 
 /**
  * The browser's address: the page's own, drawn with the site apart from the rest,
- * until the person holding the page types over it. What they typed stays while it
- * is on its way, and after a refusal, so it can be fixed.
+ * until the person types over it, which takes them there and takes the browser
+ * with it. What they typed stays while it is on its way, and after a refusal,
+ * so it can be fixed.
  */
 export function BrowserAddressField({
   pageUrl,
-  holding,
-  steering,
+  enabled,
   onOpen,
 }: {
   /** The page's address, or '' on a blank page. */
   pageUrl: string;
-  /** The person holds the page, so the field invites an address. */
-  holding: boolean;
-  /** The field takes an address now: held, live, and nothing else under way. */
-  steering: boolean;
-  /** Resolves to whether the page went there; a refusal is said by the caller. */
-  onOpen: (url: string) => Promise<boolean>;
+  /** The field takes an address now: a browser to go to, or one to open, and
+   *  nothing else under way. */
+  enabled: boolean;
+  /** Resolves to whether the page went where the person typed; a refusal is
+   *  said by the caller. */
+  onOpen: (typed: string) => Promise<boolean>;
 }): React.ReactElement {
   const { t } = useTranslation();
   // What the person is typing, null while the field shows the page's address.
@@ -30,12 +30,12 @@ export function BrowserAddressField({
   const [opening, setOpening] = useState(false);
   // A draft the browser refused stays to be fixed, whenever focus leaves it.
   const [refused, setRefused] = useState(false);
-  const editable = steering && !opening;
+  const editable = enabled && !opening;
   const drawn = draft === null && pageUrl ? showAddress(pageUrl) : null;
 
-  const open = async (url: string) => {
+  const open = async (typed: string) => {
     setOpening(true);
-    const went = await onOpen(url);
+    const went = await onOpen(typed);
     setOpening(false);
     setRefused(!went);
     if (went) setDraft(null);
@@ -48,8 +48,7 @@ export function BrowserAddressField({
         inputMode="url"
         className="browser-address font-mono"
         aria-label={t('filePanel:browser.address', 'Address')}
-        title={holding ? pageUrl || undefined : t('filePanel:browser.addressLocked', 'Take control to enter an address')}
-        placeholder={holding ? t('filePanel:browser.addressPlaceholder', 'Enter an address') : ''}
+        title={pageUrl || undefined}
         readOnly={!editable}
         // The drawn address shows through while nobody is typing.
         data-drawn={drawn ? '' : undefined}

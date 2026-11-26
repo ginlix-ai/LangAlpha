@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { isPageUnseen, onPageUnseenChange } from '@/lib/pageVisibility';
 import type { Computer } from '@/types/api';
 import { useThisMac } from '../../hooks/useRemoteControl';
-import { getBrowserView, navigateBrowser, setBrowserControl } from '../../utils/api';
+import { closeBrowser, fitBrowser, getBrowserView, navigateBrowser, setBrowserControl } from '../../utils/api';
 import { BrowserViewSession, type BrowserViewState } from './browserStream';
 
 /**
@@ -61,8 +61,11 @@ export function useBrowserView(
     return view.watch({
       ask: (want) => getBrowserView(workspaceId, want),
       control: (holder, action, releases) => setBrowserControl(workspaceId, holder, action, releases),
+      fit: (viewer, size) => fitBrowser(workspaceId, viewer, size),
+      close: (viewer) => closeBrowser(workspaceId, viewer),
       navigate: (holder, navigation) => navigateBrowser(workspaceId, holder, navigation),
       local,
+      computer: computerId,
     });
   }, [view, watching, workspaceId, computerId, local]);
 }

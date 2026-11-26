@@ -996,6 +996,7 @@ function FilePanel({
               <ActiveTabBody
                 activeTab={activeTab}
                 browser={browserView}
+                browserComputer={computer?.name ?? null}
                 commentUi={comments ?? null}
                 active={isActive !== false}
                 tabs={tabs}
