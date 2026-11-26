@@ -101,12 +101,42 @@ def _holding_columns(t: pd.DataFrame, table: str) -> pd.DataFrame:
     return out
 
 
+def _has(nature) -> bool:
+    return isinstance(nature, str) and nature.strip() != ""
+
+
+def _restore_natures(lines: pd.DataFrame) -> pd.DataFrame:
+    """Put each nature of ownership back on its line, in a filing whose natures the data set packed together.
+
+    In some multi-line filings the data set lists a table's natures, with their footnotes, on its first lines in
+    order, skipping the lines that had none, so a direct line carries an indirect line's nature and the last
+    indirect lines carry none. A table packed that way shows a direct line with a nature, has all its natures
+    ahead of every line without one, and has exactly one nature per indirect line: those natures go back, in
+    order, to the indirect lines. Any other table is left as the data set has it."""
+    nature, notes = lines.nature_of_ownership.to_numpy(dtype=object), list(lines.footnote_ids)
+    for idx in lines.groupby("accession", sort=False).indices.values():
+        di = [lines.direct_indirect.iat[i] for i in idx]
+        has = [_has(nature[i]) for i in idx]
+        if not any(d == "D" and h for d, h in zip(di, has)) or has != sorted(has, reverse=True) \
+                or sum(has) != di.count("I"):
+            continue
+        moved = [(nature[i], notes[i].get("nature_of_ownership")) for i, h in zip(idx, has) if h]
+        for i in idx:
+            nature[i] = None
+            notes[i] = {k: v for k, v in notes[i].items() if k != "nature_of_ownership"}
+        for i, (text, ids) in zip([i for i, d in zip(idx, di) if d == "I"], moved):
+            nature[i] = text
+            if ids:
+                notes[i] = {**notes[i], "nature_of_ownership": ids}
+    return lines.assign(nature_of_ownership=nature, footnote_ids=notes)
+
+
 def _lines(path: Path, tables, columns) -> pd.DataFrame:
     parts = []
     for name, table, sk in tables:
         t = read_table(path, name)
         t = t.assign(_sk=t[sk].astype(int)).sort_values(["ACCESSION_NUMBER", "_sk"])
-        parts.append(columns(t, table))
+        parts.append(_restore_natures(columns(t, table)))
     return pd.concat(parts, ignore_index=True)
 
 

@@ -279,6 +279,32 @@ def test_roster_of_nothing_is_empty():
     assert insider_roster(t, h, o).empty and roster_positions(t, h).empty
 
 
+def test_natures_the_data_set_packed_together_go_back_to_their_indirect_lines(tmp_path):
+    (tmp_path / "SUBMISSION.tsv").write_text(
+        "ACCESSION_NUMBER\tFILING_DATE\tPERIOD_OF_REPORT\tDOCUMENT_TYPE\tISSUERCIK\tISSUERNAME\tISSUERTRADINGSYMBOL\n"
+        "0000111111-24-000001\t06-MAY-2024\t02-MAY-2024\t4\t111111\tExample Corp\tEXC\n"
+        "0000111111-24-000002\t06-MAY-2024\t02-MAY-2024\t4\t111111\tExample Corp\tEXC\n")
+    (tmp_path / "REPORTINGOWNER.tsv").write_text(
+        "ACCESSION_NUMBER\tRPTOWNERCIK\tRPTOWNERNAME\tRPTOWNER_RELATIONSHIP\tRPTOWNER_TITLE\tRPTOWNER_TXT\n"
+        "0000111111-24-000001\t222222\tDoe Jane\tDirector\t\t\n0000111111-24-000002\t222222\tDoe Jane\tDirector\t\t\n")
+    head = ("ACCESSION_NUMBER\tNONDERIV_HOLDING_SK\tSECURITY_TITLE\tSHRS_OWND_FOLWNG_TRANS\tVALU_OWND_FOLWNG_TRANS\t"
+            "DIRECT_INDIRECT_OWNERSHIP\tNATURE_OF_OWNERSHIP\tNATURE_OF_OWNERSHIP_FN\n")
+    packed = [("1", "1000", "D", "By 401(k)", ""), ("2", "9", "I", "By LLC", "F1"), ("3", "116", "I", "By Spouse", ""),
+              ("4", "273", "I", "", "")]
+    kept = [("5", "50", "D", "Held in plan", ""), ("6", "60", "I", "By Trust", "")]  # more natures than indirect lines
+    rows = [("0000111111-24-000001", *r) for r in packed] + [("0000111111-24-000002", *r) for r in kept]
+    (tmp_path / "NONDERIV_HOLDING.tsv").write_text(head + "".join(
+        f"{a}\t{sk}\tCommon Stock\t{n}\t\t{di}\t{nat}\t{fn}\n" for a, sk, n, di, nat, fn in rows))
+    (tmp_path / "DERIV_HOLDING.tsv").write_text(head.replace("NONDERIV", "DERIV"))
+    h = read_insider_holdings(tmp_path)
+    first = h[h.accession == "0000111111-24-000001"]
+    assert [None if pd.isna(n) else n for n in first.nature_of_ownership] == [None, "By 401(k)", "By LLC", "By Spouse"]
+    assert list(first.footnote_ids) == [{}, {}, {"nature_of_ownership": ["F1"]}, {}]
+    second = h[h.accession == "0000111111-24-000002"]
+    assert list(second.nature_of_ownership) == ["Held in plan", "By Trust"]
+
+
+
 def test_a_report_is_dated_by_its_last_transaction_and_its_balance_by_the_latest_dated_line():
     t, h, _ = frames([
         txn("f5", 1, 953, period="2025-12-31", filed="2026-02-10"),                  # a Form 5

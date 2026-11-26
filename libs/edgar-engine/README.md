@@ -187,7 +187,10 @@ end of its range is partial.
 **Data sets.** `read_insider_dataset` reads SEC's quarterly Insider Transactions Data Set into the same columns.
 It is SEC's own extraction of the same documents, rounded to 2 decimals, and in multi-line filings it sometimes
 puts a line's nature of ownership (rarely a price or a holding) on a neighbouring line; the filing is right.
-Footnote ids come from its per-field footnote columns. `read_insider_holdings` and `read_insider_owners` read its
+Footnote ids come from its per-field footnote columns. The commonest case is a table whose natures the data set
+packed onto its first lines, skipping the lines with none, so a direct line carries an indirect line's nature: a
+table showing that (a direct line with a nature, every nature ahead of every line without one, one nature per
+indirect line) gets its natures, with their footnotes, put back on its indirect lines in order. `read_insider_holdings` and `read_insider_owners` read its
 holdings tables and reporting owners into the columns of `holding_rows` and `owner_rows`.
 
 **Roster.** `insider_roster(rows, holdings, owners, since=...)` gives one row per issuer and owner: the owner's
