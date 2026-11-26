@@ -243,7 +243,7 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
         if (!now || !tab || id === now.activeId) return;
         show({ ...now, activeId: id }, tab);
       },
-      open: (to, then) => {
+      open: (to) => {
         const now = latest.current.shown;
         if (!now) return;
         // Said rather than dropped: the command that asked shows no state.
@@ -252,7 +252,7 @@ export function PageTabsProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         const tab = { id: newId(), path: to };
-        show({ tabs: [...now.tabs, tab], activeId: tab.id }, tab, then);
+        show({ tabs: [...now.tabs, tab], activeId: tab.id }, tab);
       },
       close: (id) => {
         const now = latest.current.shown;

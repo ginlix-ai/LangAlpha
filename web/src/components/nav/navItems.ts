@@ -1,5 +1,6 @@
 import { Blocks, ChartCandlestick, HardDrive, LayoutDashboard, LibraryBig, MessagesSquare, Receipt, Settings, SquarePen, Timer } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { RESUME_CHAT } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
 
 export interface NavItem {
   /** Route path. */
@@ -9,6 +10,8 @@ export interface NavItem {
   labelKey: string;
   /** Active-state strategy: 'prefix' = pathname.startsWith(key); 'exact-or-sub' = exact match or key + '/' sub-path; 'never' = an action, not a place. */
   match: 'prefix' | 'exact-or-sub' | 'never';
+  /** Route state the item arrives with. */
+  state?: Record<string, unknown>;
   /**
    * What has to be true before the item is drawn at all; absent = always.
    * Declared here rather than in a nav surface because three of them draw this
@@ -22,7 +25,7 @@ export interface NavItem {
 // Single source of truth for primary navigation (rail + mobile tab bar).
 export const NAV_ITEMS: NavItem[] = [
   { key: '/dashboard', icon: LayoutDashboard, labelKey: 'sidebar.dashboard', match: 'exact-or-sub' },
-  { key: '/chat', icon: MessagesSquare, labelKey: 'sidebar.chatAgent', match: 'prefix' },
+  { key: '/chat', icon: MessagesSquare, labelKey: 'sidebar.chatAgent', match: 'prefix', state: RESUME_CHAT },
   { key: '/market', icon: ChartCandlestick, labelKey: 'sidebar.marketView', match: 'exact-or-sub' },
   { key: '/automations', icon: Timer, labelKey: 'sidebar.automations', match: 'exact-or-sub' },
   { key: '/orders', icon: Receipt, labelKey: 'sidebar.orders', match: 'exact-or-sub', requires: 'orders' },

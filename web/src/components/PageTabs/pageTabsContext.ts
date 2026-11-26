@@ -24,8 +24,8 @@ export interface PageTabsState {
 export interface PageTabActions {
   select: (id: string) => void;
   close: (id: string) => void;
-  /** A new tab in front, showing `path`; `then` runs only if it opens. */
-  open: (path: string, then?: () => void) => void;
+  /** A new tab in front, showing `path`. */
+  open: (path: string) => void;
   /** What the page on screen at `path` calls itself. */
   publishTitle: (title: string, path: string) => void;
   /** Asks `guard` before the tabs take the page away; returns its removal. */

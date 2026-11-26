@@ -1,5 +1,16 @@
 import { userSessionStorage } from '@/lib/userStorage';
 
+/**
+ * Route state for an arrival at bare `/chat` that means "back to where I
+ * was": the phone's Chat tab, which keeps the place the user left. Every other
+ * arrival means the gallery, so resuming is asked for rather than undone.
+ */
+export const RESUME_CHAT = { resumeChat: true } as const;
+
+export function asksToResume(state: unknown): boolean {
+  return typeof state === 'object' && state !== null && (state as { resumeChat?: unknown }).resumeChat === true;
+}
+
 const KEY = 'chat_session_restore';
 const TTL_MS = 5 * 60 * 1000; // 5 minutes
 
