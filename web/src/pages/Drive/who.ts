@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next';
 import type { DriveModifiedBy } from '@/types/drive';
+import { threadPath } from '@/pages/ChatAgent/utils/chatRoutes';
 
 /**
  * Who made a change, as the page names them. A person in a personal space is
@@ -14,5 +15,5 @@ export function whoLabel(t: TFunction, by: Pick<DriveModifiedBy, 'kind' | 'agent
 
 /** Where the thread a change was made in opens. */
 export function threadHref(threadId: string): string {
-  return `/chat/t/${encodeURIComponent(threadId)}`;
+  return threadPath(encodeURIComponent(threadId));
 }

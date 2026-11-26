@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useOpenInNewTab } from '@/components/PageTabs/useOpenInNewTab';
 import { useChatRoute } from '@/components/Sidebar/useChatRoute';
 import { toast } from '@/components/ui/use-toast';
 import { useAllWorkspaces } from '@/hooks/useAllWorkspaces';
@@ -9,7 +10,6 @@ import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { copyText } from '@/lib/clipboard';
-import { isDesktopShell } from '@/lib/desktop';
 import { relativeTime } from '@/lib/format';
 import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { useArchiveThreadConfirm } from '@/pages/ChatAgent/components/threadArchiveAction';
@@ -134,6 +134,7 @@ export function useVerbs(archiveThread: Verbs['archiveThread']): Verbs {
   const names = useNames();
   const newWork = usePlace();
   const newThread = useNewThread(newWork.workspaceId);
+  const openInNewTab = useOpenInNewTab();
 
   return {
     ...names,
@@ -157,7 +158,7 @@ export function useVerbs(archiveThread: Verbs['archiveThread']): Verbs {
         () => toast({ title: t('common.copied') }),
         () => toast({ variant: 'destructive', title: t('palette.copyFailed') }),
       ),
-    openInNewTab: isDesktopShell() ? null : (path) => void window.open(path, '_blank', 'noopener'),
+    openInNewTab,
     renameThread: (thread, title) => void renameThreadRow(queryClient, thread.workspaceId, thread.threadId, title, thread.savedTitle, t),
     pinThread: (thread, pinned) =>
       void pinThreadRow(queryClient, thread.workspaceId, thread.threadId, pinned).then((ok) =>

@@ -10,6 +10,8 @@ import { Pencil, Users } from 'lucide-react';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { ContextMenuItem, ContextMenuSeparator } from '@/components/ui/context-menu';
 import { useThreadUnseen } from '@/lib/threadLifecycle/store';
+import { workspacePath } from '../utils/chatRoutes';
+import { OpenInNewTabItem } from './OpenInNewTabItem';
 
 /** A shared workspace's row, as the viewer stands in it. */
 export interface SharedNavRow {
@@ -49,7 +51,8 @@ export function SharedThreadTrailing({ tid, isCurrentThread, name, sharedMark }:
 /** A shared workspace's options: rename, to whoever may manage it, and its
  *  people, where leaving it, and for a manager deleting it, are offered under
  *  the rules that panel applies. */
-export function SharedWorkspaceMenuItems({ menu, onRename, onOpenPeople }: {
+export function SharedWorkspaceMenuItems({ workspaceId, menu, onRename, onOpenPeople }: {
+  workspaceId: string;
   menu: 'dropdown' | 'context';
   onRename?: () => void;
   onOpenPeople: () => void;
@@ -60,6 +63,7 @@ export function SharedWorkspaceMenuItems({ menu, onRename, onOpenPeople }: {
     : [DropdownMenuItem, DropdownMenuSeparator];
   return (
     <>
+      <OpenInNewTabItem path={workspacePath(workspaceId)} Item={Item} Separator={Separator} />
       {onRename && (
         <>
           <Item onSelect={onRename}>

@@ -209,14 +209,14 @@ describe('fileRow', () => {
 describe('tickerRow', () => {
   it('opens the ticker’s own view as a view, not a run, and offers it nowhere in that view', () => {
     const row = tickerRow('NVDA', 'NVIDIA', 'NASDAQ', verbs());
-    expect(ids(row.actions)).toEqual(['chart', 'new-thread', 'mentioning', 'copy-symbol']);
-    expect(row.actions[2]).toMatchObject({ effect: 'open', view: { kind: 'ticker', symbol: 'NVDA', via: 'drill' } });
-    expect(ids(tickerRow('NVDA', '', undefined, verbs(), { inView: true }).actions)).toEqual(['chart', 'new-thread', 'copy-symbol']);
+    expect(ids(row.actions)).toEqual(['chart', 'new-tab', 'new-thread', 'mentioning', 'copy-symbol']);
+    expect(row.actions[3]).toMatchObject({ effect: 'open', view: { kind: 'ticker', symbol: 'NVDA', via: 'drill' } });
+    expect(ids(tickerRow('NVDA', '', undefined, verbs(), { inView: true }).actions)).toEqual(['chart', 'new-tab', 'new-thread', 'copy-symbol']);
   });
 
   it('starts no thread where none can be started', () => {
     const v = verbs({ newWork: { workspaceId: undefined, pending: false, canStartThread: false, where: undefined } });
-    expect(ids(tickerRow('NVDA', '', undefined, v).actions)).toEqual(['chart', 'mentioning', 'copy-symbol']);
+    expect(ids(tickerRow('NVDA', '', undefined, v).actions)).toEqual(['chart', 'new-tab', 'mentioning', 'copy-symbol']);
   });
 });
 

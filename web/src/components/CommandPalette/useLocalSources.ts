@@ -14,10 +14,11 @@ import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { readRecentTickers } from '@/lib/recentTickers';
 import { useStorageUser } from '@/lib/userStorage';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api/skills';
+import { workspacePath } from '@/pages/ChatAgent/utils/chatRoutes';
 import { useSaveFailureToast } from '@/pages/Settings/panels/usePreferenceWrite';
 import { SECTIONS, searchableSettings, settingSearchText } from '@/pages/Settings/sections';
 import type { Workspace } from '@/types/api';
-import { runs, type Verbs } from './rows';
+import { inNewTab, runs, type Verbs } from './rows';
 import type { PaletteItem } from './types';
 
 /**
@@ -57,8 +58,9 @@ export function useLocalSources(v: Verbs) {
       place: { kind: 'workspace', workspaceId: ws.workspace_id, name },
       actions: [
         runs('open', t('palette.do.open'), FolderOpen, () =>
-          navigate(`/chat/${ws.workspace_id}`, { state: { workspaceName: name, workspaceStatus: ws.status ?? null } }),
+          navigate(workspacePath(ws.workspace_id), { state: { workspaceName: name, workspaceStatus: ws.status ?? null } }),
         ),
+        ...inNewTab(workspacePath(ws.workspace_id), v),
         runs('new-thread', t('palette.do.newThreadIn', { workspace: name }), SquarePen, () => v.newThread(ws.workspace_id)),
       ],
     };
@@ -104,7 +106,7 @@ export function useLocalSources(v: Verbs) {
     title,
     keywords: t('palette.kind.page'),
     meta: t('palette.kind.page'),
-    actions: [runs('open', t('palette.do.open'), icon, () => navigate(path))],
+    actions: [runs('open', t('palette.do.open'), icon, () => navigate(path)), ...inNewTab(path, v)],
   }));
 
   const settings = searchableSettings(isDesktopShell(), (key) => isFeatureEnabled(features, key)).map((entry): PaletteItem => {

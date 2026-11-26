@@ -18,6 +18,7 @@ import type { SlashCommand } from '@/components/ui/chat-input.types';
 import { fileGlyph } from '@/pages/ChatAgent/components/filePanel/fileMeta';
 import { sentMessageWords, threadName } from '@/pages/ChatAgent/components/messageList/sentMessage';
 import type { Thread } from '@/types/api';
+import { buildMarketViewUrl } from '@/pages/MarketView/utils/marketRoute';
 import type { PaletteAction, PaletteItem, Place } from './types';
 
 type T = (key: string, options?: Record<string, unknown>) => string;
@@ -55,7 +56,7 @@ export interface Verbs extends Names {
   openFile: (workspaceId: string, path: string) => void;
   openChart: (symbol: string) => void;
   copy: (text: string) => void;
-  /** Opens an app path in a new tab; null in the desktop shell, which sends a new window to the system browser, signed out. */
+  /** Opens an app path in a new tab, a page tab with tabs on; null where none can open (useOpenInNewTab). */
   openInNewTab: ((path: string) => void) | null;
   renameThread: (thread: ThreadRef, title: string) => void;
   pinThread: (thread: ThreadRef, pinned: boolean) => void;
@@ -76,7 +77,7 @@ export function runs(id: string, label: string, icon: PaletteAction['icon'], run
 /** A file's link: the chat and the workspace page both open the file panel at `?file=`. */
 export const fileHref = (workspaceId: string, path: string) => `/chat/${workspaceId}?${new URLSearchParams({ file: path })}`;
 
-function inNewTab(path: string, v: Verbs): PaletteAction[] {
+export function inNewTab(path: string, v: Verbs): PaletteAction[] {
   const open = v.openInNewTab;
   return open ? [runs('new-tab', v.t('palette.do.openInNewTab'), ExternalLink, () => open(path))] : [];
 }
@@ -275,6 +276,7 @@ export function tickerRow(symbol: string, name: string, meta: string | undefined
     preview: { kind: 'ticker', symbol },
     actions: [
       runs('chart', v.t('palette.do.openChart'), ChartCandlestick, () => v.openChart(symbol)),
+      ...inNewTab(buildMarketViewUrl({ symbol }), v),
       ...(v.newWork.canStartThread
         ? [runs('new-thread', v.t('palette.do.newThreadAbout', { symbol }), Sparkles, () => v.newThread(undefined, { message: `${symbol} ` }), true)]
         : []),

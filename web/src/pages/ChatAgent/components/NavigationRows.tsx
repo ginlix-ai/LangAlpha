@@ -23,7 +23,7 @@ import {
   ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger,
 } from '../../../components/ui/context-menu';
 import { copyWithToast } from '@/lib/clipboard';
-import { isDesktopShell } from '@/lib/desktop';
+import { useOpenInNewTab } from '@/components/PageTabs/useOpenInNewTab';
 import { isImeComposing } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../../components/ui/hover-card';
@@ -47,6 +47,7 @@ import type { NavWorkspace } from '../hooks/useNavigationData';
 import { WorkspaceMenuItems } from './workspaceActions';
 import type { WorkspaceActions } from './workspaceActions';
 import { clampWorkspaceName } from '../utils/workspaceName';
+import { threadPath } from '../utils/chatRoutes';
 import { useNavTree, type DragGate } from './navTreeKit';
 import { computerIdentity } from './ComputerBadge';
 import { FolderCommand, FolderTerminal } from './computerFolderIcons';
@@ -330,14 +331,14 @@ export interface ThreadTreeRowProps {
 
 /** The thread's own address in the app, for a new tab or the clipboard. */
 function threadHref(threadId: string): string {
-  return new URL(`/chat/t/${threadId}`, window.location.origin).href;
+  return new URL(threadPath(threadId), window.location.origin).href;
 }
 
 interface ThreadRowMenuProps {
   isPinned: boolean;
   onCloseAutoFocus: (event: Event) => void;
-  /** Absent in the desktop app, which hands a new window of its own pages to the system browser. */
-  onOpenInNewTab?: () => void;
+  /** The thread's path in the app, for opening it in a new tab where one can open (useOpenInNewTab). */
+  threadPath: string;
   onCopyLink: () => void;
   onTogglePin?: () => void;
   onRename?: () => void;
@@ -348,9 +349,11 @@ interface ThreadRowMenuProps {
 
 // A thread row's right-click menu. Mounted only while open.
 function ThreadRowMenu({
-  isPinned, onCloseAutoFocus, onOpenInNewTab, onCopyLink, onTogglePin, onRename, onShare, onArchive, onDelete,
+  isPinned, onCloseAutoFocus, threadPath, onCopyLink, onTogglePin, onRename, onShare, onArchive, onDelete,
 }: ThreadRowMenuProps) {
   const { t } = useTranslation();
+  const openInNewTab = useOpenInNewTab();
+  const onOpenInNewTab = openInNewTab ? () => openInNewTab(threadPath) : undefined;
   return (
     <ContextMenuContent className="min-w-44" onCloseAutoFocus={onCloseAutoFocus}>
       {onOpenInNewTab && (
@@ -603,7 +606,7 @@ function ThreadTreeRowImpl({
         <ThreadRowMenu
           isPinned={isPinned}
           onCloseAutoFocus={handleMenuCloseAutoFocus}
-          onOpenInNewTab={isDesktopShell() ? undefined : () => window.open(threadHref(tid), '_blank', 'noopener')}
+          threadPath={threadPath(tid)}
           onCopyLink={copyLink}
           onTogglePin={onPinThread ? () => onPinThread(wsId, tid, !isPinned) : undefined}
           onRename={onRenameThread ? () => { renameAfterMenuRef.current = true; } : undefined}
@@ -748,7 +751,7 @@ function WorkspaceTreeRowImpl({
     menu === 'context' ? requestRename : canRename ? () => rename.onStart(wsId, ws.name || '') : undefined
   );
   const menuItems = (menu: 'dropdown' | 'context') => (shared ? (
-    <SharedWorkspaceMenuItems menu={menu} onRename={onRenameRow(menu)} onOpenPeople={() => shared.onOpenPeople(wsId)} />
+    <SharedWorkspaceMenuItems workspaceId={wsId} menu={menu} onRename={onRenameRow(menu)} onOpenPeople={() => shared.onOpenPeople(wsId)} />
   ) : (
     <WorkspaceMenuItems
       workspace={ws}

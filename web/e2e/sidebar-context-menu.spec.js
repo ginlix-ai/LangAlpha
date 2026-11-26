@@ -118,5 +118,5 @@ test('share opens the share controls for that thread', async ({ page }) => {
 test('a workspace row opens its options menu on right-click', async ({ page }) => {
   await header(page).click({ button: 'right' });
   const items = await page.getByRole('menu').getByRole('menuitem').allInnerTexts();
-  expect(items.map((s) => s.trim())).toEqual(['Pin to top', 'Rename', 'Duplicate', 'Delete']);
+  expect(items.map((s) => s.trim())).toEqual(['Open in new tab', 'Pin to top', 'Rename', 'Duplicate', 'Delete']);
 });
