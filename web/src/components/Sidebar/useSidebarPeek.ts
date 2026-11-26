@@ -7,7 +7,7 @@ export interface SidebarPeek {
   open: boolean;
   /** For the toggle, which brings the panel in; absent while it is shown. */
   toggleHover?: Hover;
-  /** For the panel while it peeks. */
+  /** For the panel, and the top bar's corner over it, while it peeks. */
   panelHover?: Hover;
 }
 
@@ -43,11 +43,14 @@ export function useSidebarPeek(hidden: boolean): {
     timer.current = window.setTimeout(() => setPeeking(true), 150);
   }, [clear]);
 
-  // Leaving the panel closes it, unless something in it is still in use: a
-  // menu (portalled outside it, so reaching the menu leaves the panel; a
-  // context menu's trigger is marked by no attribute, so the menu itself is
-  // what counts), a field being typed in, a resize. Those hold it until they
-  // end.
+  // Leaving the panel closes it, unless the pointer is still over the panel
+  // or its corner, or something in it is still in use: a menu (portalled
+  // outside it, so reaching the menu leaves the panel; a context menu's
+  // trigger is marked by no attribute, so the menu itself is what counts), a
+  // field being typed in, a resize. Those hold it until they end. Where the
+  // pointer is is asked, not tracked from enter and leave: one control moving
+  // under a still pointer, or the toggle left for the rest of the corner,
+  // sends a leave with no enter to answer it.
   const scheduleClose = useCallback(() => {
     clear();
     const check = () => {
@@ -55,7 +58,9 @@ export function useSidebarPeek(hidden: boolean): {
       const active = document.activeElement;
       const held =
         !!panel &&
-        (document.querySelector('[role="menu"]') != null ||
+        (panel.matches(':hover') ||
+          !!cornerRef.current?.matches(':hover') ||
+          document.querySelector('[role="menu"]') != null ||
           (active instanceof HTMLElement && panel.contains(active) && active.matches('input, textarea, [contenteditable="true"]')) ||
           document.body.classList.contains('sidebar-resizing'));
       if (held) timer.current = window.setTimeout(check, 280);

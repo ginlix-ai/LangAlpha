@@ -146,9 +146,11 @@ interface AppTopBarProps {
 
 /**
  * The row across the top of the window. Its left end is the sidebar's corner
- * (the brand, the toggle, history), always there. While it spans the page,
- * the rest is the window's drag handle holding, with page tabs on, the open
- * pages, and at its right end the controls of a page that puts them here.
+ * (the toggle and history, with the brand while the sidebar is shown). While
+ * it spans the page, the rest is the window's drag handle holding, with page
+ * tabs on, the open pages, and at its right end the controls of a page that
+ * puts them here. Not drawn while a hidden sidebar's toggle is in the page's
+ * own top row (App.tsx), unless the sidebar peeks.
  */
 export default function AppTopBar({ sidebarHidden, onToggleSidebar, peek, cornerRef, spans, slotRef }: AppTopBarProps) {
   const tabs = usePageTabs();

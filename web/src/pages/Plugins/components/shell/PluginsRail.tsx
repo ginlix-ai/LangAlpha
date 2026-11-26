@@ -16,6 +16,7 @@ import {
   type Section,
 } from './sections';
 import { connectorAttention, type ShellData } from './useShellData';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 
 /**
  * The page's own navigation: the sections, then every installed plugin as a
@@ -143,7 +144,10 @@ export function PluginsRail({
 
   return (
     <nav ref={navRef} className="page-rail plugins-rail" aria-label={t('plugins:shell.railLabel')}>
-      <div className="page-rail-label open-style:label-voice">{t('plugins:shell.group.customize')}</div>
+      <div className="plugins-rail-head">
+        <SidebarReveal titlebar />
+        <div className="page-rail-label open-style:label-voice">{t('plugins:shell.group.customize')}</div>
+      </div>
       {CUSTOMIZE.map(sectionLink)}
       <div className="page-rail-label open-style:label-voice">{t('plugins:shell.group.accounts')}</div>
       {ACCOUNTS.map(sectionLink)}

@@ -1,5 +1,6 @@
 import { useSharedEntry, useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
 import { usePageTabTitle } from '@/components/PageTabs/usePageTabTitle';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 import { useThreadPrivacy } from './chatView/useThreadPrivacy';
 import { useUser } from '@/hooks/useUser';
 import { threadStanding } from '@/lib/sharedThreads';
@@ -626,6 +627,20 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     return (
       <div className="h-full flex flex-col">
         <div className="chrome-drag-strip" aria-hidden="true" />
+        {/* The page's first row, so the way back and the hidden sidebar's
+            toggle stay in reach while the list cannot load. */}
+        <div className="shrink-0 px-6 py-4 flex items-center gap-2" style={{ paddingTop: 'calc(var(--page-top) - 4px)' }}>
+          <SidebarReveal />
+          <button
+            onClick={onBack}
+            className="p-2 rounded-md transition-colors hover:bg-(--color-border-muted)"
+            style={{ color: 'var(--color-text-primary)' }}
+            title={t('thread.backToWorkspaces')}
+            aria-label={t('thread.backToWorkspaces')}
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+        </div>
         <div className="flex-1 min-h-0 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
             <p className="text-sm" style={{ color: 'var(--color-loss)' }}>
@@ -664,16 +679,19 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
             has, so it costs no layout, and the back button wins its own clicks
             back through the `no-drag` list in chrome.css. */}
         <div className="shrink-0 px-6 py-4 flex items-center justify-between" data-chrome="drag" style={{ paddingTop: 'calc(var(--page-top) - 4px)' }}>
-          <button
-            onClick={onBack}
-            className="p-2 rounded-md transition-colors"
-            style={{ color: 'var(--color-text-primary)' }}
-            title={t('thread.backToWorkspaces')}
-            onMouseEnter={!isMobile ? (e) => { e.currentTarget.style.backgroundColor = 'var(--color-border-muted)'; } : undefined}
-            onMouseLeave={!isMobile ? (e) => { e.currentTarget.style.backgroundColor = ''; } : undefined}
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <SidebarReveal />
+            <button
+              onClick={onBack}
+              className="p-2 rounded-md transition-colors"
+              style={{ color: 'var(--color-text-primary)' }}
+              title={t('thread.backToWorkspaces')}
+              onMouseEnter={!isMobile ? (e) => { e.currentTarget.style.backgroundColor = 'var(--color-border-muted)'; } : undefined}
+              onMouseLeave={!isMobile ? (e) => { e.currentTarget.style.backgroundColor = ''; } : undefined}
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+          </div>
           {isMobile && <PaletteSearchButton />}
         </div>
 

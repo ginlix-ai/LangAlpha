@@ -114,6 +114,25 @@ html.desktop-mac .sidebar--panel .sidebar-panel-header {
   margin-top: -38px;
 }
 
+/* The hidden sidebar's toggle at the start of a page's own top row
+   (SidebarReveal), with back and forward in the desktop app. */
+.sidebar-reveal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* A row in the title bar's band starts clear of the window buttons, which
+   reach about 73px in. Those rows start 10 to 16px in, so the toggle lands
+   at 84 to 90px, beside the buttons as the shown sidebar's toggle is. A rule
+   rather than a measurement, so it holds however the page is drawn: behind
+   another chat, mid-animation, or before its data arrives. A row lower down,
+   at the page's own top padding, already clears the buttons and takes none. */
+html.desktop-mac .sidebar-reveal--titlebar {
+  margin-left: 74px;
+}
+
 .sidebar-history {
   display: none;
 }

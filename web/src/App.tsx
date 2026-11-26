@@ -1,4 +1,4 @@
-import React, { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { I18nProvider } from 'react-aria-components';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
@@ -6,6 +6,8 @@ import AppSidebar from './components/Sidebar/AppSidebar';
 import AppTopBar from './components/TopBar/AppTopBar';
 import { TopBarSlotContext, useTopBarHost } from './components/TopBar/topBarSlot';
 import { useSidebarPeek } from './components/Sidebar/useSidebarPeek';
+import { SidebarRevealContext } from './components/Sidebar/sidebarRevealContext';
+import { useSidebarShortcut } from './components/Sidebar/sidebarShortcut';
 import { PageTabsProvider } from './components/PageTabs/PageTabsProvider';
 import { PAGE_TABS_FEATURE } from './components/PageTabs/pageTabsContext';
 import { useResumeTab } from './components/PageTabs/useResumeTab';
@@ -377,14 +379,22 @@ function AuthenticatedShell() {
     };
   }, [writeSidebarWidth, sidebarWidthVar]);
   // The bar spans the content column only while it holds something there: the
-  // open pages, the toggle and history the hidden sidebar leaves behind, or a
-  // page's own controls (TopBarActions), which live there in place of a page
-  // header. Otherwise its corner sits over the sidebar's own top row and the
-  // page keeps the window's full height.
+  // open pages, or a page's own controls (TopBarActions), which live there in
+  // place of a page header. Otherwise its corner sits over the sidebar's own
+  // top row and the page keeps the window's full height.
   const pageTabsOn = useFeatureEnabled(PAGE_TABS_FEATURE);
   const topBar = useTopBarHost();
-  const showTopBar = !isMobile && (pageTabsOn || sidebarHidden || topBar.claimed);
+  const showTopBar = !isMobile && (pageTabsOn || topBar.claimed);
   const { peek, panelRef, cornerRef } = useSidebarPeek(sidebarHidden);
+  useSidebarShortcut(isMobile ? undefined : toggleSidebar);
+  // Hidden with no bar across the page, the toggle moves into the page's own
+  // top row rather than putting a row above it, so the page's header stays put,
+  // and the bar's corner comes back only over a peek.
+  const toggleInPage = !isMobile && sidebarHidden && !showTopBar;
+  const sidebarReveal = useMemo(
+    () => (toggleInPage ? { onToggle: toggleSidebar, hover: peek.toggleHover } : null),
+    [toggleInPage, toggleSidebar, peek.toggleHover],
+  );
 
   // While the user profile is loading, show the loading state to avoid
   // flashing protected content before the gate check completes.
@@ -442,20 +452,22 @@ function AuthenticatedShell() {
                     peek={peek}
                     panelRef={panelRef}
                   />
-                  <AppTopBar
+                  {(!toggleInPage || peek.open) && <AppTopBar
                     sidebarHidden={sidebarHidden}
                     onToggleSidebar={toggleSidebar}
                     peek={peek}
                     cornerRef={cornerRef}
                     spans={showTopBar}
                     slotRef={topBar.slotRef}
-                  />
+                  />}
                 </>
               )}
               {isMobile && !hideTabBar && <BottomTabBar />}
               <main ref={mainRef} className={`app-main${hideTabBar ? ' app-main--no-tab' : ''}`}>
                 <TopBarSlotContext.Provider value={topBar.context}>
-                  <Main />
+                  <SidebarRevealContext.Provider value={sidebarReveal}>
+                    <Main />
+                  </SidebarRevealContext.Provider>
                 </TopBarSlotContext.Provider>
               </main>
             </div>

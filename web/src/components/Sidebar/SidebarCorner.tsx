@@ -5,9 +5,9 @@ import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen } from 'lucide-rea
 import logoLight from '../../assets/img/logo.svg';
 import logoDark from '../../assets/img/logo-dark.svg';
 import { useTheme } from '../../contexts/ThemeContext';
-import { clientOs } from '@/lib/clientOs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type { SidebarPeek } from './useSidebarPeek';
+import { toggleKeyShortcuts, toggleShortcutLabel } from './sidebarShortcut';
 
 interface NavigationLike {
   canGoBack: boolean;
@@ -17,7 +17,7 @@ interface NavigationLike {
 }
 
 /** Back/forward for the desktop titlebar row; hidden elsewhere by CSS. */
-function HistoryButtons() {
+export function HistoryButtons() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   // Without the Navigation API the stack depth is unknowable, so both stay live.
@@ -48,35 +48,9 @@ function HistoryButtons() {
   );
 }
 
-/** Cmd+B on a Mac, Ctrl+B elsewhere: the key most apps with a sidebar use. On
- *  a Mac only Cmd counts, since Ctrl+B there moves the caret back a character. */
-function isToggleShortcut(e: KeyboardEvent): boolean {
-  if (e.altKey || e.shiftKey || e.key.toLowerCase() !== 'b') return false;
-  return clientOs() === 'mac' ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-}
-
-const toggleShortcutLabel = () => (clientOs() === 'mac' ? '⌘B' : 'Ctrl B');
-const toggleKeyShortcuts = () => (clientOs() === 'mac' ? 'Meta+B' : 'Control+B');
-
 /** The show/hide button, with its shortcut in the tooltip and on the window. */
-function SidebarToggle({ hidden, onToggle, hover }: { hidden: boolean; onToggle: () => void; hover: SidebarPeek['toggleHover'] }) {
+export function SidebarToggle({ hidden, onToggle, hover }: { hidden: boolean; onToggle: () => void; hover: SidebarPeek['toggleHover'] }) {
   const { t } = useTranslation();
-
-  // A key an editor already took (bold, in one that has it) is left to it, as
-  // is a rich-text field, where the browser's own Cmd+B is bold. A held key is
-  // taken but toggles once, so the desktop app's menu, which answers the key
-  // the page leaves, does not toggle on each repeat.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || !isToggleShortcut(e)) return;
-      if (e.target instanceof HTMLElement && e.target.isContentEditable) return;
-      e.preventDefault();
-      if (!e.repeat) onToggle();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onToggle]);
-
   const label = hidden ? t('sidebar.expand') : t('sidebar.collapse');
   const Icon = hidden ? PanelLeftOpen : PanelLeftClose;
   return (
@@ -104,10 +78,10 @@ function SidebarToggle({ hidden, onToggle, hover }: { hidden: boolean; onToggle:
 }
 
 /**
- * The top bar's left end: the brand, the sidebar's toggle and history. One
- * set for both of the sidebar's states, so the toggle holds still as the panel
- * goes and comes, and drawn over the panel, peeking too, so the pointer that
- * slid it in can go back to the toggle without closing it.
+ * The top bar's left end: the sidebar's toggle and history, with the brand
+ * while the sidebar is shown. Drawn over the panel, peeking too, and part of
+ * it while it peeks, so the pointer on its way between the toggle and the
+ * panel keeps it open.
  */
 export function SidebarCorner({ hidden, onToggleHidden, peek, cornerRef }: {
   hidden: boolean;
@@ -119,16 +93,25 @@ export function SidebarCorner({ hidden, onToggleHidden, peek, cornerRef }: {
   const navigate = useNavigate();
   const { theme } = useTheme();
   return (
-    <div ref={cornerRef} className="app-topbar-corner">
-      <button
-        type="button"
-        className="sidebar-brand"
-        onClick={() => navigate('/dashboard')}
-        aria-label={t('sidebar.dashboard')}
-      >
-        <img src={theme === 'light' ? logoDark : logoLight} alt="" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
-        <span className="sidebar-wordmark title-font">LangAlpha</span>
-      </button>
+    <div
+      ref={cornerRef}
+      className="app-topbar-corner"
+      onPointerEnter={peek.panelHover?.onPointerEnter}
+      onPointerLeave={peek.panelHover?.onPointerLeave}
+    >
+      {/* Not while hidden, peeking too: in front of the toggle it would move
+          the toggle out from under the pointer that opened the peek. */}
+      {!hidden && (
+        <button
+          type="button"
+          className="sidebar-brand"
+          onClick={() => navigate('/dashboard')}
+          aria-label={t('sidebar.dashboard')}
+        >
+          <img src={theme === 'light' ? logoDark : logoLight} alt="" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
+          <span className="sidebar-wordmark title-font">LangAlpha</span>
+        </button>
+      )}
       <SidebarToggle hidden={hidden} onToggle={onToggleHidden} hover={peek.toggleHover} />
       <HistoryButtons />
     </div>

@@ -31,6 +31,7 @@ import { relativeTime } from '@/lib/format';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import type { LibraryItem, LibraryKind } from '@/types/orgLibrary';
 import './Library.css';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 
 type Filter = 'all' | LibraryKind;
 
@@ -204,12 +205,15 @@ function Library() {
       <div ref={pageRef} className="library-scroll">
         <div className="library-container">
           <div className="mb-6">
-            <h1
-              className="font-[family-name:var(--cs-face,var(--font-ui))] text-[length:var(--cs-text-title,1.25rem)] leading-7 font-semibold tracking-[var(--cs-title-track,normal)] mb-1"
-              style={{ color: 'var(--color-text-primary)' }}
-            >
-              {t('organization.library.title')}
-            </h1>
+            <div className="flex items-center gap-3 mb-1">
+              <SidebarReveal />
+              <h1
+                className="font-[family-name:var(--cs-face,var(--font-ui))] text-[length:var(--cs-text-title,1.25rem)] leading-7 font-semibold tracking-[var(--cs-title-track,normal)]"
+                style={{ color: 'var(--color-text-primary)' }}
+              >
+                {t('organization.library.title')}
+              </h1>
+            </div>
             <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
               {orgT('organization.library.description')}
             </p>

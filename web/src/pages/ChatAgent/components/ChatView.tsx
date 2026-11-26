@@ -75,6 +75,7 @@ import { WORKFLOW_TASK_TYPE } from '../session/subagents/workflowRunState';
 import { deriveSubagentStatus, isTerminalStatus } from '../session/subagents/subagentStatus';
 import { threadPath } from '../utils/chatRoutes';
 import { ChatBreadcrumb } from './chatView/ChatBreadcrumb';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 import { useChatTrail } from './chatView/useChatTrail';
 import Markdown from './Markdown';
 import ChatMinimap from './ChatMinimap';
@@ -1662,6 +1663,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
             through the global no-drag rule. */}
         <div data-chrome="drag" data-handoff="header" className="flex items-center justify-between px-4 py-2 border-b min-w-0 shrink-0" style={{ borderColor: 'var(--color-border-muted)', cursor: isMobile ? 'pointer' : undefined }} onClick={handleTopBarTap}>
           <div className="flex items-center gap-4 min-w-0 shrink">
+            <SidebarReveal titlebar />
             <button
               onClick={up}
               className="p-2 rounded-md transition-colors shrink-0"
