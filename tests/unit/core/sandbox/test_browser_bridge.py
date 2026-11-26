@@ -13,19 +13,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from ptc_agent.core.sandbox._defaults import (
-    SANDBOX_AGENT_BROWSER_SHA256,
-    SANDBOX_AGENT_BROWSER_VERSION,
-    SANDBOX_CHROME_POLICY,
-    SANDBOX_CHROME_POLICY_PATH,
-    SANDBOX_IMAGE_ENV,
-)
 from ptc_agent.core.sandbox._shared import _internal_package_files, _internal_package_uploads
 from ptc_agent.core.sandbox.browser_runtime import (
     care,
@@ -50,7 +44,9 @@ from ptc_agent.core.sandbox.browser_runtime.host import Host
 from ptc_agent.core.sandbox.browser_runtime.launch import Launch
 from ptc_agent.core.sandbox.browser_runtime.relay import rewrite_head
 from ptc_agent.core.sandbox.providers import provider_class
-from ptc_agent.core.sandbox.providers._image_recipe import _browser_commands
+from ptc_agent.core.sandbox.providers._image_recipe import Copy, Run, image_recipe
+from ptc_agent.core.sandbox.toolset_runtime import converge as toolset_converge
+from ptc_agent.core.sandbox.toolset_runtime import units as toolset_units
 
 _ROOT = Path(__file__).resolve().parents[4]
 _DOCKERFILE = (_ROOT / "Dockerfile.sandbox").read_text()
@@ -125,6 +121,37 @@ def test_anything_else_is_a_bad_request(head: bytes):
     assert rewrite_head(head, TOKEN) == (None, b"400 Bad Request")
 
 
+@pytest.fixture(autouse=True)
+def _managed_policy(tmp_path_factory, monkeypatch):
+    """The managed policy a cloud computer's image carries, without which its
+    host is not ready; beside the test's own folder, which some read whole."""
+    policy = tmp_path_factory.mktemp("policy") / "langalpha.json"
+    policy.write_text("{}")
+    monkeypatch.setattr(host, "CHROME_POLICY_FILE", str(policy))
+
+
+def test_a_cloud_host_is_ready_only_with_the_managed_policy(tmp_path, monkeypatch):
+    engine_file = tmp_path / "agent-browser"
+    engine_file.write_text("#!/bin/sh\n")
+    engine_file.chmod(0o755)
+    cloud = Host(engine=str(engine_file), chrome=_chrome_stub(tmp_path))
+    assert cloud.ready()
+
+    monkeypatch.setattr(host, "CHROME_POLICY_FILE", str(tmp_path / "missing.json"))
+
+    assert not cloud.ready()
+    # A person's own machine runs their own Chrome, which this policy is not for.
+    assert dataclasses.replace(cloud, own=True).ready()
+
+
+def _chrome_stub(folder: Path) -> str:
+    """A Chrome to stand beside the engine, which a host is ready only with."""
+    chrome = folder / "chrome"
+    chrome.write_text("#!/bin/sh\n")
+    chrome.chmod(0o755)
+    return str(chrome)
+
+
 def _use_host(monkeypatch, **recorded) -> Host:
     """Stand *recorded* in for what ``install`` would have recorded."""
     chosen = Host(**recorded)
@@ -149,7 +176,7 @@ _REAL_CHECK = gate.check
 
 def _admits(launched: Launch, release=lambda: None):
     """A gate that admits every command on *launched*."""
-    return lambda use, user_agent: (launched, release)
+    return lambda use, user_agent, **_: (launched, release)
 
 
 def _check(use: str, user_agent: str = "") -> Launch:
@@ -173,7 +200,7 @@ def engine(tmp_path, monkeypatch):
     binary = tmp_path / "engine"
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
-    _use_host(monkeypatch, engine=str(binary))
+    _use_host(monkeypatch, engine=str(binary), chrome=_chrome_stub(tmp_path))
     monkeypatch.setattr(wrapper.os, "getuid", lambda: 1000)
     monkeypatch.setattr(wrapper, "_OOM_SCORE", tmp_path / "oom_score_adj")
     monkeypatch.setattr(gate, "check", _admits(_STANDARD))
@@ -243,7 +270,7 @@ def test_a_bare_flag_with_a_value_is_not_the_flag(engine):
 def test_help_runs_whatever_the_browser_s_state(engine, monkeypatch):
     """It starts no browser, so memory or a person's hold has nothing to refuse."""
 
-    def refuse(use, user_agent):
+    def refuse(use, user_agent, **_):
         raise gate.Refused(protocol.MEMORY_MESSAGE)
 
     monkeypatch.setattr(gate, "check", refuse)
@@ -375,6 +402,13 @@ def test_a_command_line_is_read_once_into_one_shape():
         "batch",
         "tab",
     ]
+    # In the order the engine runs them, a nested batch's commands first.
+    assert [each.name for each in wrapper.expand(wrapper.parse(["batch", "batch 'tab new'", "snapshot"]))] == [
+        "batch",
+        "batch",
+        "tab",
+        "snapshot",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -394,15 +428,38 @@ def test_a_login_past_an_unknown_option_or_inside_a_batch_is_refused(engine, cap
 
 
 @pytest.mark.parametrize(
-    "args",
-    [("open",), ("--json", "open"), ("batch", "open", "open https://example.com")],
+    ("args", "named"),
+    [
+        (("open",), "open"),
+        (("--json", "open"), "open"),
+        (("batch", "open", "open https://example.com"), "open"),
+        (("goto",), "goto"),
+        (("navigate",), "navigate"),
+    ],
 )
-def test_an_open_with_no_address_is_refused_as_a_restart(engine, capsys, args):
+def test_an_open_with_no_address_is_refused_as_a_restart(engine, capsys, args, named):
     """With no address the engine launches the browser again over the open one,
-    which loses its pages."""
+    which loses its pages. ``goto`` and ``navigate`` are its names for ``open``."""
     assert _run(*args) == protocol.REFUSED
-    assert capsys.readouterr().err == protocol.RESTART_MESSAGE.format("`open` without an address") + "\n"
+    assert capsys.readouterr().err == protocol.RESTART_MESSAGE.format(f"`{named}` without an address") + "\n"
     assert engine == {}
+
+
+@pytest.mark.parametrize(
+    ("args", "opens"),
+    [
+        (("open", "https://example.com"), True),
+        (("goto", "example.com"), True),
+        (("batch", "navigate https://example.com", "snapshot"), True),
+        (("batch", "snapshot", "open https://example.com"), False),
+        # A nested batch runs before the commands given after it.
+        (("batch", "batch 'get url'", "open https://example.com"), False),
+        (("batch", "batch 'open https://example.com'", "get url"), True),
+        (("click", "@e1"), False),
+    ],
+)
+def test_a_command_opens_its_own_page_only_when_it_goes_to_an_address_first(args, opens):
+    assert wrapper.opens_page(wrapper.expand(wrapper.parse(args))) is opens
 
 
 def test_a_click_past_an_unknown_option_is_refused_while_the_person_holds_the_page(state, engine, monkeypatch, capsys):
@@ -419,9 +476,9 @@ def test_a_command_runs_on_the_host_recorded_while_it_waited_for_admission(engin
     upgraded = tmp_path / "engine-new"
     upgraded.write_text("#!/bin/sh\n")
     upgraded.chmod(0o755)
-    newer = Host(engine=str(upgraded), proxy_port=40123)
+    newer = Host(engine=str(upgraded), chrome=_chrome_stub(tmp_path), proxy_port=40123)
 
-    def admitted_after_a_setup(use, user_agent):
+    def admitted_after_a_setup(use, user_agent, **_):
         monkeypatch.setattr(host, "current", lambda: newer)
         return _STANDARD, lambda: None
 
@@ -519,7 +576,7 @@ def test_a_read_refused_where_it_reads_changes_nothing_the_gate_records(engine, 
     set a user agent leaves the launch the next command finds as it was."""
     monkeypatch.setattr(launch, "current", lambda: Launch("", "standard", kept=True) if open_kept else None)
     monkeypatch.setattr(signin, "kept", lambda: chosen)
-    monkeypatch.setattr(gate, "check", lambda use, user_agent: pytest.fail("the gate ran"))
+    monkeypatch.setattr(gate, "check", lambda use, user_agent, **_: pytest.fail("the gate ran"))
     assert _run("batch", "close", "cookies") == protocol.REFUSED
     assert capsys.readouterr().err == protocol.SIGNINS_MESSAGE.format("`cookies`") + "\n"
     assert engine == {}
@@ -589,7 +646,7 @@ def test_the_network_commands_of_a_kept_browser_run_beside_the_wrapper_with_sign
 
 
 def test_the_wrapper_passes_on_a_refusal_and_runs_nothing(engine, monkeypatch, capsys):
-    def refuse(use, user_agent):
+    def refuse(use, user_agent, **_):
         raise gate.Refused(protocol.HELD_MESSAGE)
 
     monkeypatch.setattr(gate, "check", refuse)
@@ -599,7 +656,7 @@ def test_the_wrapper_passes_on_a_refusal_and_runs_nothing(engine, monkeypatch, c
 
 
 def test_a_gate_that_fails_otherwise_costs_the_view_not_the_command(engine, monkeypatch):
-    def broken(use, user_agent):
+    def broken(use, user_agent, **_):
         raise OSError("no state directory")
 
     monkeypatch.setattr(gate, "check", broken)
@@ -1541,31 +1598,49 @@ def test_a_state_file_is_replaced_whole_and_kept_private(tmp_path, monkeypatch):
     assert [path.name for path in target.parent.iterdir()] == ["token"]
 
 
-def test_dockerfile_mirrors_the_pins_and_the_policy():
-    args = dict(re.findall(r"^ARG\s+(AGENT_BROWSER\w*)=(\S+)", _DOCKERFILE, re.MULTILINE))
-    assert args["AGENT_BROWSER_VERSION"] == SANDBOX_AGENT_BROWSER_VERSION
-    assert args["AGENT_BROWSER_SHA256_AMD64"] == SANDBOX_AGENT_BROWSER_SHA256["amd64"]
-    assert args["AGENT_BROWSER_SHA256_ARM64"] == SANDBOX_AGENT_BROWSER_SHA256["arm64"]
-    written = re.search(r"echo '(\{.*?\})' > " + re.escape(SANDBOX_CHROME_POLICY_PATH), _DOCKERFILE)
-    assert written is not None
-    assert json.loads(written.group(1)) == SANDBOX_CHROME_POLICY
+def _toolset_steps() -> tuple[Copy, Run]:
+    copy, run = image_recipe(working_dir="/home/workspace", mcp_packages=None, cpu=2).toolset
+    assert isinstance(copy, Copy) and isinstance(run, Run)
+    return copy, run
 
 
-@pytest.mark.parametrize("arch", ["amd64", "arm64"])
-def test_the_recipe_picks_each_architecture_and_carries_on(arch: str):
-    """Every step is one && chain, so a selection that ends non-zero aborts the
-    image build on whichever architecture it was not written on."""
-    command = _browser_commands(SANDBOX_IMAGE_ENV["PLAYWRIGHT_BROWSERS_PATH"])[0]
-    selection = re.search(r'case "\$AB_ARCH" in .*? esac', command)
-    assert selection is not None
+def test_dockerfile_installs_the_toolset_as_the_recipe_does():
+    """The Docker image copies the same files to the same place and runs the
+    same command, so it ends with the same state file as the other images."""
+    step, run = _toolset_steps()
+    copy = re.search(r"^COPY (.+) (\S+)$", _DOCKERFILE, re.MULTILINE)
+    assert copy is not None
+    sources, dest = copy.group(1).split(), copy.group(2)
+    assert dest == f"{step.dest}/"
+    copied = sorted(path.name for source in sources for path in _ROOT.glob(source))
+    assert copied == list(step.files)
+    assert {(_ROOT / source).parent for source in sources} == {step.source}
+    (command,) = run.commands
+    assert f"\nRUN {command}\n" in _DOCKERFILE
+    # The browser's pins live in the table now, not beside the Dockerfile.
+    assert "AGENT_BROWSER" not in _DOCKERFILE
+    assert "chrome_for_testing/policies" not in _DOCKERFILE
+
+
+def test_the_toolset_step_carries_a_runtime_that_runs(tmp_path):
+    """The image runs the folder by its name, as a package, from the files the
+    step copies and nothing else."""
+    step, run = _toolset_steps()
+    folder = tmp_path / Path(step.dest).name
+    folder.mkdir()
+    for name in step.files:
+        shutil.copy2(step.source / name, folder / name)
     result = subprocess.run(
-        ["sh", "-c", f'AB_ARCH={arch}; {selection.group(0)} && echo "$AB_SHA"'],
+        [sys.executable, "-I", str(folder), "status", "--root", str(tmp_path / "root")],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=30,
     )
-    assert result.returncode == 0
-    assert result.stdout.strip() == SANDBOX_AGENT_BROWSER_SHA256[arch]
+    assert result.returncode == 0, result.stderr
+    status = json.loads(result.stdout.strip().splitlines()[-1])
+    assert status["target"] == toolset_units.version()
+    assert "units.json" in step.files
+    assert run.commands[0].split()[:3] == ["python3", "-I", step.dest]
 
 
 @pytest.mark.parametrize("kind", ["docker", "ssh"])
@@ -1860,7 +1935,7 @@ def test_a_batch_read_from_stdin_is_checked_and_handed_on(engine, monkeypatch, c
     handed = []
     monkeypatch.setattr(wrapper, "_restore_stdin", handed.append)
     uses = []
-    monkeypatch.setattr(gate, "check", lambda use, user_agent: (uses.append(use) or _STANDARD, lambda: None))
+    monkeypatch.setattr(gate, "check", lambda use, user_agent, **_: (uses.append(use) or _STANDARD, lambda: None))
     monkeypatch.setattr(wrapper.sys, "stdin", io.TextIOWrapper(io.BytesIO(b'[["click", "@e1"]]')))
     assert _run("--json", "batch", "--bail") is None
     assert handed == [b'[["click", "@e1"]]']
@@ -1954,7 +2029,7 @@ def test_retina_renders_at_twice_the_page_and_streams_it_whole(engine, monkeypat
 def test_a_gate_that_cannot_settle_runs_the_launch_on_record(engine, monkeypatch):
     """A broken gate costs the view, never a restart of the open browser."""
 
-    def broken(use, user_agent):
+    def broken(use, user_agent, **_):
         raise OSError("no state directory")
 
     monkeypatch.setattr(gate, "check", broken)
@@ -2054,7 +2129,7 @@ def test_the_usage_names_every_command(state, capsys, argv):
 
 def test_where_the_browser_must_not_go_is_one_list(state):
     """Chrome's policy names each place, and the proxy refuses each address."""
-    blocked = SANDBOX_CHROME_POLICY["URLBlocklist"]
+    blocked = protocol.chrome_policy()["URLBlocklist"]
     for name in (*protocol.METADATA_HOSTS, *protocol.DOCKER_HOSTS):
         assert (f"[{name}]" if ":" in name else name) in blocked
         try:
@@ -2515,13 +2590,15 @@ def test_an_engine_upgrade_ends_what_the_old_engine_runs_before_removing_it(stat
     deleted, which no reading would know as the engine's to end."""
     engines = protocol.state_file("engine")
     engines.mkdir()
-    old, new = engines / "agent-browser-0.1.0", engines / f"agent-browser-{protocol.ENGINE_VERSION}"
+    pinned = protocol.engine_release("linux-x64")
+    assert pinned is not None
+    old, new = engines / "agent-browser-0.1.0", engines / f"agent-browser-{pinned.version}-{pinned.sha256[:12]}"
     for binary in (old, new):
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
     chrome = state / "chrome-bin"
     _use_host(monkeypatch, own=True, engine=str(old), chrome=str(chrome), executable=str(chrome))
-    monkeypatch.setattr(install, "platform_name", lambda: "linux")
+    monkeypatch.setattr(install, "platform_name", lambda: "linux-x64")
     monkeypatch.setattr(install, "find_chrome", lambda: str(chrome))
     monkeypatch.setattr(install, "_executable", lambda found: found)
     monkeypatch.setattr(host, "record", lambda recorded: None)
@@ -2661,6 +2738,37 @@ def test_a_lock_not_waited_for_is_not_taken_while_held_elsewhere(state):
         assert free is True
 
 
+def test_a_cloud_computer_with_no_browser_reports_what_its_toolset_holds(state, tmp_path, monkeypatch):
+    """The server learns whether a tool update is bringing the browser from this
+    one call, without asking root for the toolset's own status."""
+    monkeypatch.setattr(host.os, "access", lambda *_: False)
+    root = tmp_path / "toolset"
+    root.mkdir()
+    monkeypatch.setattr(toolset_units, "DEFAULT_ROOT", str(root))
+    toolset_converge.write_state(str(root), {"revision": 3, "version": "t-1", "units": {}})
+    with toolset_converge._locked(str(root)):
+        status = machine.status()
+        assert status.toolset == protocol.Toolset("t-1", converging=True)
+        assert protocol.Status.read(status.to_wire()) == status
+    assert machine.status().toolset == protocol.Toolset("t-1", converging=False)
+
+
+def test_only_a_cloud_computer_with_no_browser_reports_its_toolset(state, monkeypatch):
+    monkeypatch.setattr(host.os, "access", lambda *_: True)
+    assert machine.status().toolset is None
+    monkeypatch.setattr(host.os, "access", lambda *_: False)
+    monkeypatch.setattr(host, "current", lambda: host.Host(own=True))
+    assert machine.status().toolset is None
+
+
+def test_a_status_from_a_runtime_that_does_not_report_the_toolset_reads_as_none():
+    assert protocol.Status.read({"installed": False}).toolset is None
+    assert protocol.Status.read({"installed": False, "toolset": "t-1"}).toolset is None
+    assert protocol.Status.read(
+        {"installed": False, "toolset": {"version": 7, "converging": "yes"}}
+    ).toolset == protocol.Toolset(None, converging=False)
+
+
 def test_the_status_says_whether_the_open_browser_keeps_its_sign_ins(state, monkeypatch):
     monkeypatch.setattr(machine, "_browser_up", lambda deadline: True)
     protocol.write_state(protocol.TOKEN_FILE, "t" * 43)
@@ -2669,3 +2777,13 @@ def test_the_status_says_whether_the_open_browser_keeps_its_sign_ins(state, monk
     assert protocol.Status.read(machine.status().to_wire()).kept is True
     launch.write(Launch("", "standard"))
     assert machine.status().kept is False
+
+
+def test_a_host_is_ready_only_with_its_engine_and_the_chrome_it_runs(tmp_path):
+    """A tool update can install the engine where the Chrome it links is missing."""
+    binary = tmp_path / "engine"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+
+    assert not Host(engine=str(binary), chrome=str(tmp_path / "no-chrome")).ready()
+    assert Host(engine=str(binary), chrome=_chrome_stub(tmp_path)).ready()

@@ -28,16 +28,15 @@ from . import care, daemon, hold, host
 from .browsers import BROWSERS
 from .host import Host
 from .protocol import (
-    ENGINE_SHA256,
-    ENGINE_VERSION,
     INSTALL_LOCK,
+    EngineRelease,
     InstallRefusal,
+    engine_release,
     locked,
     state_file,
     write_state,
 )
 
-_RELEASE = "https://github.com/vercel-labs/agent-browser/releases/download/v{version}/agent-browser-{platform}"
 _ENGINE_DIR = "engine"
 _DOWNLOAD_TIMEOUT_S = 120
 _CHROME_DOWNLOAD_TIMEOUT_S = 900
@@ -85,10 +84,11 @@ def get_chrome() -> None:
 
 def _install(chrome: bool) -> dict[str, object]:
     name = platform_name()
-    if name is None:
+    release = engine_release(name) if name else None
+    if release is None:
         return _answer(None, "unsupported")
     try:
-        engine = _engine(name)
+        engine = _engine(release)
     except (OSError, ValueError):
         return _answer(None, "engine")
     found = find_chrome()
@@ -134,19 +134,19 @@ def platform_name() -> str | None:
     machine = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(
         platform.machine().lower()
     )
-    name = f"{system}-{machine}" if system and machine else None
-    return name if name in ENGINE_SHA256 else None
+    return f"{system}-{machine}" if system and machine else None
 
 
-def _engine(name: str) -> str:
-    """The engine for *name* at the pinned version, downloaded when it is not
-    already here."""
+def _engine(release: EngineRelease) -> str:
+    """The engine of *release*, downloaded when it is not already here."""
     folder = state_file(_ENGINE_DIR)
-    target = folder / f"agent-browser-{ENGINE_VERSION}"
+    # Named by the digest as well, so a release pinned anew under one version
+    # is downloaded rather than taken for the one already here.
+    target = folder / f"agent-browser-{release.version}-{release.sha256[:12]}"
     if os.access(target, os.X_OK):
         return os.path.realpath(target)
     folder.mkdir(parents=True, exist_ok=True)
-    url = _RELEASE.format(version=ENGINE_VERSION, platform=name)
+    url = release.url
     fd, partial = tempfile.mkstemp(dir=folder, prefix=".download-")
     try:
         digest = hashlib.sha256()
@@ -154,7 +154,7 @@ def _engine(name: str) -> str:
             while chunk := response.read(1 << 20):
                 digest.update(chunk)
                 out.write(chunk)
-        if digest.hexdigest() != ENGINE_SHA256[name]:
+        if digest.hexdigest() != release.sha256:
             raise ValueError(f"the engine downloaded from {url} is not the release's")
         os.chmod(partial, 0o755)
         os.replace(partial, target)
@@ -165,8 +165,8 @@ def _engine(name: str) -> str:
 
 def _drop_older_engines(engine: str) -> None:
     """Remove every engine but *engine*. Only once what an older one runs has
-    ended: on Linux a process whose binary is gone reads as that path marked
-    deleted, which nothing would know as the engine's to end."""
+    ended: the host record names the new one, so nothing would know an older
+    one's processes as the engine's to end."""
     for older in state_file(_ENGINE_DIR).glob("agent-browser-*"):
         if os.path.realpath(older) != engine:
             older.unlink(missing_ok=True)

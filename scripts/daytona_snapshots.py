@@ -2,11 +2,14 @@
 
 Without this, the first computer created at each resource tier waits while its
 snapshot builds, and if that build fails or times out the default tier falls
-back to Daytona's bare base image. Names come from the same recipe hash the
-create path computes, so a snapshot built here is the one a sandbox starts
-from, and a change to the recipe means a new name. An active snapshot, or one
-still on its way, is left alone; an inactive one is activated, and one whose
-last build failed is built again.
+back to Daytona's bare base image. Names are the ones the create path asks
+for, ``<base>-<tier>-<base hash>-t<toolset tag>``, so a snapshot built here is
+the one a sandbox starts from. A change to the base means a new hash; a change
+to ``toolset_runtime/units.json`` only a new tag, and until its snapshot is
+built here a create takes the newest one of the same base, whose computers
+install the new tools at their first start. An active snapshot, or one still
+on its way, is left alone; an inactive one is activated, and one whose last
+build failed is built again.
 
     uv run python scripts/daytona_snapshots.py                 # every tier
     uv run python scripts/daytona_snapshots.py --tier standard

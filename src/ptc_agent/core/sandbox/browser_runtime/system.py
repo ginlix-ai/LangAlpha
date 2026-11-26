@@ -41,6 +41,9 @@ _BSDINFO_PPID = 16
 #: to collect it: not one of the machine's, for anything here that asks.
 _MAC_ZOMBIE = 5
 _LINUX_ENDED = frozenset("ZX")
+#: What Linux adds to a process's file once that file is removed, as a tool
+#: update does with a version two behind while a browser still runs it.
+_LINUX_DELETED = " (deleted)"
 _PATH_MAX = 4 * 1024
 # sysctl's names for the arguments a process was started with.
 _CTL_KERN = 1
@@ -50,7 +53,8 @@ _KERN_PROCARGS2 = 49
 
 @dataclass(frozen=True)
 class Process:
-    """``exe`` is the file the process runs, read only for this user's own."""
+    """``exe`` is the file the process runs, read only for this user's own,
+    and named by its path even once that file is removed."""
 
     pid: int
     ppid: int
@@ -89,14 +93,25 @@ def _linux_processes() -> list[Process]:
         except OSError:
             # Still a parent or a child in the browser's tree.
             argv = []
-        exe = None
-        if uid == me:
-            try:
-                exe = os.readlink(entry / "exe")
-            except OSError:
-                pass
+        exe = file_named(str(entry / "exe")) if uid == me else None
         found.append(Process(int(entry.name), ppid, uid, argv, exe))
     return found
+
+
+def process_file(pid: int) -> str:
+    """Linux's link to the file *pid* runs, which runs that very file while
+    the process lives, even once the path it started from names another."""
+    return str(_PROC / str(pid) / "exe")
+
+
+def file_named(link: str) -> str | None:
+    """The path a process's file was run from, read from its link
+    (``process_file``), and named so even once that file is removed."""
+    try:
+        named = os.readlink(link)
+    except OSError:
+        return None
+    return named[: -len(_LINUX_DELETED)] if named.endswith(_LINUX_DELETED) else named
 
 
 def _mac_processes(wanted: Callable[[str], bool] | None) -> list[Process]:

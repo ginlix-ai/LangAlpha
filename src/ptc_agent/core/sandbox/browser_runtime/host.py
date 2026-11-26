@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from .protocol import (
     BRIDGE_PORT,
     CHROME_BIN,
+    CHROME_POLICY_FILE,
     ENGINE_BIN,
     PROXY_PORT,
     SERVICE_PORTS,
@@ -41,9 +42,15 @@ class Host:
     proxy_port: int = PROXY_PORT
 
     def ready(self) -> bool:
-        """Whether the engine is here, and on a person's own machine a browser
-        for it: an image has both or neither."""
-        return os.access(self.engine, os.X_OK) and (not self.own or os.access(self.chrome, os.X_OK))
+        """Whether the engine is here and a browser for it: a tool update can
+        install the engine where the Chrome it links is missing. On a cloud
+        computer, also the managed policy, which a tool update that failed on
+        it alone would leave missing: no browser starts without it."""
+        return (
+            os.access(self.engine, os.X_OK)
+            and os.access(self.chrome, os.X_OK)
+            and (self.own or os.path.isfile(CHROME_POLICY_FILE))
+        )
 
     @property
     def bridge_address(self) -> str:

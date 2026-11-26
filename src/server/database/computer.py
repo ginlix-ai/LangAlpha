@@ -146,7 +146,8 @@ def bind_provider_ref_statement(
     IS NOT DISTINCT FROM fences the previous ref; lifecycle fencing prevents a
     racing bind from reviving a stopped machine. A bind is a sandbox that
     started, so it ends any host outage the row was timing and clears the
-    last start's failure. A rebuild a host outage authorized also fences on
+    last start's failure, and the toolset stamp, which the sandbox before it
+    earned. A rebuild a host outage authorized also fences on
     that outage still running: the old sandbox resuming meanwhile ends it,
     and then the old one is kept.
     """
@@ -167,7 +168,8 @@ def bind_provider_ref_statement(
             "                    provider_ref = %(provider_ref)s,\n"
             "                    platform_secret_version = %(platform_secret_version)s,\n"
             "                    host_unavailable_since = NULL,\n"
-            "                    start_failure = NULL"
+            "                    start_failure = NULL,\n"
+            "                    toolset_version = NULL"
         ),
         "workspace_set": (
             "status = 'running',\n"
@@ -1733,6 +1735,93 @@ async def stamp_computer_layout_version(
     if row is not None:
         logger.info(f"Computer {computer_id} layout version stamped: {version}")
     return row is not None
+
+
+async def stamp_computer_toolset_version(
+    computer_id: str,
+    sandbox_id: str,
+    version: str,
+    *,
+    conn=None,
+) -> bool:
+    """Record that *sandbox_id* answered a converge at *version*; False when
+    the row does not name that sandbox, so nothing was recorded.
+
+    Fenced on the sandbox the converge ran against, so an answer from one the
+    row has since moved off, or not yet been bound to, never marks the row
+    current. Leaves ``updated_at`` alone: it is an observation of the machine,
+    and a starting row's ``updated_at`` is its start claim's heartbeat.
+    """
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return False
+
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            f"""
+            UPDATE computers
+            SET toolset_version = %(version)s
+            WHERE computer_id = %(computer_id)s
+              AND provider_ref = %(sandbox_id)s
+              AND {FENCE_NOT_DELETED}
+            RETURNING computer_id
+            """,
+            {"computer_id": computer_id, "sandbox_id": sandbox_id, "version": version},
+        )
+        row = await cur.fetchone()
+
+    if row is not None:
+        logger.info(f"Computer {computer_id} toolset stamped: {version} on {sandbox_id}")
+    return row is not None
+
+
+async def list_kinds_behind_toolset(target: str, *, conn=None) -> List[str]:
+    """The kinds of the running computers whose sandbox is not stamped at
+    *target*, so a caller can keep to the kinds that serve the toolset without
+    loading every provider's module to ask."""
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            """
+            SELECT DISTINCT kind
+            FROM computers
+            WHERE status = 'running'
+              AND provider_ref IS NOT NULL
+              AND toolset_version IS DISTINCT FROM %(target)s
+            """,
+            {"target": target},
+        )
+        return [row["kind"] for row in await cur.fetchall()]
+
+
+async def list_computers_behind_toolset(
+    target: str,
+    kinds: Sequence[str],
+    *,
+    limit: int,
+    after: Optional[str] = None,
+    conn=None,
+) -> List[Dict[str, Any]]:
+    """Running computers of *kinds* whose sandbox is not stamped at *target*,
+    in id order past *after*, so machines that fail on every pass cannot fill
+    each batch and keep the ones sorted after them waiting."""
+    if not kinds:
+        return []
+    async with _computer_cursor(conn) as cur:
+        await cur.execute(
+            f"""
+            SELECT {_COMPUTER_COLS}
+            FROM computers
+            WHERE status = 'running'
+              AND provider_ref IS NOT NULL
+              AND kind = ANY(%(kinds)s::text[])
+              AND toolset_version IS DISTINCT FROM %(target)s
+              AND (%(after)s::uuid IS NULL OR computer_id > %(after)s::uuid)
+            ORDER BY computer_id
+            LIMIT %(limit)s
+            """,
+            {"target": target, "kinds": list(kinds), "after": after, "limit": limit},
+        )
+        return [dict(row) for row in await cur.fetchall()]
 
 
 async def stamp_computer_mcp_config_version(

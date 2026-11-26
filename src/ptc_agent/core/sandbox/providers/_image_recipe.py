@@ -1,41 +1,47 @@
 """The sandbox image, stated once for every provider that builds it from steps.
 
 Daytona bakes it into a snapshot and E2B into a template. Both builders take the
-same ordered list of shell commands, environment settings and a working
-directory, so the recipe lives here and each provider only translates the steps
-into its own builder. ``Dockerfile.sandbox`` mirrors the same steps by hand.
+same ordered list of shell commands, environment settings, file copies and a
+working directory, so the recipe lives here and each provider only translates
+the steps into its own builder. ``Dockerfile.sandbox`` mirrors the same steps by
+hand.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
-import posixpath
+import re
 import shlex
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ptc_agent.core.mcp_sanitize import is_untrusted_server
 from ptc_agent.core.sandbox._defaults import (
     DEFAULT_DEPENDENCIES,
-    SANDBOX_AGENT_BROWSER_BIN,
-    SANDBOX_AGENT_BROWSER_SHA256,
-    SANDBOX_AGENT_BROWSER_VERSION,
-    SANDBOX_CHROME_BIN,
-    SANDBOX_CHROME_POLICY,
-    SANDBOX_CHROME_POLICY_PATH,
     SANDBOX_FALLBACK_CPU,
     SANDBOX_IMAGE_ENV,
     SANDBOX_NODE_VERSION,
     SANDBOX_PLAYWRIGHT_VERSION,
     sandbox_thread_env,
 )
+from ptc_agent.core.sandbox._shared import TOOLSET_SOURCE_DIR, package_files
+from ptc_agent.core.sandbox.toolset_runtime import units as toolset_units
 
 if TYPE_CHECKING:
     from ptc_agent.config.core import CoreConfig
 
 BASE_IMAGE = "ubuntu:24.04"
+
+# The runtime that installed the image's toolset stays in the image, beside the
+# root it installed into (the runtime's default, /opt/langalpha/toolset).
+_TOOLSET_RUNTIME_DIR = "/opt/langalpha/toolset_runtime"
+#: ``<revision>-<version>``: the table's revision and the start of its version.
+_TOOLSET_TAG = re.compile(r"([0-9]+)-[0-9a-f]{8}")
 
 
 def builtin_mcp_packages(config: CoreConfig) -> list[str]:
@@ -83,11 +89,106 @@ class Workdir:
     path: str
 
 
-Step = Run | Env | Workdir
+@dataclass(frozen=True, slots=True)
+class Copy:
+    """``files`` of the local folder ``source`` into the image's ``dest``.
+
+    Named file by file: a folder copy would carry a host's bytecode.
+    """
+
+    source: Path
+    files: tuple[str, ...]
+    dest: str
 
 
-def image_identity(steps: Sequence[Step], resources: Sized | None) -> dict[str, Any]:
-    """Everything that identifies a built image, hashed into its name.
+Step = Run | Env | Workdir | Copy
+
+
+@dataclass(frozen=True, slots=True)
+class Recipe:
+    """The image's steps, split where its name splits.
+
+    ``base`` is hashed into the name. ``toolset`` is not: a computer converges
+    to the table on its own, so an image of the same base and an older table
+    still serves, and the name carries the table's version as its tag instead.
+    """
+
+    base: tuple[Step, ...]
+    toolset: tuple[Step, ...]
+
+    @property
+    def steps(self) -> tuple[Step, ...]:
+        return (*self.base, *self.toolset)
+
+
+@dataclass(frozen=True, slots=True)
+class ImageName:
+    """A snapshot's or template's name: ``<family>-t<tag>``.
+
+    The family names the base (prefix, tier and base hash) and the tag the
+    toolset table. A create that finds no image of its exact name takes the
+    newest usable one of its family, whose computers converge at their first
+    acquire, so a tool bump never builds on a person's create.
+    """
+
+    family: str
+    tag: str
+
+    def __str__(self) -> str:
+        return f"{self.family}-t{self.tag}"
+
+    def siblings(self, listed: Iterable[tuple[str, datetime]]) -> list[str]:
+        """Same family, another tag, newest first. None of a later revision of
+        the table than this one's: its computers would take a table this server
+        refuses to replace, as one built by a server ahead of it would be."""
+        prefix, exact = f"{self.family}-t", str(self)
+        ours = _tag_revision(self.tag)
+        created = {
+            name: at
+            for name, at in listed
+            if name != exact
+            and name.startswith(prefix)
+            and (revision := _tag_revision(name[len(prefix) :])) is not None
+            and (ours is None or revision <= ours)
+        }
+        return sorted(created, key=created.__getitem__, reverse=True)
+
+
+def _tag_revision(tag: str) -> int | None:
+    found = _TOOLSET_TAG.fullmatch(tag)
+    return int(found.group(1)) if found else None
+
+
+@functools.cache
+def toolset_tag() -> str:
+    """The part of an image name that a change to ``units.json`` moves: its
+    revision, which the sibling fallback compares, and its version."""
+    table = toolset_units.load()
+    return f"{table.revision}-{toolset_units.version(table)[:8]}"
+
+
+def image_name(family: str) -> ImageName:
+    """The name an image of ``family`` built with this table carries."""
+    return ImageName(family, toolset_tag())
+
+
+@functools.cache
+def toolset_steps() -> tuple[Step, ...]:
+    """Install ``units.json`` at build with the runtime a running computer
+    converges by, so a new computer starts current.
+
+    It copies what the internal-package upload ships of the runtime, so the
+    image runs the same code a converge later does.
+    """
+    files = tuple(path.name for path in package_files(TOOLSET_SOURCE_DIR))
+    return (
+        Copy(TOOLSET_SOURCE_DIR, files, _TOOLSET_RUNTIME_DIR),
+        Run((f"python3 -I {_TOOLSET_RUNTIME_DIR} converge --strict",)),
+    )
+
+
+def image_identity(recipe: Recipe, resources: Sized | None) -> dict[str, Any]:
+    """Everything that identifies a built image's base, hashed into its name.
 
     The steps are hashed as data, so any pin, package or environment value
     they carry renames the image when it changes, with nothing kept beside
@@ -98,7 +199,7 @@ def image_identity(steps: Sequence[Step], resources: Sized | None) -> dict[str, 
     """
     return {
         "base_image": BASE_IMAGE,
-        "steps": [_step_data(step) for step in steps],
+        "steps": [_step_data(step) for step in recipe.base],
         "resources": (
             {
                 "cpu": resources.cpu,
@@ -116,6 +217,13 @@ def _step_data(step: Step) -> list[Any]:
         return ["run", list(step.commands)]
     if isinstance(step, Env):
         return ["env", dict(step.values)]
+    if isinstance(step, Copy):
+        # By content, never by the host path the files are read from.
+        digests = {
+            name: hashlib.sha256((step.source / name).read_bytes()).hexdigest()
+            for name in step.files
+        }
+        return ["copy", digests, step.dest]
     return ["workdir", step.path]
 
 
@@ -125,13 +233,13 @@ def config_hash(config: Mapping[str, Any]) -> str:
     return hashlib.sha256(config_str.encode()).hexdigest()[:8]
 
 
-def image_steps(
+def image_recipe(
     *,
     working_dir: str,
     mcp_packages: Sequence[str] | None,
     cpu: int | float | None,
     dependencies: Sequence[str] = DEFAULT_DEPENDENCIES,
-) -> list[Step]:
+) -> Recipe:
     """The build steps, in order, for an image born at ``cpu`` vCPUs.
 
     ``cpu`` sizes the baked-in BLAS/OpenMP thread caps. An image is already per
@@ -147,7 +255,7 @@ def image_steps(
     cpu = cpu if cpu is not None else SANDBOX_FALLBACK_CPU
     browsers_path = SANDBOX_IMAGE_ENV["PLAYWRIGHT_BROWSERS_PATH"]
 
-    return [
+    base = (
         Run(
             (
                 "echo 'debconf debconf/frontend select Noninteractive'"
@@ -268,34 +376,8 @@ def image_steps(
                 '"',
             )
         ),
-        Run(_browser_commands(browsers_path)),
         Workdir(working_dir),
-    ]
-
-
-def _browser_commands(browsers_path: str) -> tuple[str, ...]:
-    """The agent's browser: its one pinned binary, a stable name for the Chrome
-    Playwright baked in, and that Chrome's policy.
-
-    Its own step, after the heavy ones, so a new pin rebuilds one small layer.
-    """
-    digests = " ".join(
-        f"{arch}) AB_SHA={digest};;" for arch, digest in sorted(SANDBOX_AGENT_BROWSER_SHA256.items())
     )
-    release = (
-        "https://github.com/vercel-labs/agent-browser/releases/download/"
-        f"v{SANDBOX_AGENT_BROWSER_VERSION}"
-    )
-    return (
-        f'AB_ARCH=$(dpkg --print-architecture); case "$AB_ARCH" in {digests} esac'
-        ' && AB_PLAT=$([ "$AB_ARCH" = "arm64" ] && echo arm64 || echo x64)'
-        f' && curl -fsSL "{release}/agent-browser-linux-$AB_PLAT" -o /tmp/agent-browser'
-        ' && echo "$AB_SHA  /tmp/agent-browser" | sha256sum -c -'
-        f" && install -D -m 0755 /tmp/agent-browser {SANDBOX_AGENT_BROWSER_BIN}"
-        " && rm /tmp/agent-browser",
-        f'ln -sf "$(ls -d {browsers_path}/chromium-*/chrome-linux*/chrome)"'
-        f" {SANDBOX_CHROME_BIN} && [ -x {SANDBOX_CHROME_BIN} ]",
-        f"mkdir -p {posixpath.dirname(SANDBOX_CHROME_POLICY_PATH)}"
-        f" && echo {shlex.quote(json.dumps(SANDBOX_CHROME_POLICY, sort_keys=True))}"
-        f" > {SANDBOX_CHROME_POLICY_PATH}",
-    )
+    # After the base, so a new table rebuilds only its own layers. The browser
+    # units need the Chrome Playwright installs above.
+    return Recipe(base=base, toolset=toolset_steps())

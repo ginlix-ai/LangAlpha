@@ -41,6 +41,8 @@ on:
       - src/server/services/computer_manager/**
       - src/server/services/persistence/**
       - src/server/services/platform_secret_rollout.py
+      - src/server/services/toolset.py
+      - src/server/services/toolset_sweep.py
       - src/server/services/warm_files.py
       - src/server/services/workspace_file_containment.py
       - src/server/services/workspace_files.py

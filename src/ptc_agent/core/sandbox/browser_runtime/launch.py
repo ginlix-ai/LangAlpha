@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import signin
+from .engine import for_launch
 from .host import Host
 from .protocol import STREAM_QUALITIES, StreamQuality, StreamQualityName, read_record, state_file, write_record
 
@@ -80,6 +81,13 @@ class Launch:
     changed one would restart the browser under it, and the user agent goes
     only once the next command finds the browser gone. One that finds it up,
     since the close never ran or never finished, keeps it.
+
+    ``engine`` is the version of the engine the browser started on, where the
+    host's engine is a link a tool update moves (``engine.pinned``), and empty
+    where it is the file itself. A command on another version would restart
+    the browser under it, so a new one reaches the browser when it next starts.
+    A browser that started with none, whose engine an update replaced since, is
+    pinned to the file its daemon runs (``engine.held_by``).
     """
 
     user_agent: str
@@ -87,6 +95,7 @@ class Launch:
     closing: bool = False
     kept: bool = False
     window: bool = False
+    engine: str = ""
 
     @property
     def stream(self) -> StreamQuality:
@@ -123,7 +132,7 @@ class Launch:
         # Read as text by the runtime's own callers, whatever the agent's shell set.
         env.pop("AGENT_BROWSER_JSON", None)
         result = subprocess.run(
-            [h.engine, *args],
+            [for_launch(self, h), *args],
             env=env,
             stdin=subprocess.DEVNULL,
             capture_output=True,

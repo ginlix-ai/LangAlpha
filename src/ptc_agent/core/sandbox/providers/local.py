@@ -85,6 +85,7 @@ class LocalProvider(SandboxProvider):
     # No sandbox image put a browser here, so the machine sets its own up, as
     # one brought over SSH does.
     installs_browser = True
+    serves_toolset = False
     platform_secret_namespace_env = None
     # Every computer here was laid out at v4 or later, and the older steps
     # move and delete folders by name in a root that holds the owner's files.

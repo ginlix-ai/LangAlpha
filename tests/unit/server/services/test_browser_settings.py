@@ -267,7 +267,7 @@ async def test_an_acquire_hands_over_the_choices_on_the_row_it_already_read():
 
     sandbox = _sandbox()
     sandbox.installs_browser = False
-    await ComputerManager._keep_browser_settings(binding, sandbox)
+    await ComputerManager._after_machine_sync(binding, sandbox)
     [[command, payload]] = _ran(sandbox)
     assert (command, json.loads(payload)["quality"]) == ("choices", "light")
 

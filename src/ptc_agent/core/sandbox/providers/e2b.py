@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -22,7 +24,7 @@ from e2b import (
     TimeoutException,
 )
 from e2b.api import encode_path_param, handle_api_exception
-from e2b.api.client.api.templates import get_templates_aliases_alias
+from e2b.api.client.api.templates import get_templates, get_templates_aliases_alias
 from e2b.api.client_async import get_api_client
 from e2b.connection_config import ConnectionConfig
 
@@ -30,12 +32,15 @@ from ptc_agent.config.core import E2BConfig, PlatformSecretDefinition, ResourceT
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
 from ptc_agent.core.sandbox.providers._image_recipe import (
     BASE_IMAGE,
+    Copy,
     Env,
+    ImageName,
+    Recipe,
     Run,
-    Step,
     config_hash,
     image_identity,
-    image_steps,
+    image_name,
+    image_recipe,
 )
 from ptc_agent.core.sandbox.providers._metrics import normalize_samples
 from ptc_agent.core.sandbox.providers._tiers import resolve_tier
@@ -353,38 +358,55 @@ class E2BProvider(SandboxProvider):
 
     # -- Templates --
 
-    def _image_steps(
-        self, mcp_packages: Sequence[str], preset: ResourceTier
-    ) -> list[Step]:
-        return image_steps(
+    def _recipe(self, mcp_packages: Sequence[str], preset: ResourceTier) -> Recipe:
+        return image_recipe(
             working_dir=self._working_dir, mcp_packages=mcp_packages, cpu=preset.cpu
         )
 
     def template_name(
         self, mcp_packages: Sequence[str], *, tier: str, preset: ResourceTier
     ) -> str:
-        """``<prefix>-<tier>-<hash>``, where the hash covers the recipe and size."""
-        identity = image_identity(self._image_steps(mcp_packages, preset), preset)
+        """The template ``create`` starts a sandbox of ``tier`` from."""
+        return str(self._image_name(mcp_packages, tier=tier, preset=preset))
+
+    def _image_name(
+        self, mcp_packages: Sequence[str], *, tier: str, preset: ResourceTier
+    ) -> ImageName:
+        """Family ``<prefix>-<tier>-<base hash>``, the hash covering the recipe's
+        base, the size and the builder."""
+        identity = image_identity(self._recipe(mcp_packages, preset), preset)
         identity["builder"] = {"e2b": _TEMPLATE_REVISION, "warm": list(_WARM_IMPORTS)}
         prefix = self._config.template_name or "langalpha"
         raw = f"{prefix}-{tier}-{config_hash(identity)}".lower()
-        return _TEMPLATE_NAME_INVALID.sub("-", raw)
+        return image_name(_TEMPLATE_NAME_INVALID.sub("-", raw))
 
     def template_definition(
         self, mcp_packages: Sequence[str], *, preset: ResourceTier
     ) -> Any:
         """Translate the shared image recipe into E2B's template builder."""
+        steps = self._recipe(mcp_packages, preset).steps
+        # E2B reads every copy's source relative to one context folder.
+        sources = [str(step.source) for step in steps if isinstance(step, Copy)]
+        context = Path(os.path.commonpath(sources)) if sources else None
         # Root from the first step: set_workdir creates the folder as the
         # builder's current user, and the file mount lays its links as the
         # working dir's owner, which must be the root every command runs as.
         # The last user set is also the sandbox's default.
-        builder = self._client.AsyncTemplate().from_image(BASE_IMAGE).set_user("root")
-        for step in self._image_steps(mcp_packages, preset):
+        builder = (
+            self._client.AsyncTemplate(file_context_path=context)
+            .from_image(BASE_IMAGE)
+            .set_user("root")
+        )
+        for step in steps:
             if isinstance(step, Run):
                 for command in step.commands:
                     builder = builder.run_cmd(command, user="root")
             elif isinstance(step, Env):
                 builder = builder.set_envs(dict(step.values))
+            elif isinstance(step, Copy):
+                for name in step.files:
+                    source = os.path.relpath(step.source / name, context)
+                    builder = builder.copy(source, f"{step.dest}/{name}", user="root")
             else:
                 builder = builder.set_workdir(step.path)
         # ";" rather than "&&": a module that fails to import costs only its
@@ -429,6 +451,43 @@ class E2BProvider(SandboxProvider):
             raise handle_api_exception(res)
         return res.parsed.template_id
 
+    async def _newest_ready_sibling(self, wanted: ImageName) -> str | None:
+        """The newest ready template of ``wanted``'s family under another tag.
+
+        A failed listing means no fallback, never a failed create: the exact
+        name's own path still decides.
+        """
+        try:
+            listed = await self._ready_templates()
+        except Exception as e:
+            logger.warning("Could not list E2B templates", error=str(e))
+            return None
+        for name in wanted.siblings(listed):
+            # The listing's status is the template's last build; only the
+            # build behind its default tag says a sandbox can start from it.
+            try:
+                if await self.template_status(name) == "ready":
+                    return name
+            except Exception as e:
+                logger.warning("Could not read E2B template", template=name, error=str(e))
+        return None
+
+    async def _ready_templates(self) -> list[tuple[str, datetime]]:
+        """Each name of the team's templates whose last build is ready, with
+        when the template was made."""
+        res = await get_templates.asyncio_detailed(
+            client=get_api_client(ConnectionConfig(**self._api_params)),
+        )
+        if res.status_code >= 300 or not isinstance(res.parsed, list):
+            raise handle_api_exception(res)
+        return [
+            (name, template.created_at)
+            for template in res.parsed
+            if template.build_status.value == "ready"
+            # A namespaced name reads "<namespace>/<name>"; a create names it bare.
+            for name in (*template.aliases, *(n.rsplit("/", 1)[-1] for n in template.names))
+        ]
+
     async def build_template(
         self,
         mcp_packages: Sequence[str],
@@ -463,12 +522,27 @@ class E2BProvider(SandboxProvider):
     async def _ensure_template(
         self, mcp_packages: Sequence[str], *, tier: str, preset: ResourceTier
     ) -> str:
-        """The tier's template name once it is ready, building it if allowed."""
-        name = self.template_name(mcp_packages, tier=tier, preset=preset)
+        """The tier's template name once it is ready, building it if allowed.
+
+        Short of the exact name, the newest ready template of its family serves
+        (see ``ImageName``); only a new base builds here.
+        """
+        wanted = self._image_name(mcp_packages, tier=tier, preset=preset)
+        name = str(wanted)
         # A lookup that fails propagates rather than start a build that may
         # already be running: the caller's retry repeats the create, and on
         # another 404 this check.
         status = await self.template_status(name)
+        if status == "ready":
+            return name
+        sibling = await self._newest_ready_sibling(wanted)
+        if sibling is not None:
+            logger.info(
+                "Using a template of the same base; its toolset converges at the first acquire",
+                template=sibling,
+                wanted=name,
+            )
+            return sibling
         deadline = time.monotonic() + _TEMPLATE_WAIT_S
         while status in _IN_PROGRESS and time.monotonic() < deadline:
             await asyncio.sleep(_TEMPLATE_POLL_S)

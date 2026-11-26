@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import host, launch, signin
+from .engine import for_launch
 from .launch import Launch
 from .protocol import (
     GATE_REFUSED,
@@ -109,6 +110,8 @@ _LOOK_COMMANDS = frozenset(
 _BATCH_OPTIONS = frozenset({"--bail", "--omit-command"})
 # What runs script the agent wrote in the page.
 _SCRIPT_COMMANDS = frozenset({"eval", "addinitscript"})
+# The engine's names for ``open``.
+_OPEN_COMMANDS = frozenset({"open", "goto", "navigate"})
 # Any of these among a command's words, the engine prints help or its version
 # and returns before it reaches a daemon.
 _INFO_FLAGS = frozenset({"--help", "-h", "--version", "-V"})
@@ -172,18 +175,23 @@ def parse(argv: Sequence[str]) -> Invocation:
 
 def expand(top: Invocation, stdin: list[list[str]] | None = None) -> list[Invocation]:
     """*top* and every command a ``batch`` in it runs, however deep, each read
-    as the engine reads it. Only *top* reads its commands from *stdin*."""
-    found = [top]
-    i = 0
-    while i < len(found):
-        each = found[i]
-        if each.name == "batch":
-            given = [arg for arg in each.args if arg not in _BATCH_OPTIONS]
-            if given:
-                found.extend(parse(_shell_words(arg)) for arg in given)
-            elif i == 0 and stdin:
-                found.extend(parse(words) for words in stdin)
-        i += 1
+    as the engine reads it, in the order they run. Only *top* reads its commands
+    from *stdin*."""
+    found: list[Invocation] = []
+
+    def walk(each: Invocation, reads_stdin: bool) -> None:
+        found.append(each)
+        if each.name != "batch":
+            return
+        given = [arg for arg in each.args if arg not in _BATCH_OPTIONS]
+        if given:
+            inner = [parse(_shell_words(arg)) for arg in given]
+        else:
+            inner = [parse(words) for words in stdin] if reads_stdin and stdin else []
+        for command in inner:
+            walk(command, False)
+
+    walk(top, True)
     return found
 
 
@@ -224,10 +232,10 @@ def refusal(commands: Sequence[Invocation]) -> str | None:
             return LOGGED_OUT_MESSAGE.format(each.name)
         if each.sub in _LOGIN_SUBCOMMANDS.get(each.name, ()):
             return LOGGED_OUT_MESSAGE.format(f"{each.name} {each.sub}")
-        if each.name == "open" and not each.sub:
+        if each.name in _OPEN_COMMANDS and not each.sub:
             # With no address the engine launches the browser again, over the
             # one open.
-            return RESTART_MESSAGE.format("`open` without an address")
+            return RESTART_MESSAGE.format(f"`{each.name}` without an address")
     return None
 
 
@@ -374,6 +382,16 @@ def use(commands: Sequence[Invocation]) -> str:
     return next((each for each in ("grow", "act") if each in uses), "look")
 
 
+def opens_page(commands: Sequence[Invocation]) -> bool:
+    """Whether the first of these commands to reach the page goes to an address
+    of its own, so a browser opened for them has no page to show again first."""
+    for each in commands:
+        if each.name == "batch" or _use_of(each) == "none":
+            continue
+        return each.name in _OPEN_COMMANDS and bool(each.sub)
+    return False
+
+
 def asked_user_agent(top: Invocation, default: str) -> str:
     """The user agent the command asks for: the last one it gives, else *default*."""
     for flag, value in top.options:
@@ -404,7 +422,7 @@ def _restore_stdin(data: bytes) -> None:
         os.dup2(f.fileno(), 0)
 
 
-def _gate(use: str, user_agent: str) -> tuple[Launch, Callable[[], None]]:
+def _gate(use: str, user_agent: str, opens_page: bool) -> tuple[Launch, Callable[[], None]]:
     """The launch the gate settles, and what lets the next command in. Only its
     own refusal stops a command: a bridge that cannot run costs the view, not
     the browser."""
@@ -414,7 +432,7 @@ def _gate(use: str, user_agent: str) -> tuple[Launch, Callable[[], None]]:
         traceback.print_exc()
         return _unsettled(), _admitted_by_none
     try:
-        return gate.check(use, user_agent)
+        return gate.check(use, user_agent, opens_page=opens_page)
     except gate.Refused as refused:
         print(refused, file=sys.stderr)
         sys.exit(GATE_REFUSED)
@@ -474,7 +492,7 @@ def main(args: list[str]) -> int:
     user_agent = asked_user_agent(top, os.environ.get("AGENT_BROWSER_USER_AGENT", ""))
     used = use(commands)
     # Help reaches no browser, so neither memory nor the person's hold stops it.
-    launched, release = (_unsettled(), _admitted_by_none) if used == "none" else _gate(used, user_agent)
+    launched, release = (_unsettled(), _admitted_by_none) if used == "none" else _gate(used, user_agent, opens_page(commands))
     # Read again once admitted: a setup holds the same admission while it
     # records another engine, Chrome or ports, which this command must run on.
     here = host.current()
@@ -501,7 +519,9 @@ def main(args: list[str]) -> int:
         pass
     if data is not None:
         _restore_stdin(data)
-    argv = [here.engine, *args]
+    # The version the open browser started on, so an update that landed since
+    # reaches it only when it next starts.
+    argv = [for_launch(launched, here), *args]
     if os.getuid() == 0 and _can_drop_nice():
         argv = [*_DROP_NICE, *argv]
     if hidden:

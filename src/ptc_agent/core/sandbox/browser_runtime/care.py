@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from . import daemon, hold, host, launch, signin, system
-from .protocol import ENGINE_PROFILE_PREFIX, lock, locked
+from . import daemon, engine, hold, host, launch, signin, system
+from .protocol import ENGINE_PROFILE_PREFIX, lock, locked, state_file, write_state
 from .system import Process
 
 #: Share of the computer's memory in use past which no more browser is opened: a tab
@@ -29,6 +29,33 @@ _GONE_S = 1.0
 #: Held by the gate while it admits a command (``admit``), which may be the one
 #: to start the next browser.
 ADMISSION_LOCK = "admitting.lock"
+#: When the page was last used, by an agent command or the person holding it,
+#: read by its file's time.
+_LAST_USE = "last-use"
+
+
+def note_use() -> None:
+    """Mark the page as used now: an agent command admitted, or the person
+    taking, keeping, handing back or moving the page."""
+    try:
+        write_state(_LAST_USE, "")
+    except OSError:
+        pass
+
+
+def used_at() -> float | None:
+    """When the page was last used, or None if no use is noted."""
+    try:
+        return state_file(_LAST_USE).stat().st_mtime
+    except OSError:
+        return None
+
+
+def quiet_for() -> float:
+    """Seconds since the page was last used. None noted yet, as for a browser
+    opened before this was kept, counts as just now."""
+    noted = used_at()
+    return 0.0 if noted is None else time.time() - noted
 
 
 def tend(up: bool) -> None:
@@ -57,8 +84,7 @@ class Admission:
 
     def look(self) -> Look:
         """The machine's processes as they are now, read by the lock's holder."""
-        h = host.current()
-        return Look(h, _read(h), admitting=True)
+        return _reading(host.current(), admitting=True)
 
     def release(self) -> None:
         self._held.close()
@@ -85,8 +111,7 @@ def admitted() -> Iterator[Look]:
 def look() -> Look:
     """The machine's processes as they are now, with the arguments of those
     that may be the engine's, its Chrome's or the wrapper's."""
-    h = host.current()
-    return Look(h, _read(h))
+    return _reading(host.current())
 
 
 def forget_browser() -> None:
@@ -97,11 +122,11 @@ def forget_browser() -> None:
     launch.forget()
 
 
-def _read(h: host.Host) -> tuple[Process, ...]:
-    mine = {h.engine, h.chrome}
-    return tuple(
-        system.processes(lambda exe: exe in mine or os.path.basename(exe).lower().startswith("python"))
-    )
+def _reading(h: host.Host, *, admitting: bool = False) -> Look:
+    engines = engine.files(h, launch.current())
+    mine = engines | {h.chrome}
+    processes = system.processes(lambda exe: exe in mine or os.path.basename(exe).lower().startswith("python"))
+    return Look(h, tuple(processes), engines, admitting=admitting)
 
 
 def memory_full() -> bool:
@@ -135,6 +160,8 @@ class Look:
 
     host: host.Host
     processes: tuple[Process, ...]
+    #: The files the engine's processes run from (``engine.files``).
+    engines: frozenset[str]
     admitting: bool = False
 
     def tend(self, up: bool) -> Look:
@@ -178,7 +205,7 @@ class Look:
         return dataclasses.replace(self, processes=tuple(p for p in self.processes if p.pid not in gone))
 
     def reread(self) -> Look:
-        return dataclasses.replace(self, processes=_read(self.host))
+        return _reading(self.host, admitting=self.admitting)
 
     def end_browserless(self) -> Look:
         """End the engine's daemon whose Chrome is gone, as when the OOM killer
@@ -235,17 +262,33 @@ class Look:
             and (on == kept or (_throwaway(on) and ours in p.argv and not kept_only))
         ]
 
+    def pin_engine(self, record: launch.Launch | None) -> launch.Launch | None:
+        """*record*, pinned to the file its browser's daemon runs when it pins no
+        engine and a tool update has replaced the host's engine under it, so a
+        command on it keeps that file rather than restart it, and it moves to
+        the new engine after a pause as a pinned browser does. Such a record is
+        one written before engines were pinned, or on a computer whose engine
+        was a plain file until the update replaced it with a link. Only read:
+        the gate records the pin, under its lock."""
+        if record is None or record.engine:
+            return record
+        shown = {p.ppid for p in self.browsers()}
+        for running in self.daemons():
+            if running.pid in shown and (held := engine.held_by(self.host, running.pid)):
+                return dataclasses.replace(record, engine=held)
+        return record
+
     def daemons(self) -> list[Process]:
         """The engine's daemons: its binary run with no arguments."""
         uid = os.getuid()
         return [
-            p for p in self.processes if p.uid == uid and not any(p.argv[1:]) and p.exe == self.host.engine
+            p for p in self.processes if p.uid == uid and not any(p.argv[1:]) and self._runs_engine(p)
         ]
 
     def commands(self) -> list[Process]:
         """The engine's commands: its binary run with arguments."""
         uid = os.getuid()
-        return [p for p in self.processes if p.uid == uid and any(p.argv[1:]) and p.exe == self.host.engine]
+        return [p for p in self.processes if p.uid == uid and any(p.argv[1:]) and self._runs_engine(p)]
 
     def services(self) -> list[Process]:
         """This runtime's proxy and bridge, which outlive the stream by a grace."""
@@ -280,7 +323,7 @@ class Look:
                 os.path.realpath(p.argv[2]) == wrapper
             ):
                 return True
-            if any(p.argv[1:]) and p.exe == self.host.engine:
+            if any(p.argv[1:]) and self._runs_engine(p):
                 return True
         return False
 
@@ -323,7 +366,10 @@ class Look:
         signin.forget_last_tabs(profile)
 
     def _run_by_engine(self, browser: Process) -> bool:
-        return any(p.pid == browser.ppid and p.exe == self.host.engine for p in self.processes)
+        return any(p.pid == browser.ppid and self._runs_engine(p) for p in self.processes)
+
+    def _runs_engine(self, p: Process) -> bool:
+        return p.exe in self.engines
 
     def _reap_left_behind(self) -> Look:
         """A daemon killed outright leaves its Chrome running, holding memory,

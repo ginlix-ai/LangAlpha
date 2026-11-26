@@ -1232,7 +1232,7 @@ class TestAnAttachOnATurn(_Base):
         browser = AsyncMock()
         hand_ahead = MagicMock()
         patches = (
-            ("_keep_browser_settings", browser),
+            ("_after_machine_sync", browser),
             ("_livefs_start_trusted", MagicMock(return_value=start_trusted)),
             ("_hand_livefs_ahead", hand_ahead),
             ("_ensure_workspace_dirs", AsyncMock()),
@@ -1405,7 +1405,7 @@ class TestAnAttachOnATurn(_Base):
         restore = AsyncMock(return_value=True)
 
         with (
-            patch.object(manager, "_keep_browser_settings", AsyncMock()),
+            patch.object(manager, "_after_machine_sync", AsyncMock()),
             patch.object(manager, "_ensure_workspace_dirs", AsyncMock()),
             patch.object(manager, "_maybe_restore_files", restore),
             patch.object(

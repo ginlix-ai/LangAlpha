@@ -58,11 +58,11 @@ class _NoBrowser(Exception):
 
 async def _browser_sandbox(
     workspace_id: str, user_id: str, *, start: bool = False
-) -> tuple[Any, str | None]:
-    """The sandbox whose browser a route acts on, and the member its stream is
-    minted for: a workspace the caller reaches as its files' routes do, for a
-    caller who turned the browser on, on a kind of computer with a browser,
-    while it runs, or started with *start*.
+) -> tuple[Any, str | None, str | None]:
+    """The sandbox whose browser a route acts on, the member its stream is
+    minted for, and the computer it runs: a workspace the caller reaches as
+    its files' routes do, for a caller who turned the browser on, on a kind of
+    computer with a browser, while it runs, or started with *start*.
     Raises ``_NoBrowser`` where there is none to reach."""
     workspace, _ = await reached_workspace_on_computer(workspace_id, user_id)
     viewer = preview_viewer(workspace, user_id)
@@ -71,12 +71,18 @@ async def _browser_sandbox(
     if not await user_feature_enabled(user_id, "browser"):
         raise _NoBrowser("unavailable")
     if start:
-        sandbox, _workspace = await acquire_sandbox(workspace_id, user_id, "browser_view")
-        return sandbox, viewer
+        # The row as the acquisition left it, which a move may have changed.
+        sandbox, acquired = await acquire_sandbox(workspace_id, user_id, "browser_view")
+        return sandbox, viewer, _computer_of(acquired)
     sandbox = await sandbox_if_running(workspace_id, user_id)
     if sandbox is None:
         raise _NoBrowser("stopped")
-    return sandbox, viewer
+    return sandbox, viewer, _computer_of(workspace)
+
+
+def _computer_of(workspace: dict[str, Any]) -> str | None:
+    computer_id = workspace.get("computer_id")
+    return str(computer_id) if computer_id else None
 
 
 class BrowserViewRequest(BaseModel):
@@ -131,7 +137,7 @@ async def set_browser_control(
     it. A stopped computer has nothing to hold and is not started for it.
     """
     try:
-        sandbox, _viewer = await _browser_sandbox(workspace_id, x_user_id)
+        sandbox, _viewer, _computer = await _browser_sandbox(workspace_id, x_user_id)
     except _NoBrowser:
         return BrowserControlResponse(held=False)
     held = await browser_control(
@@ -184,7 +190,7 @@ async def navigate_browser(
     otherwise. A stopped computer is not started for it.
     """
     try:
-        sandbox, _viewer = await _browser_sandbox(workspace_id, x_user_id)
+        sandbox, _viewer, _computer = await _browser_sandbox(workspace_id, x_user_id)
     except _NoBrowser:
         return BrowserNavigateResponse(done=False, reason="not_running")
     reason = await browser_navigate(
@@ -205,9 +211,16 @@ async def get_browser_view(
     reload never starts a browser or a computer.
     """
     try:
-        sandbox, viewer = await _browser_sandbox(workspace_id, x_user_id, start=body.start)
+        sandbox, viewer, computer_id = await _browser_sandbox(
+            workspace_id, x_user_id, start=body.start
+        )
         view = await browser_view(
-            sandbox, workspace_id, start=body.start, get_chrome=body.get_chrome, viewer_id=viewer
+            sandbox,
+            workspace_id,
+            computer_id,
+            start=body.start,
+            get_chrome=body.get_chrome,
+            viewer_id=viewer,
         )
     except _NoBrowser as e:
         return BrowserViewResponse(state=e.state)

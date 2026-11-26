@@ -11,7 +11,8 @@ import asyncio
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import ClassVar, Self
+from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar, Self
 
 from src.utils.concurrency import cancel_and_join
 
@@ -86,3 +87,35 @@ class JitteredSweeper(ABC):
                 raise
             except Exception:
                 logger.error(f"[{self.name}] sweep failed", exc_info=True)
+
+
+class KeysetCursor:
+    """Where a sweep's next pass resumes in a list ordered by ``computer_id``,
+    so rows that fail on every pass cannot fill each page and keep the ones
+    sorted after them waiting. Per worker: what keeps workers off one row is
+    the sweep's own lock, not this."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.after: Any = None
+        self._start: Any = None
+
+    async def page(self, fetch: Callable[..., Awaitable[list[dict[str, Any]]]]) -> list[dict[str, Any]]:
+        """The next page *fetch* returns, called with ``limit`` and ``after``.
+        Past the end it wraps at once rather than lose a pass."""
+        start = self.after
+        rows = await fetch(limit=self.limit, after=start)
+        if not rows and start is not None:
+            start = None
+            rows = await fetch(limit=self.limit, after=None)
+        self._start = start
+        self.after = rows[-1]["computer_id"] if len(rows) == self.limit else None
+        return rows
+
+    def stopped_at(self, rows: list[dict[str, Any]], index: int) -> None:
+        """The pass ended before handling ``rows[index]`` of the last page, so
+        the next one starts there rather than past the rows it never reached."""
+        self.after = rows[index - 1]["computer_id"] if index else self._start
+
+    def reset(self) -> None:
+        self.after = None

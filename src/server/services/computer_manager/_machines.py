@@ -61,7 +61,7 @@ from src.server.database.workspace import (
 )
 from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
 from src.server.services.computer_start_failure import record_start_failure
-from src.server.services import activity, browser_settings
+from src.server.services import activity
 from src.server.services.activity import Action
 from src.server.services.account import refuse_machine_use
 from src.server.services.computer_usage.events import note_start_path
@@ -844,7 +844,7 @@ class MachineLifecycleMixin:
             )
             # A bare start syncs no project, so the browser settings are
             # handed here rather than left to the next project sync.
-            await self._keep_browser_settings(binding, session.sandbox)
+            await self._after_machine_sync(binding, session.sandbox)
 
             restored_projects: list[ComputerBinding] = []
             if not reconnected:
@@ -924,10 +924,7 @@ class MachineLifecycleMixin:
             # A browser setting saved while the machine was starting found it
             # not yet running and was left for the start, which handed its own
             # older row above; the row it published is the current one.
-            await self._keep_browser_settings(
-                replace(binding, browser=browser_settings.read(published)),
-                session.sandbox,
-            )
+            await self._after_machine_sync(binding.with_row(published), session.sandbox)
             # Each restore above cleared its completeness flag for a sandbox
             # no row named yet, so the clear matched nothing. Repeat it now
             # the bind has landed, as the single-project path does, or a
@@ -1103,7 +1100,7 @@ class MachineLifecycleMixin:
                 if live is not None:
                     # As every acquire does, so a save that did not reach the
                     # machine is handed here; free once it has them.
-                    await self._keep_browser_settings(
+                    await self._after_machine_sync(
                         self._binding_from_computer("", computer), live.sandbox
                     )
                     return live

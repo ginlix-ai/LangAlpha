@@ -9,6 +9,7 @@ than an error.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,13 +28,16 @@ from e2b import (
     SecretException,
     SecretNotFoundException,
 )
+from e2b.api.client.models import TemplateBuildStatus
 
 from ptc_agent.config.core import E2BConfig, PlatformSecretDefinition, ResourceTier
 from ptc_agent.core.sandbox.platform_secrets import (
     PlatformSecretConfigurationError,
     ResolvedPlatformSecret,
 )
+from ptc_agent.core.sandbox.providers import _image_recipe
 from ptc_agent.core.sandbox.providers import e2b as e2b_module
+from ptc_agent.core.sandbox.providers._image_recipe import Copy, ImageName, Run, image_recipe
 from ptc_agent.core.sandbox.providers.e2b import E2BProvider
 from ptc_agent.core.sandbox.providers.e2b_runtime import (
     E2BRuntime,
@@ -99,6 +103,8 @@ def _provider(
     provider._client = client or _client()
     # The name-to-id lookup goes through E2B's raw API, outside the bound client.
     provider._template_id = AsyncMock(return_value=template_id)
+    # So is the listing a create falls back through.
+    provider._ready_templates = AsyncMock(return_value=[])
     return provider
 
 
@@ -345,6 +351,72 @@ class TestLifetimeAndTiers:
         assert small.startswith("my-prefix-std-")
         assert all(c.isalnum() or c in "-_" for c in small)
 
+    def test_a_template_is_named_by_its_base_and_its_toolset(self, monkeypatch):
+        """A new table moves only the tag; a new base moves the family."""
+        from ptc_agent.core.sandbox.toolset_runtime import units
+
+        provider = _provider()
+        preset = ResourceTier(cpu=1, memory=1, disk=3)
+        wanted = provider._image_name(["pkg"], tier="standard", preset=preset)
+        assert re.fullmatch(r"langalpha-standard-[0-9a-f]{8}", wanted.family)
+        assert wanted.tag == f"{units.load().revision}-{units.version()[:8]}"
+        assert provider.template_name(["pkg"], tier="standard", preset=preset) == str(wanted)
+
+        monkeypatch.setattr(_image_recipe, "toolset_tag", lambda: "1-01234567")
+        bumped = provider._image_name(["pkg"], tier="standard", preset=preset)
+        assert bumped == ImageName(wanted.family, "1-01234567")
+        other = provider._image_name(["other"], tier="standard", preset=preset)
+        assert other.family != bumped.family
+
+    def test_the_toolset_lands_as_the_recipe_says_and_as_root(self):
+        """Copied file by file to where the recipe puts it, then converged as
+        root, so the template ends with the toolset every image has."""
+        import json
+
+        preset = ResourceTier(cpu=1, memory=1, disk=3)
+        provider = E2BProvider(E2BConfig(api_key="test"), working_dir="/home/workspace")
+        definition = provider.template_definition([], preset=preset)
+        steps = json.loads(provider._client.AsyncTemplate.to_json(definition))["steps"]
+        copies = [s["args"] for s in steps if s["type"] == "COPY"]
+        converge = steps[[s["type"] for s in steps].index("COPY") + len(copies)]
+
+        copy, run = image_recipe(
+            working_dir="/home/workspace", mcp_packages=[], cpu=preset.cpu
+        ).toolset
+        assert isinstance(copy, Copy) and isinstance(run, Run)
+        assert [args[:3] for args in copies] == [
+            [name, f"{copy.dest}/{name}", "root"] for name in copy.files
+        ]
+        assert converge["type"] == "RUN"
+        assert converge["args"] == [run.commands[0], "root"]
+
+    @pytest.mark.asyncio
+    async def test_ready_templates_are_listed_by_bare_name_with_their_age(self):
+        old, new = datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 5, tzinfo=UTC)
+
+        def template(names, status, created):
+            return SimpleNamespace(
+                aliases=[names[0]],
+                names=[f"team/{n}" for n in names],
+                build_status=TemplateBuildStatus(status),
+                created_at=created,
+            )
+
+        listed = SimpleNamespace(
+            status_code=200,
+            parsed=[
+                template(["old"], "ready", old),
+                template(["failed"], "error", new),
+                template(["new", "new-too"], "ready", new),
+            ],
+        )
+        provider = E2BProvider(E2BConfig(api_key="test"), working_dir="/home/workspace")
+        with patch.object(
+            e2b_module.get_templates, "asyncio_detailed", AsyncMock(return_value=listed)
+        ):
+            ready = await provider._ready_templates()
+        assert dict(ready) == {"old": old, "new": new, "new-too": new}
+
 
 class TestTemplateReadiness:
     """A sandbox starts only from a template whose build is ready.
@@ -452,6 +524,68 @@ class TestTemplateReadiness:
         with pytest.raises(raised):
             await provider.create(tier="standard")
         client.AsyncTemplate.build.assert_awaited_once()
+
+    def _fallback_provider(self, client, *, ready_others: list[str], building: bool = False):
+        """``ready_others`` are tags of the wanted family, newest first."""
+        provider = _provider(client)
+        preset = provider._config.resource_tiers["standard"]
+        wanted = provider._image_name([], tier="standard", preset=preset)
+        other = provider._image_name(["other"], tier="standard", preset=preset)
+        listed = [
+            (str(ImageName(wanted.family, tag)), datetime(2026, 11, 20 - age, tzinfo=UTC))
+            for age, tag in enumerate(ready_others)
+        ]
+        listed.append((str(ImageName(other.family, "1-aaaaaaa9")), datetime(2026, 11, 21, tzinfo=UTC)))
+        provider._ready_templates = AsyncMock(return_value=listed)
+        exact = str(wanted)
+        provider._template_id = AsyncMock(
+            side_effect=lambda name: ("tpl-exact" if building else None) if name == exact else "tpl"
+        )
+
+        async def status(info, **_):
+            value = "building" if info.template_id == "tpl-exact" else "ready"
+            return SimpleNamespace(status=SimpleNamespace(value=value))
+
+        client.AsyncTemplate.get_build_status = AsyncMock(side_effect=status)
+        provider.template_definition = MagicMock()
+        return provider, wanted
+
+    @pytest.mark.parametrize("building", [False, True], ids=["missing", "prebuild-under-way"])
+    @pytest.mark.asyncio
+    async def test_a_create_takes_the_newest_template_of_its_base(self, building):
+        """No ready template for the exact pair: the newest ready one with the
+        same base serves, and nothing is built or waited on."""
+        client = _client()
+        provider, wanted = self._fallback_provider(
+            client, ready_others=["1-aaaaaaa2", "1-aaaaaaa1"], building=building
+        )
+        client.AsyncSandbox.create.side_effect = [
+            SandboxException("404: template not found", status_code=404),
+            SimpleNamespace(sandbox_id="sbx-new"),
+        ]
+
+        await provider.create(tier="standard")
+
+        assert client.AsyncSandbox.create.await_args.kwargs["template"] == str(
+            ImageName(wanted.family, "1-aaaaaaa2")
+        )
+        client.AsyncTemplate.build.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_new_base_with_nothing_to_fall_back_on_builds(self):
+        client = _client()
+        provider, wanted = self._fallback_provider(client, ready_others=[])
+        client.AsyncSandbox.create.side_effect = [
+            SandboxException("404: template not found", status_code=404),
+            SimpleNamespace(sandbox_id="sbx-new"),
+        ]
+
+        await provider.create(tier="standard")
+
+        client.AsyncTemplate.build.assert_awaited_once()
+        built = client.AsyncTemplate.build.await_args.args[1]
+        assert built == str(wanted)
+        assert client.AsyncSandbox.create.await_args.kwargs["template"] == built
 
     @pytest.mark.asyncio
     async def test_a_create_error_other_than_404_is_not_a_template_check(self):

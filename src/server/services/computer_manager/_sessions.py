@@ -30,7 +30,6 @@ from src.server.database.workspace import (
     get_workspace_identity as db_get_workspace_identity,
 )
 
-from src.server.services import browser_settings
 from src.server.services.computer_errors import MachineLockTimeout
 from src.server.services.computer_manager._providers import HostOutageClock
 from src.server.services.computer_manager._types import (
@@ -41,6 +40,7 @@ from src.server.services.computer_manager._types import (
     WorkspaceNotOnComputer,
     WorkspaceToolView,
     _WORKSPACE_TOOL_VIEWS_CAP,
+    row_facts,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,8 +70,8 @@ class SessionCacheMixin:
             ),
             files_backup=computer.get("files_backup", True) is not False,
             user_id=str(computer["user_id"]) if computer.get("user_id") else None,
-            browser=browser_settings.read(computer),
             layout_version=observed_layout_version(computer),
+            **row_facts(computer),
         )
 
     async def resolve_binding(
