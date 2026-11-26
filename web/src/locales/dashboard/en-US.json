@@ -2,8 +2,6 @@
   "title": "LangAlpha",
   "searchLabel": "Search stocks by symbol or company name",
   "searchPlaceholder": "Search by symbol or company name...",
-  "searching": "Searching...",
-  "noResults": "No results found",
   "header": {
     "editLayout": "Edit layout",
     "exitEditLayout": "Exit edit layout"

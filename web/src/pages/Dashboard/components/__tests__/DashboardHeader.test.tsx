@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router';
+import { TopBarSlotContext } from '@/components/TopBar/topBarSlot';
 import DashboardHeader from '../DashboardHeader';
 
 const mobile = vi.hoisted(() => ({ value: false }));
@@ -8,22 +9,22 @@ const palette = vi.hoisted(() => ({ open: vi.fn(), close: vi.fn(), preload: vi.f
 
 vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => mobile.value }));
 vi.mock('@/components/CommandPalette/CommandPaletteProvider', () => ({ useCommandPalette: () => palette }));
-vi.mock('@/hooks/useSymbolSearch', () => ({
-  useSymbolSearch: (query: string) => ({
-    hits: query ? [{ symbol: 'NVDA', name: 'NVIDIA Corporation' }] : [],
-    loading: false,
-  }),
-}));
-
 function Where() {
   const { pathname, search } = useLocation();
   return <output aria-label="Where">{pathname + search}</output>;
 }
 
-function renderHeader() {
+const claim = vi.fn(() => () => {});
+
+function renderHeader(slot: HTMLElement | null = null) {
   return render(
     <MemoryRouter initialEntries={['/dashboard']}>
-      <DashboardHeader />
+      <TopBarSlotContext.Provider value={{ slot, claim }}>
+        <DashboardHeader
+          actions={<button type="button">Built-in dashboard</button>}
+          edit={{ editMode: false, onEditModeChange: () => {} }}
+        />
+      </TopBarSlotContext.Provider>
       <Where />
     </MemoryRouter>,
   );
@@ -53,18 +54,20 @@ describe('DashboardHeader search', () => {
     expect(palette.open).toHaveBeenCalledWith({ kind: 'tickers' });
   });
 
-  it('on a desktop, keeps its field and dropdown, and Enter opens the first hit in Market', () => {
+  it('on a desktop, draws no header: it puts the top bar up, its controls go there and / opens the palette', () => {
     mobile.value = false;
-    renderHeader();
-    const input = screen.getByRole('textbox', { name: 'Search stocks by symbol or company name' });
+    const slot = document.createElement('div');
+    document.body.appendChild(slot);
+    renderHeader(slot);
+
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Search stocks by symbol or company name' })).not.toBeInTheDocument();
+    expect(slot).toContainElement(screen.getByRole('button', { name: 'Built-in dashboard' }));
+    expect(slot).toContainElement(screen.getByRole('button', { name: 'Edit layout' }));
 
     fireEvent.keyDown(document.body, { key: '/' });
-    expect(input).toHaveFocus();
-    fireEvent.change(input, { target: { value: 'nvd' } });
-    expect(screen.getByRole('button', { name: /NVDA/ })).toBeInTheDocument();
-    expect(palette.open).not.toHaveBeenCalled();
-
-    fireEvent.submit(input.closest('form')!);
-    expect(screen.getByLabelText('Where')).toHaveTextContent('/market?symbol=NVDA');
+    expect(palette.open).toHaveBeenCalledWith({ kind: 'tickers' });
+    slot.remove();
   });
 });
