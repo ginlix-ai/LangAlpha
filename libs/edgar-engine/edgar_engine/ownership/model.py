@@ -99,3 +99,4 @@ class OwnershipFiling:
     transactions: tuple[Transaction, ...]
     holdings: tuple[OwnershipHolding, ...]
     schema_version: str | None = None
+    not_subject_to_section16: bool | None = None

@@ -187,7 +187,37 @@ end of its range is partial.
 **Data sets.** `read_insider_dataset` reads SEC's quarterly Insider Transactions Data Set into the same columns.
 It is SEC's own extraction of the same documents, rounded to 2 decimals, and in multi-line filings it sometimes
 puts a line's nature of ownership (rarely a price or a holding) on a neighbouring line; the filing is right.
-Footnote ids come from its per-field footnote columns.
+Footnote ids come from its per-field footnote columns. `read_insider_holdings` and `read_insider_owners` read its
+holdings tables and reporting owners into the columns of `holding_rows` and `owner_rows`.
+
+**Roster.** `insider_roster(rows, holdings, owners, since=...)` gives one row per issuer and owner: the owner's
+name and relationship from their latest filing, their common shares held directly and indirectly (each position
+from the latest report that states it), the indirect positions by nature, and their latest transaction.
+
+```python
+from edgar_engine.ownership import holding_rows, insider_roster, owner_rows
+
+holdings = pd.DataFrame([r for f in filings for r in holding_rows(f)])
+owners = pd.DataFrame([r for f in filings for r in owner_rows(f)])
+roster = insider_roster(rows, holdings, owners, since="2024-11-26")
+```
+
+A position is one class of common stock held directly or by one nature of indirect ownership (natures compared
+without case, footnote references or a leading "by"; American depositary shares and non-voting shares are classes
+of their own; a title
+that drops or adds its class letter is the same position unless a filing of the issuer names both). A filing
+restates only the lines it touches, so each position takes the latest report stating it, dated by its last
+transaction (none dated after the filing) or its period if later, then filing date. An amendment belongs to the
+report it amends and replaces only the titles whose amounts it corrects or adds to. Within the report each title
+(restricted and performance shares apart from the plain ones) has its latest-dated transaction line as its balance,
+each holdings line is a holding of its own except one that repeats that balance, and the position is the
+sum. Table II (options, RSUs) and titles that are not common stock (preferred, preferred depositary shares, notes,
+warrants, stock units, dividend equivalents) are not shares. No filing reliably marks an exit (filers tick the "no
+longer subject to Section 16" box while still in office, so `owner_rows` keeps that mark as data), and `since` keeps
+the owners whose latest filing is on or after it. A joint filing's lines belong to every owner it names. `insider_shares(roster,
+roster_positions(rows, holdings), definition)` sums an issuer's insider shares: directors' and officers' direct
+positions (A), plus their indirect ones (B), plus 10% owners' with equal blocks counted once (C); a block in one
+joint filing counts once.
 
 ## Form 144 notices of proposed sale
 

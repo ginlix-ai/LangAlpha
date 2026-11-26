@@ -133,7 +133,8 @@ def parse_ownership(submission: bytes | str, *, accession: str | None = None) ->
         remarks=_xml.text(root, "remarks"),
         transactions=tuple(transactions),
         holdings=tuple(holdings),
-        schema_version=_xml.text(root, "schemaVersion"))
+        schema_version=_xml.text(root, "schemaVersion"),
+        not_subject_to_section16=_xml.flag(_xml.text(root, "notSubjectToSection16")))
 
 
 def belongs_to_issuer(filing: OwnershipFiling, cik: int | str) -> bool:
@@ -146,13 +147,16 @@ _FILING_COLUMNS = ("accession", "form", "filed", "period", "issuer_cik", "issuer
                    "owner_ciks", "owner_name", "owner_relationship", "aff10b5_one")
 _LINE_FIELDS = tuple(f.name for f in fields(Transaction))
 TRANSACTION_COLUMNS = _FILING_COLUMNS + ("derivative",) + _LINE_FIELDS
+_HOLDING_FIELDS = tuple(f.name for f in fields(OwnershipHolding))
+HOLDING_COLUMNS = _FILING_COLUMNS + ("derivative",) + _HOLDING_FIELDS
+OWNER_COLUMNS = ("accession", "form", "filed", "period", "issuer_cik", "owner_cik", "owner_name", "is_director",
+                 "is_officer", "officer_title", "is_ten_percent_owner", "is_other", "other_text",
+                 "not_subject_to_section16")
 
 
-def transaction_rows(filing: OwnershipFiling) -> list[dict]:
-    """One flat row per transaction line (TRANSACTION_COLUMNS), with the filing's issuer, first owner and 10b5-1
-    flag on each."""
+def _filing_columns(filing: OwnershipFiling) -> dict:
     first = filing.owners[0] if filing.owners else None
-    common = {
+    return {
         "accession": filing.accession, "form": filing.form, "filed": filing.filed, "period": filing.period,
         "issuer_cik": filing.issuer_cik, "issuer_name": filing.issuer_name, "issuer_ticker": filing.issuer_ticker,
         "owner_cik": first.cik if first else None,
@@ -161,9 +165,35 @@ def transaction_rows(filing: OwnershipFiling) -> list[dict]:
         "owner_relationship": first.relationship if first else None,
         "aff10b5_one": filing.aff10b5_one,
     }
+
+
+def _line_rows(filing: OwnershipFiling, lines, names: tuple[str, ...]) -> list[dict]:
+    common = _filing_columns(filing)
     rows = []
-    for t in filing.transactions:
-        line = {name: getattr(t, name) for name in _LINE_FIELDS}
+    for t in lines:
+        line = {name: getattr(t, name) for name in names}
         line["footnote_ids"] = {k: list(v) for k, v in t.footnote_ids.items()}
-        rows.append({**common, "derivative": t.derivative, **line})
+        rows.append({**common, "derivative": t.table == "derivative", **line})
     return rows
+
+
+def transaction_rows(filing: OwnershipFiling) -> list[dict]:
+    """One flat row per transaction line (TRANSACTION_COLUMNS), with the filing's issuer, first owner and 10b5-1
+    flag on each."""
+    return _line_rows(filing, filing.transactions, _LINE_FIELDS)
+
+
+def holding_rows(filing: OwnershipFiling) -> list[dict]:
+    """One flat row per holdings-only line (HOLDING_COLUMNS), with the same filing columns as transaction_rows."""
+    return _line_rows(filing, filing.holdings, _HOLDING_FIELDS)
+
+
+def owner_rows(filing: OwnershipFiling) -> list[dict]:
+    """One row per reporting owner (OWNER_COLUMNS), so a joint filing's lines belong to every owner it names; each row
+    carries the filing's notSubjectToSection16 mark (true when the owner is no longer subject to Section 16)."""
+    return [{"accession": filing.accession, "form": filing.form, "filed": filing.filed, "period": filing.period,
+             "issuer_cik": filing.issuer_cik, "owner_cik": o.cik, "owner_name": o.name, "is_director": o.is_director,
+             "is_officer": o.is_officer, "officer_title": o.officer_title,
+             "is_ten_percent_owner": o.is_ten_percent_owner, "is_other": o.is_other, "other_text": o.other_text,
+             "not_subject_to_section16": filing.not_subject_to_section16}
+            for o in filing.owners]
