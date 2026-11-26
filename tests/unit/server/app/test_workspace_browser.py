@@ -24,6 +24,8 @@ SANDBOX = SimpleNamespace(sandbox_id="sb-1")
 
 CONTROL = ("/browser-control", {"holder": "view-1", "action": "take"})
 NAVIGATE = ("/browser-navigate", {"holder": "view-1", "action": "back"})
+FIT = ("/browser-fit", {"viewer": "view-1", "width": 700, "height": 900})
+CLOSE = ("/browser-close", {"viewer": "view-1"})
 
 
 def _reach(owner_id: str = USER) -> AsyncMock:
@@ -195,6 +197,67 @@ async def test_a_hand_back_passes_on_what_the_person_still_had_down():
         resp = await _post("/browser-control", body, *patches)
     assert resp.json() == {"held": False}
     assert control.await_args.kwargs == {"holder": "view-1", "action": "release", "releases": releases}
+
+
+@pytest.mark.parametrize(("refusal", "answer"), [(None, {"done": True, "reason": None}), ("held", {"done": False, "reason": "held"})])
+async def test_a_close_is_passed_on_with_why_the_browser_stays_open(refusal, answer):
+    patches, _, _ = _setup()
+    with patch.object(module, "browser_close", AsyncMock(return_value=refusal)) as close:
+        resp = await _post(*CLOSE, *patches)
+    assert resp.json() == answer
+    assert close.await_args.kwargs == {"viewer": "view-1"}
+
+
+async def test_a_computer_with_no_browser_running_has_it_closed_and_is_not_started():
+    patches, acquire, _ = _setup(running=None)
+    with patch.object(module, "browser_close", AsyncMock(return_value=None)) as close:
+        resp = await _post(*CLOSE, *patches)
+    assert resp.json() == {"done": True, "reason": None}
+    close.assert_not_awaited()
+    acquire.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("taken", "answer"),
+    [
+        ((700, 900), {"size": {"width": 700, "height": 900}, "kept": False}),
+        ("kept", {"size": None, "kept": True}),
+        (None, {"size": None, "kept": False}),
+    ],
+    ids=["sized", "keeps its own", "not now"],
+)
+async def test_a_view_s_size_is_passed_on_to_the_machine(taken, answer):
+    patches, _, _ = _setup()
+    with patch.object(module, "browser_fit", AsyncMock(return_value=taken)) as fit:
+        resp = await _post(*FIT, *patches)
+    assert resp.json() == answer
+    assert fit.await_args.kwargs == {"viewer": "view-1", "width": 700, "height": 900}
+
+
+@pytest.mark.parametrize("running", [None, SANDBOX], ids=["stopped", "browser-off"])
+async def test_a_view_with_no_browser_to_reach_fits_nothing_and_starts_nothing(running):
+    patches, acquire, _ = _setup(running=running, on=running is None)
+    with patch.object(module, "browser_fit", AsyncMock(return_value=(700, 900))) as fit:
+        resp = await _post(*FIT, *patches)
+    assert resp.json() == {"size": None, "kept": False}
+    fit.assert_not_awaited()
+    acquire.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"viewer": "view-1", "width": 0, "height": 900},
+        {"viewer": "view-1", "width": 700, "height": 10_001},
+        {"viewer": "not a holder!", "width": 700, "height": 900},
+    ],
+)
+async def test_a_view_size_out_of_bounds_is_refused(body):
+    patches, _, _ = _setup()
+    with patch.object(module, "browser_fit", AsyncMock(return_value=True)) as fit:
+        resp = await _post("/browser-fit", body, *patches)
+    assert resp.status_code == 422
+    fit.assert_not_awaited()
 
 
 async def test_a_hand_back_the_machine_did_not_answer_fails_so_the_viewer_asks_again():
