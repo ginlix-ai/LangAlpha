@@ -1,12 +1,14 @@
-"""The 13F tools' answers (get_institutional_holders, get_manager_holdings), built once for every source.
+"""The ownership tools' answers, built once for every source: the two 13F tools (get_institutional_holders,
+get_manager_holdings), get_mutual_fund_holders, get_proposed_insider_sales, get_insider_roster and
+get_ownership_breakdown.
 
 A source hands over ranked rows; this module owns what the agent sees: the caps, the envelope and its paging
-echo (``holders_total``/``positions_total``, ``offset``, ``next_offset``, ``build``), the row fields, a manager
-named by CIK or by name, and the errors (``rebuilt`` for a page of a replaced build; a route's own ``detail``, a
-not-ready 503's included). Every source is read through an ``OwnershipReader``, the 13F ``*_v2`` route calls of
-ginlix-data: ``GinlixMCPClient``, ginlix-data's own MCP server, or, in the open-source build without ginlix-data,
-a reader that answers them from FMP and EDGAR in the routes' shapes and raises ``SourceError`` for its own
-failures.
+echo (``holders_total``/``positions_total``/``notices_total``, ``offset``, ``next_offset``, ``build``), the row
+fields, a manager named by CIK or by name, and the errors (``rebuilt`` for a page of a replaced build; a route's own
+``detail``, a not-ready 503's included, word for word). Every source is read through an ``OwnershipReader``, the
+``*_v2`` route calls of LangAlpha Data: ``GinlixMCPClient``, LangAlpha Data's own MCP server, or, in the open-source
+build without LangAlpha Data, a reader that answers them from FMP and EDGAR in the routes' shapes and raises
+``SourceError`` for its own failures.
 """
 
 from __future__ import annotations
@@ -30,15 +32,36 @@ POSITION_FIELDS = (
     "ticker", "issuer", "cusip", "title_class", "sh_prn", "put_call", "shares", "value", "value_status", "weight",
     "change", "shares_prior", "accession",
 )
+FUND_HOLDERS_MOST = 500
+NOTICES_MOST = 100
+FUND_HOLDER_FIELDS = (
+    "fund", "series_id", "registrant", "shares", "value", "pctheld", "pct_of_fund", "pctchange", "date_reported",
+    "filing_date", "accession", "url",
+)
+NOTICE_FIELDS = (
+    "filing_date", "seller", "seller_cik", "relationship", "security_class", "shares_to_sell", "market_value",
+    "approx_sale_date", "plan_adoption_date", "acquired", "sold_past_3_months", "accession", "url", "form", "amends",
+)
+ROSTER_FIELDS = (
+    "name", "owner_cik", "relationship", "officer_title", "shares_direct", "as_of_direct", "shares_indirect",
+    "as_of_indirect", "indirect_detail", "latest_transaction", "latest_transaction_date", "latest_filing_date", "url",
+)
+BREAKDOWN_FIELDS = (
+    "insiders_pct", "institutions_pct", "institutions_float_pct", "institutions_count", "insider_shares",
+    "institution_shares", "shares_outstanding", "shares_outstanding_date",
+)
 CANDIDATES = 20
-_COUNTS = ("shares", "value", "shares_prior")
+_COUNTS = (
+    "shares", "value", "shares_prior", "shares_to_sell", "market_value", "shares_direct", "shares_indirect",
+    "institutions_count", "insider_shares", "institution_shares", "shares_outstanding",
+)
 _CIK = re.compile(r"\d{1,10}")
 _FAILED = "ownership data request failed; a retry may succeed"
-_REBUILT = "the build passed was replaced since the last page; start again at offset 0 with the same period and no build"
+_REBUILT = "the build passed was replaced since the last page; start again at offset 0 with "
 
 
 class OwnershipReader(Protocol):
-    """ginlix-data's 13F routes as calls: each returns the route's JSON body, None for its 404, and raises
+    """LangAlpha Data's ownership routes as calls: each returns the route's JSON body, None for its 404, and raises
     httpx.HTTPStatusError for any other failing status (409 when a passed build was replaced) or SourceError."""
 
     async def get_holders_page_v2(self, instrument_key: str, *, period: Optional[str], limit: int, offset: int,
@@ -48,6 +71,17 @@ class OwnershipReader(Protocol):
 
     async def get_filer_holdings_v2(self, cik: int, *, period: Optional[str], limit: int, offset: int,
                                     build: Optional[str]) -> Optional[dict[str, Any]]: ...
+
+    async def get_fund_holders_page_v2(self, instrument_key: str, *, limit: int, offset: int,
+                                       build: Optional[str]) -> Optional[dict[str, Any]]: ...
+
+    async def get_form144_page_v2(self, instrument_key: str, *, limit: int, offset: int,
+                                  build: Optional[str]) -> Optional[dict[str, Any]]: ...
+
+    async def get_insider_roster_v2(self, instrument_key: str) -> Optional[dict[str, Any]]: ...
+
+    async def get_ownership_breakdown_v2(self, instrument_key: str, *,
+                                         period: Optional[str]) -> Optional[dict[str, Any]]: ...
 
 
 class SourceError(Exception):
@@ -108,6 +142,17 @@ def manager_answer(
     )
 
 
+def notices_answer(
+    rows: list[dict[str, Any]], *, symbol: str, build: Optional[str], total: int, offset: int,
+    next_offset: Optional[int], covered_from: Optional[str], source: str,
+) -> dict[str, Any]:
+    """The notices' envelope; ``covered_from`` only while the source still loads notices older than it."""
+    return make_response(
+        [_record(r, NOTICE_FIELDS) for r in rows], source=source, symbol=symbol, build=build, notices_total=total,
+        offset=offset, next_offset=next_offset, **({"covered_from": covered_from} if covered_from else {}),
+    )
+
+
 def no_report(manager: str, period: Optional[str]) -> dict[str, Any]:
     when = f"for {period}" if period else "for that quarter"
     return make_error(
@@ -139,18 +184,18 @@ def ambiguous(manager: str, candidates: list[dict[str, Any]], total: int) -> dic
     )
 
 
-def route_error(exc: Exception, **context: Any) -> dict[str, Any]:
+def route_error(exc: Exception, *, periodic: bool = True, **context: Any) -> dict[str, Any]:
     """A reader's failure: a SourceError's own code and detail; ``rebuilt`` for a route's 409 (the page's build
-    was replaced); else the status's code with the route's own detail word for word, which a 503 keeps only when
-    the route marks it ``not_ready`` (its ``NotReady`` hint, written for the agent); any other failure is
-    ``upstream_error``."""
+    was replaced; *periodic* when the read takes a period to keep); else the status's code with the route's own
+    detail word for word, which a 503 keeps only when the route marks it ``not_ready`` (its ``NotReady`` hint,
+    written for the agent); any other failure is ``upstream_error``."""
     if isinstance(exc, SourceError):
         return make_error(exc.code, exc.detail, **context)
     if not isinstance(exc, httpx.HTTPStatusError):
         return make_error("upstream_error", _FAILED, **context)
     status = exc.response.status_code
     if status == 409:
-        return make_error("rebuilt", _REBUILT, **context)
+        return make_error("rebuilt", _REBUILT + ("the same period and no build" if periodic else "no build"), **context)
     try:
         body = exc.response.json()
     except Exception:  # noqa: BLE001 - a body that is not the route's JSON
@@ -175,19 +220,12 @@ async def holders_from_route(
         period = quarter_end(period)
     except ValueError as exc:
         return make_error("invalid_argument", str(exc), symbol=symbol)
-    try:
-        body = await reader.get_holders_page_v2(
-            instrument_key, period=period, limit=limit, offset=offset, build=build
-        )
-    except Exception as exc:  # noqa: BLE001
-        return route_error(exc, symbol=symbol)
-    if body is None:  # the route's 404: a period it refuses, or a symbol it does not know
-        detail = (
-            f"no 13F holders are stored for {symbol} for {period}; pass another quarter end as period, or check "
-            f"that {symbol} is a US-listed ticker" if period
-            else f"no 13F holders are stored for {symbol}; check that it is a US-listed ticker"
-        )
-        return make_error("not_found", detail, symbol=symbol)
+    body, error = await _route_body(
+        lambda: reader.get_holders_page_v2(instrument_key, period=period, limit=limit, offset=offset, build=build),
+        symbol, period=period, what="13F holders are",
+    )
+    if error is not None:
+        return error
     return holders_answer(
         body.get("rows") or [], symbol=symbol, period=body.get("period", period), build=body.get("build"),
         total=body.get("total", 0), offset=offset, next_offset=body.get("next_offset"),
@@ -253,5 +291,96 @@ async def manager_from_route(
         prior_url=body.get("prior_url"), total=body.get("total") or 0, offset=offset,
         next_offset=body.get("next_offset"),
         source=body.get("publisher") or "sec",
+    )
+
+
+def _unstored(symbol: str, period: Optional[str] = None, what: str = "SEC ownership data is") -> dict[str, Any]:
+    """``not_found`` for a route's 404 (a period it refuses, or a symbol it does not know): no *what* stored."""
+    detail = (
+        f"no {what} stored for {symbol} for {period}; pass another quarter end as period, or check that {symbol} is "
+        f"a US-listed ticker" if period
+        else f"no {what} stored for {symbol}; check that it is a US-listed ticker"
+    )
+    return make_error("not_found", detail, symbol=symbol)
+
+
+async def _route_body(
+    read: Callable[[], Awaitable[Optional[dict[str, Any]]]], symbol: str, *, period: Optional[str] = None,
+    periodic: bool = True, what: str = "SEC ownership data is",
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """*read*'s route body, or the error to answer instead: the reader's own failure (``route_error``), or
+    ``not_found`` for its 404, naming *what* is missing and the *period* asked for."""
+    try:
+        body = await read()
+    except Exception as exc:  # noqa: BLE001
+        return None, route_error(exc, periodic=periodic, symbol=symbol)
+    if body is None:
+        return None, _unstored(symbol, period, what)
+    return body, None
+
+
+async def fund_holders_from_route(
+    reader: OwnershipReader, instrument_key: str, symbol: str, *, limit: int, offset: int, build: Optional[str],
+) -> dict[str, Any]:
+    if (refused := page_error(limit, offset, FUND_HOLDERS_MOST, symbol=symbol)) is not None:
+        return refused
+    body, error = await _route_body(
+        lambda: reader.get_fund_holders_page_v2(instrument_key, limit=limit, offset=offset, build=build), symbol,
+        periodic=False,
+    )
+    if error is not None:
+        return error
+    return make_response(
+        [_record(r, FUND_HOLDER_FIELDS) for r in body.get("rows") or []], source=body.get("publisher") or "sec",
+        symbol=symbol, build=body.get("build"), holders_total=body.get("total", 0), offset=offset,
+        next_offset=body.get("next_offset"),
+    )
+
+
+async def notices_from_route(
+    reader: OwnershipReader, instrument_key: str, symbol: str, *, limit: int, offset: int, build: Optional[str],
+) -> dict[str, Any]:
+    if (refused := page_error(limit, offset, NOTICES_MOST, symbol=symbol)) is not None:
+        return refused
+    body, error = await _route_body(
+        lambda: reader.get_form144_page_v2(instrument_key, limit=limit, offset=offset, build=build), symbol,
+        periodic=False,
+    )
+    if error is not None:
+        return error
+    return notices_answer(
+        body.get("rows") or [], symbol=symbol, build=body.get("build"), total=body.get("total", 0), offset=offset,
+        next_offset=body.get("next_offset"), covered_from=body.get("covered_from"),
+        source=body.get("publisher") or "sec",
+    )
+
+
+async def roster_from_route(reader: OwnershipReader, instrument_key: str, symbol: str) -> dict[str, Any]:
+    body, error = await _route_body(lambda: reader.get_insider_roster_v2(instrument_key), symbol)
+    if error is not None:
+        return error
+    return make_response(
+        [_record(r, ROSTER_FIELDS) for r in body.get("rows") or []], source=body.get("publisher") or "sec",
+        symbol=symbol,
+    )
+
+
+async def breakdown_from_route(
+    reader: OwnershipReader, instrument_key: str, symbol: str, *, period: Optional[str],
+) -> dict[str, Any]:
+    try:
+        period = quarter_end(period)
+    except ValueError as exc:
+        return make_error("invalid_argument", str(exc), symbol=symbol)
+    body, error = await _route_body(
+        lambda: reader.get_ownership_breakdown_v2(instrument_key, period=period), symbol, period=period
+    )
+    if error is not None:
+        return error
+    if not body.get("data"):
+        return _unstored(symbol, period)
+    return make_response(
+        _record(body["data"], BREAKDOWN_FIELDS), source=body.get("publisher") or "sec", symbol=symbol,
+        period=body.get("period", period),
     )
 

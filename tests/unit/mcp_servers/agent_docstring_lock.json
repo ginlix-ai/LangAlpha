@@ -381,6 +381,34 @@
       "symbol"
     ]
   },
+  "mcp:fundamentals:get_insider_roster": {
+    "doc_lines": [
+      "Insiders of a US company (officers, directors, 10% owners) and the shares each",
+      "last reported holding on SEC Forms 3, 4 and 5.",
+      "No filing marks an exit, so the roster lists owners who filed in the last two",
+      "years.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\".",
+      "",
+      "Returns:",
+      "    dict: {symbol, count, data, source}. data is a list of {name, owner_cik,",
+      "    relationship, officer_title, shares_direct, as_of_direct,",
+      "    shares_indirect, as_of_indirect, indirect_detail, latest_transaction,",
+      "    latest_transaction_date, latest_filing_date, url}, most shares (direct",
+      "    plus indirect) first. shares_* are common shares as of the latest report",
+      "    stating them (as_of_*); indirect_detail is a list of {nature, shares};",
+      "    relationship is a list of director, officer, ten_percent_owner, other;",
+      "    latest_transaction is a Form 4 code, e.g. \"S-Sale\"; url is the latest",
+      "    filing. Dates \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}."
+    ],
+    "params": [
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
   "mcp:fundamentals:get_insider_trades": {
     "doc_lines": [
       "Fetch insider transactions from SEC Form 4 filings, with quarterly totals.",
@@ -516,6 +544,110 @@
     ],
     "required": [
       "manager"
+    ]
+  },
+  "mcp:fundamentals:get_mutual_fund_holders": {
+    "doc_lines": [
+      "Registered funds (mutual funds, ETFs, closed-end funds) holding a US-listed",
+      "security, from each fund's latest public SEC Form N-PORT report.",
+      "No money market funds. A fund's report turns public 60 days after its fiscal",
+      "quarter ends, so funds report as of different dates.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\".",
+      "    limit: Holders to return (default 100, at most 500).",
+      "    offset: Holders to skip. Next page: offset=next_offset with the",
+      "        answer's build. A build replaced since fails with error rebuilt;",
+      "        start again at offset 0.",
+      "",
+      "Returns:",
+      "    dict: {symbol, build, holders_total, offset, next_offset, count, data,",
+      "    source}.",
+      "    data is a list of {fund, series_id, registrant, shares, value, pctheld,",
+      "    pct_of_fund, pctchange, date_reported, filing_date, accession, url}, most",
+      "    shares first; next_offset is null on the last page. value is US dollars",
+      "    on date_reported; pctheld (of shares outstanding, null for multi-class",
+      "    issuers and ADRs), pct_of_fund (of the fund's net assets) and pctchange",
+      "    (null for a new holder) are fractions; url is the fund's N-PORT filing.",
+      "    Dates \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}."
+    ],
+    "params": [
+      "build",
+      "limit",
+      "offset",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_ownership_breakdown": {
+    "doc_lines": [
+      "The shares of a US company held by insiders (officers and directors, by their",
+      "last Forms 3, 4 and 5) and by 13F institutions, as fractions of shares",
+      "outstanding, with the institution count.",
+      "Fractions are null for multi-class issuers and ADRs, which state no single share",
+      "count.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\".",
+      "    period: 13F quarter end \"YYYY-MM-DD\"; default the latest quarter at",
+      "        least 3 days past its 45-day filing deadline. Insider shares are the",
+      "        latest reported, whatever the period.",
+      "",
+      "Returns:",
+      "    dict: {symbol, period, count, data, source}. data is {insiders_pct,",
+      "    institutions_pct, institutions_float_pct, institutions_count,",
+      "    insider_shares, institution_shares, shares_outstanding,",
+      "    shares_outstanding_date}. *_pct are fractions (0.66 = 66%), capped at 1",
+      "    (managers sharing a block can both report it); institutions_float_pct",
+      "    divides by shares outstanding less insider shares. On error: {error:",
+      "    <code>, detail, symbol}."
+    ],
+    "params": [
+      "period",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_proposed_insider_sales": {
+    "doc_lines": [
+      "Form 144 notices for a US company: an insider's or affiliate's planned sale of",
+      "restricted or control shares, filed when the order is placed, before any Form 4.",
+      "A notice does not oblige the sale. EDGAR holds notices from 2023-04-13 on.",
+      "",
+      "Args:",
+      "    symbol: Ticker, e.g. \"AAPL\".",
+      "    limit: Notices to return (default 50, at most 100).",
+      "    offset: Notices to skip. Next page: offset=next_offset with the",
+      "        answer's build. A build replaced since fails with error rebuilt;",
+      "        start again at offset 0.",
+      "",
+      "Returns:",
+      "    dict: {symbol, build, notices_total, offset, next_offset, covered_from?,",
+      "    count, data, source}. covered_from, present while older notices still",
+      "    load, is the earliest filing date held.",
+      "    data is a list of {filing_date, seller, seller_cik, relationship,",
+      "    security_class, shares_to_sell, market_value, approx_sale_date,",
+      "    plan_adoption_date, acquired, sold_past_3_months, accession, url, form,",
+      "    amends}, one per notice and security class, newest filed first;",
+      "    next_offset is null on the last page. form is 144 or 144/A; a 144/A",
+      "    restates in full the notice whose accession is amends (null for a 144),",
+      "    so use it in place of that notice. market_value is US dollars; relationship",
+      "    is a list of director, officer, ten_percent_owner, other; acquired is a",
+      "    list of {date, nature, shares}; sold_past_3_months of {date, shares,",
+      "    proceeds}. Dates \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}."
+    ],
+    "params": [
+      "build",
+      "limit",
+      "offset",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
     ]
   },
   "mcp:fundamentals:get_shares_float": {

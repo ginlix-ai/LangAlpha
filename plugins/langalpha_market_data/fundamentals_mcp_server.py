@@ -7,10 +7,12 @@ shape; every other listing, and any CN miss, comes from FMP. A CN read that
 failed, rather than came back empty, still falls back to FMP, but the answer
 then says so (`fallback_from`), and an FMP miss after it is an error.
 Historical valuation, insider trades and technical indicators come from FMP
-alone. The two 13F tools read ginlix-data when it is configured; without it,
-holders come from FMP and a manager's portfolio from EDGAR (set
-EDGAR_IDENTITY to a name and an email). `source` names the vendor that answered, and the envelope around
-`data` is the standard market-data contract (AGENT_CONTRACT.md).
+alone. The ownership tools read LangAlpha Data's SEC store when it is configured;
+without it, 13F holders come from FMP, a manager's portfolio and Form 144
+notices from EDGAR through edgar_engine (set EDGAR_IDENTITY to a name and an
+email), and the mutual fund holders, insider roster and ownership breakdown
+are unavailable. `source` names the vendor that answered, and the envelope
+around `data` is the standard market-data contract (AGENT_CONTRACT.md).
 
 Tools:
 - get_financial_statements: Raw income/balance/cash flow (multi-year)
@@ -23,6 +25,10 @@ Tools:
 - get_insider_trades: Insider trading transactions and aggregate stats
 - get_institutional_holders: 13F managers holding a US stock, a page at a time
 - get_manager_holdings: One 13F manager's portfolio and its changes, a page at a time
+- get_mutual_fund_holders: N-PORT funds holding a US-listed security, a page at a time
+- get_insider_roster: Insiders of a US company and the shares each last reported
+- get_ownership_breakdown: Insider and 13F institution shares as fractions of shares outstanding
+- get_proposed_insider_sales: Form 144 notices of proposed insider sales, a page at a time
 - get_dividends_and_splits: Dividend history and stock split history
 - get_shares_float: Shares float, outstanding shares, and float percentage
 - get_key_executives: Key executives with title and compensation

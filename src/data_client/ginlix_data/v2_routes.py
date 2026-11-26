@@ -56,7 +56,7 @@ def path_segment(value: object) -> str:
 def _page_params(
     params: dict[str, Any], period: str | None, limit: int | None, offset: int, build: str | None
 ) -> dict[str, Any]:
-    """A paged 13F route's query: the period, page size, offset and build the caller set."""
+    """A paged route's query: the period, page size, offset and build the caller set."""
     given = {"period": period, "limit": limit, "offset": offset or None, "build": build}
     return {**params, **{k: v for k, v in given.items() if v is not None}}
 
@@ -196,6 +196,53 @@ class GinlixDataV2Routes:
         None on a 404. A *build* the period no longer serves raises the route's 409."""
         params = _page_params({}, period, limit, offset, build)
         return await self._v2_json(f"/api/v2/data/institutional/filers/{int(cik)}", params)
+
+    async def get_fund_holders_page_v2(
+        self,
+        instrument_key: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        build: str | None = None,
+    ) -> dict[str, Any] | None:
+        """One page of a security's N-PORT fund holders, the route's body (``rows``, ``total``, ``offset``,
+        ``next_offset``, ``build``, ``publisher``), or None when no vendor has the name. A *build* the route
+        no longer serves raises its 409."""
+        params = _page_params({"kind": "mutual_fund_holders"}, None, limit, offset, build)
+        return await self._v2_json(
+            f"/api/v2/data/fundamentals/{path_segment(instrument_key)}", params
+        )
+
+    async def get_form144_page_v2(
+        self,
+        instrument_key: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        build: str | None = None,
+    ) -> dict[str, Any] | None:
+        """One page of an issuer's Form 144 notices, the route's body (``rows``, one per notice and security
+        class; ``total``, ``offset`` and ``next_offset`` count notices; ``build``, the anchor a later page
+        passes back; ``covered_from`` while older notices still load; ``publisher``), or None when no vendor has
+        the name."""
+        params = _page_params({"kind": "proposed_insider_sales"}, None, limit, offset, build)
+        return await self._v2_json(
+            f"/api/v2/data/fundamentals/{path_segment(instrument_key)}", params
+        )
+
+    async def get_insider_roster_v2(self, instrument_key: str) -> dict[str, Any] | None:
+        """An issuer's insider roster, the route's body (``rows``, ``publisher``), or None on a 404."""
+        return await self._v2_json(f"/api/v2/data/insiders/{path_segment(instrument_key)}/roster")
+
+    async def get_ownership_breakdown_v2(
+        self, instrument_key: str, *, period: str | None = None
+    ) -> dict[str, Any] | None:
+        """An issuer's insider and 13F institution shares, the route's body (``data``, ``period``,
+        ``publisher``), or None on a 404."""
+        params = {"period": period} if period else None
+        return await self._v2_json(
+            f"/api/v2/data/ownership/{path_segment(instrument_key)}/breakdown", params
+        )
 
     async def find_filers_v2(self, name: str, *, period: str | None = None) -> dict[str, Any] | None:
         """The 13F filers a manager's name means (``rows`` of ``filer_cik``, ``filer_name``, ``period``, and

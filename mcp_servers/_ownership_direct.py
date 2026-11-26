@@ -1,8 +1,9 @@
-"""The 13F routes answered without ginlix-data: an ``OwnershipReader`` over FMP and EDGAR.
+"""The ownership routes answered without LangAlpha Data: an ``OwnershipReader`` over FMP and EDGAR.
 
-13F holders come from FMP, and a manager's portfolio and its name search from EDGAR through edgar_engine (set
-EDGAR_IDENTITY to a name and an email). Each call returns the body its ginlix-data route would, build null since
-these sources have none, so _ownership answers both builds with the same code.
+13F holders come from FMP, a manager's portfolio and its name search, and Form 144 notices, from EDGAR through
+edgar_engine (set EDGAR_IDENTITY to a name and an email). Each call returns the body its LangAlpha Data route would,
+build null since these sources have none, so _ownership answers both builds with the same code. The N-PORT fund
+holders, the insider roster and the ownership breakdown need LangAlpha Data's SEC store and raise ``client_unavailable``.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from data_client import edgar_13f, edgar_13f_filers
+from data_client import edgar_13f, edgar_13f_filers, edgar_form144
 from data_client.edgar_access import engine_available
 from data_client.fmp import get_fmp_client
 from data_client.fmp import ownership as fmp_ownership
@@ -29,6 +30,16 @@ _FMP_UNAVAILABLE = "FMP client is unavailable"
 _FMP_FAILED = "FMP request failed"
 _EDGAR_FAILED = "EDGAR request failed; a retry may succeed"
 _EDGAR_UNAVAILABLE = "manager holdings are not available in this deployment, so a retry will not help"
+_FORM144_UNAVAILABLE = "proposed insider sales are not available in this deployment, so a retry will not help"
+_NPORT_UNAVAILABLE = "mutual fund holders are not available in this deployment, so a retry will not help"
+_ROSTER_UNAVAILABLE = (
+    "the insider roster is not available in this deployment, so a retry will not help; get_insider_trades lists "
+    "insiders' Form 4 trades"
+)
+_BREAKDOWN_UNAVAILABLE = (
+    "the ownership breakdown is not available in this deployment, so a retry will not help; "
+    "get_institutional_holders gives the 13F holders and get_shares_float the shares outstanding"
+)
 
 
 def _today() -> date:
@@ -65,7 +76,7 @@ def _refuse_build(build: Optional[str], offset: int) -> None:
 
 
 class DirectReader:
-    """The calls of ginlix-data's 13F routes, answered from FMP and EDGAR in the routes' shapes.
+    """The calls of LangAlpha Data's ownership routes, answered from FMP and EDGAR in the routes' shapes.
 
     *build* and *offset* are the manager page a name lookup is for: find_filers_v2 takes neither, so they come here,
     and a later page's build is refused before the name is searched, as it is before a CIK is read."""
@@ -121,3 +132,30 @@ class DirectReader:
                 "filing_date": got["filing_date"], "url": got["url"], "prior_url": got.get("prior_url"),
                 "total": len(got["rows"]), "offset": offset, "next_offset": next_offset, "build": None,
                 "publisher": "sec", "unreadable_url": got.get("unreadable_url")}
+
+    async def get_fund_holders_page_v2(
+        self, instrument_key: str, *, limit: int, offset: int, build: Optional[str],
+    ) -> dict[str, Any]:
+        raise SourceError("client_unavailable", _NPORT_UNAVAILABLE)
+
+    async def get_form144_page_v2(
+        self, instrument_key: str, *, limit: int, offset: int, build: Optional[str],
+    ) -> dict[str, Any]:
+        _require_engine(_FORM144_UNAVAILABLE)
+        _refuse_build(build, offset)
+        ticker = _vendor_symbol(instrument_key)
+        try:
+            got = await edgar_form144.notices(ticker, limit=limit, offset=offset)
+        except Exception:  # noqa: BLE001
+            logger.warning("EDGAR Form 144 read failed for %s", instrument_key, exc_info=True)
+            raise SourceError("upstream_error", _EDGAR_FAILED) from None
+        if got is None:
+            raise SourceError("not_found", f"EDGAR lists no company with ticker {ticker}; check that it is a US-listed "
+                                           "ticker")
+        return {**got, "offset": offset, "build": None, "publisher": "sec"}
+
+    async def get_insider_roster_v2(self, instrument_key: str) -> dict[str, Any]:
+        raise SourceError("client_unavailable", _ROSTER_UNAVAILABLE)
+
+    async def get_ownership_breakdown_v2(self, instrument_key: str, *, period: Optional[str]) -> dict[str, Any]:
+        raise SourceError("client_unavailable", _BREAKDOWN_UNAVAILABLE)

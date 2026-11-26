@@ -983,6 +983,374 @@
         }
       },
       {
+        "name": "get_mutual_fund_holders",
+        "description": "Registered funds (mutual funds, ETFs, closed-end funds) holding a US-listed\nsecurity, from each fund's latest public SEC Form N-PORT report.\nNo money market funds. A fund's report turns public 60 days after its fiscal\nquarter ends, so funds report as of different dates.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\".\n    limit: Holders to return (default 100, at most 500).\n    offset: Holders to skip. Next page: offset=next_offset with the\n        answer's build. A build replaced since fails with error rebuilt;\n        start again at offset 0.\n\nReturns:\n    dict: {symbol, build, holders_total, offset, next_offset, count, data,\n    source}.\n    data is a list of {fund, series_id, registrant, shares, value, pctheld,\n    pct_of_fund, pctchange, date_reported, filing_date, accession, url}, most\n    shares first; next_offset is null on the last page. value is US dollars\n    on date_reported; pctheld (of shares outstanding, null for multi-class\n    issuers and ADRs), pct_of_fund (of the fund's net assets) and pctchange\n    (null for a new holder) are fractions; url is the fund's N-PORT filing.\n    Dates \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "limit": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            },
+            "build": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Build"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_mutual_fund_holdersArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "build": {
+              "description": "Build this page was read from; pass it back as build with next_offset.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "holders_total": {
+              "description": "Holders in the whole ranked list.",
+              "type": "integer"
+            },
+            "offset": {
+              "description": "Holders skipped before this page.",
+              "type": "integer"
+            },
+            "next_offset": {
+              "description": "Offset of the next page; null on the last page.",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetMutualFundHoldersOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_insider_roster",
+        "description": "Insiders of a US company (officers, directors, 10% owners) and the shares each\nlast reported holding on SEC Forms 3, 4 and 5.\nNo filing marks an exit, so the roster lists owners who filed in the last two\nyears.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\".\n\nReturns:\n    dict: {symbol, count, data, source}. data is a list of {name, owner_cik,\n    relationship, officer_title, shares_direct, as_of_direct,\n    shares_indirect, as_of_indirect, indirect_detail, latest_transaction,\n    latest_transaction_date, latest_filing_date, url}, most shares (direct\n    plus indirect) first. shares_* are common shares as of the latest report\n    stating them (as_of_*); indirect_detail is a list of {nature, shares};\n    relationship is a list of director, officer, ten_percent_owner, other;\n    latest_transaction is a Form 4 code, e.g. \"S-Sale\"; url is the latest\n    filing. Dates \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_insider_rosterArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetInsiderRosterOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_ownership_breakdown",
+        "description": "The shares of a US company held by insiders (officers and directors, by their\nlast Forms 3, 4 and 5) and by 13F institutions, as fractions of shares\noutstanding, with the institution count.\nFractions are null for multi-class issuers and ADRs, which state no single share\ncount.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\".\n    period: 13F quarter end \"YYYY-MM-DD\"; default the latest quarter at\n        least 3 days past its 45-day filing deadline. Insider shares are the\n        latest reported, whatever the period.\n\nReturns:\n    dict: {symbol, period, count, data, source}. data is {insiders_pct,\n    institutions_pct, institutions_float_pct, institutions_count,\n    insider_shares, institution_shares, shares_outstanding,\n    shares_outstanding_date}. *_pct are fractions (0.66 = 66%), capped at 1\n    (managers sharing a block can both report it); institutions_float_pct\n    divides by shares outstanding less insider shares. On error: {error:\n    <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "period": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Period"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_ownership_breakdownArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "period": {
+              "description": "13F quarter end the institution figures report, \"YYYY-MM-DD\"; insider shares are the latest reported.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetOwnershipBreakdownOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_proposed_insider_sales",
+        "description": "Form 144 notices for a US company: an insider's or affiliate's planned sale of\nrestricted or control shares, filed when the order is placed, before any Form 4.\nA notice does not oblige the sale. EDGAR holds notices from 2023-04-13 on.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\".\n    limit: Notices to return (default 50, at most 100).\n    offset: Notices to skip. Next page: offset=next_offset with the\n        answer's build. A build replaced since fails with error rebuilt;\n        start again at offset 0.\n\nReturns:\n    dict: {symbol, build, notices_total, offset, next_offset, covered_from?,\n    count, data, source}. covered_from, present while older notices still\n    load, is the earliest filing date held.\n    data is a list of {filing_date, seller, seller_cik, relationship,\n    security_class, shares_to_sell, market_value, approx_sale_date,\n    plan_adoption_date, acquired, sold_past_3_months, accession, url, form,\n    amends}, one per notice and security class, newest filed first;\n    next_offset is null on the last page. form is 144 or 144/A; a 144/A\n    restates in full the notice whose accession is amends (null for a 144),\n    so use it in place of that notice. market_value is US dollars; relationship\n    is a list of director, officer, ten_percent_owner, other; acquired is a\n    list of {date, nature, shares}; sold_past_3_months of {date, shares,\n    proceeds}. Dates \"YYYY-MM-DD\". On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "limit": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            },
+            "build": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Build"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_proposed_insider_salesArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "build": {
+              "description": "Anchor of the list this page was read from; pass it back as build with next_offset. Null when the source has none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "notices_total": {
+              "description": "Notices in the whole list; it can count some that pages skip once read (another issuer's, or unreadable).",
+              "type": "integer"
+            },
+            "offset": {
+              "description": "Notices skipped before this page.",
+              "type": "integer"
+            },
+            "next_offset": {
+              "description": "Offset of the next page; null on the last page.",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "covered_from": {
+              "description": "Earliest filing date held while older notices still load; absent once every notice is held.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetProposedInsiderSalesOut",
+          "type": "object"
+        }
+      },
+      {
         "name": "get_dividends_and_splits",
         "description": "Fetch historical dividend payments and stock splits.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type, fallback_from?}. data is\n    {dividends, splits}, each a list, newest first; count is the total\n    across both. dividends fields: date, recordDate, paymentDate,\n    declarationDate, adjDividend (split-adjusted), dividend (as paid), yield\n    (percent, 0.34 = 0.34%), frequency. splits fields: date, numerator,\n    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\".\n    fallback_from: source that failed before FMP answered. On error:\n    {error: <code>, detail, symbol}.\n",
         "inputSchema": {

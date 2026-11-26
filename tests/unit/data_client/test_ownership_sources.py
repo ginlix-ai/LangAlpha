@@ -1,4 +1,4 @@
-"""The open-source build's 13F sources: FMP's holders and EDGAR's portfolios."""
+"""The open-source build's ownership sources: FMP's 13F holders, EDGAR's 13F portfolios and Form 144 notices."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ import asyncio
 import json
 import pathlib
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from data_client import edgar_13f, edgar_13f_filers
+from data_client import edgar_13f, edgar_13f_filers, edgar_form144
 from data_client.edgar_access import DEFAULT_IDENTITY, edgar_identity, engine_available, unknown_company
 from data_client.fmp import ownership
 from data_client.ttl_cache import TtlCache
@@ -485,6 +485,76 @@ async def test_portfolios_are_kept_a_few_at_a_time_and_a_missing_one_never(monke
         await edgar_13f.manager_portfolio(cik, "2026-09-30", "2026-06-30")
     assert reads == [0, 0, 1, 2, 3, 1]
     assert len(edgar_13f._portfolios) == 2
+
+_FORM144 = """<SEC-DOCUMENT>0000222222-24-000001.txt : 20240502
+<SEC-HEADER>
+ACCESSION NUMBER:\t\t0000222222-24-000001
+CONFORMED SUBMISSION TYPE:\t144
+FILED AS OF DATE:\t\t20240502
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>144
+<SEQUENCE>1
+<FILENAME>primary_doc.xml
+<TEXT>
+<XML>
+<?xml version="1.0" encoding="UTF-8"?><edgarSubmission xmlns="http://www.sec.gov/edgar/ownership" xmlns:com="http://www.sec.gov/edgar/common">
+  <headerData><submissionType>144</submissionType>
+    <filerInfo><filer><filerCredentials><cik>0000222222</cik><ccc>XXXXXXXX</ccc></filerCredentials></filer></filerInfo></headerData>
+  <formData>
+    <issuerInfo><issuerCik>0000111111</issuerCik><issuerName>EXAMPLE CORP</issuerName>
+      <nameOfPersonForWhoseAccountTheSecuritiesAreToBeSold>Doe Jane</nameOfPersonForWhoseAccountTheSecuritiesAreToBeSold>
+      <relationshipsToIssuer><relationshipToIssuer>Officer</relationshipToIssuer></relationshipsToIssuer></issuerInfo>
+    <securitiesInformation><securitiesClassTitle>Common</securitiesClassTitle>
+      <noOfUnitsSold>1000</noOfUnitsSold><aggregateMarketValue>25000.00</aggregateMarketValue>
+      <approxSaleDate>05/02/2024</approxSaleDate></securitiesInformation>
+    <securitiesToBeSold><securitiesClassTitle>Common</securitiesClassTitle><acquiredDate>01/15/2020</acquiredDate>
+      <natureOfAcquisitionTransaction>Restricted Stock Vesting</natureOfAcquisitionTransaction>
+      <amountOfSecuritiesAcquired>1000</amountOfSecuritiesAcquired></securitiesToBeSold>
+    <nothingToReportFlagOnSecuritiesSoldInPast3Months>Y</nothingToReportFlagOnSecuritiesSoldInPast3Months>
+    <noticeSignature><noticeDate>05/02/2024</noticeDate><signature>/s/ Jane Doe</signature></noticeSignature>
+  </formData>
+</edgarSubmission>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>"""
+
+
+def test_edgar_notices_take_the_routes_row_shape():
+    from edgar_engine.api import Form144Page
+    from edgar_engine.ownership import parse_form144
+
+    filing = parse_form144(_FORM144)
+    with patch("edgar_engine.get_form144_notices", return_value=Form144Page((filing,), 9, 2, 3)) as read:
+        got = edgar_form144._read("EXMP", 1, 2)
+    assert read.call_args.args == ("EXMP",) and read.call_args.kwargs["offset"] == 2
+    assert (got["total"], got["next_offset"]) == (9, 3)
+    row, = got["rows"]
+    assert row == {
+        "filing_date": "2024-05-02", "seller": "Doe Jane", "seller_cik": "0000222222", "relationship": ["officer"],
+        "security_class": "Common", "shares_to_sell": 1000.0, "market_value": 25000.0, "approx_sale_date": "2024-05-02",
+        "plan_adoption_date": None, "acquired": [{"date": "2020-01-15", "nature": "Restricted Stock Vesting",
+                                                  "shares": 1000.0}],
+        "sold_past_3_months": [], "accession": "0000222222-24-000001",
+        "url": "https://www.sec.gov/Archives/edgar/data/111111/000022222224000001/0000222222-24-000001-index.htm",
+        "form": "144", "amends": None,
+    }
+    amendment = replace(filing, form="144/A", previous_accession="0000222222-24-000000")
+    with patch("edgar_engine.get_form144_notices", return_value=Form144Page((amendment,), 9, 2, 3)):
+        row, = edgar_form144._read("EXMP", 1, 2)["rows"]
+    assert (row["form"], row["amends"]) == ("144/A", "0000222222-24-000000")
+
+
+def test_edgar_notices_of_a_company_edgar_does_not_know_are_none():
+    pytest.importorskip("edgar_engine")
+    from edgar.exceptions import CompanyNotFoundError
+
+    with patch("edgar_engine.get_form144_notices", side_effect=CompanyNotFoundError("ZZZZQX")):
+        assert edgar_form144._read("ZZZZQX", 1, 0) is None
+    with patch("edgar_engine.get_form144_notices", side_effect=RuntimeError("boom")), pytest.raises(RuntimeError):
+        edgar_form144._read("EXMP", 1, 0)
+
 
 def test_a_ttl_cache_is_bounded_expires_and_refuses_none():
     now = [0.0]

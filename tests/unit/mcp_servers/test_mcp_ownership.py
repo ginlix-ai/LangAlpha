@@ -1,4 +1,4 @@
-"""The 13F tools: the shared answers (mcp_servers/_ownership.py), the reader without ginlix-data
+"""The ownership tools: the shared answers (mcp_servers/_ownership.py), the reader without LangAlpha Data
 (mcp_servers/_ownership_direct.py) and the tools over them (mcp_servers/_ownership_tools.py)."""
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from data_client.ginlix_data.v2_routes import GinlixDataV2Routes
 from mcp_servers import _ownership as own
 from mcp_servers import _ownership_direct as direct
 from mcp_servers._envelope import page, page_error
@@ -293,7 +294,8 @@ async def test_a_symbol_that_does_not_resolve_is_refused_before_any_source_is_re
     from mcp_servers import _ownership_tools as tools
 
     with _no_ginlix() as client, patch(f"{_TOOLS}._issuer", return_value=("BAD!", None)):
-        for tool in (tools.get_institutional_holders,):
+        for tool in (tools.get_institutional_holders, tools.get_mutual_fund_holders, tools.get_insider_roster,
+                     tools.get_ownership_breakdown, tools.get_proposed_insider_sales):
             got = await tool("BAD!")
             assert got == {"error": "invalid_argument", "detail": "unknown symbol 'BAD!'; pass a US ticker, e.g. \"AAPL\"",
                            "symbol": "BAD!"}
@@ -394,7 +396,7 @@ async def test_without_langalpha_data_a_name_search_lists_its_real_total():
 
 @pytest.mark.asyncio
 async def test_without_langalpha_data_or_the_engine_edgar_tools_are_client_unavailable():
-    from mcp_servers._ownership_tools import get_manager_holdings
+    from mcp_servers._ownership_tools import get_manager_holdings, get_proposed_insider_sales
 
     with _no_ginlix(), patch(f"{_DIRECT}.engine_available", return_value=False):
         for manager in ("1067983", "Berkshire"):
@@ -402,3 +404,235 @@ async def test_without_langalpha_data_or_the_engine_edgar_tools_are_client_unava
             assert (got["error"], got["manager"], got["detail"]) == (
                 "client_unavailable", manager,
                 "manager holdings are not available in this deployment, so a retry will not help")
+        got = await get_proposed_insider_sales("AUGO")
+        assert (got["error"], got["symbol"]) == ("client_unavailable", "AUGO")
+
+
+@pytest.mark.asyncio
+async def test_without_langalpha_data_the_sec_store_tools_are_unavailable():
+    from mcp_servers._ownership_tools import get_insider_roster, get_mutual_fund_holders, get_ownership_breakdown
+
+    with _no_ginlix():
+        for got in (await get_mutual_fund_holders("AAPL"), await get_insider_roster("AAPL"),
+                    await get_ownership_breakdown("AAPL")):
+            assert (got["error"], got["symbol"]) == ("client_unavailable", "AAPL")
+        assert (await get_mutual_fund_holders("AAPL"))["detail"] == (
+            "mutual fund holders are not available in this deployment, so a retry will not help")
+
+
+@pytest.mark.asyncio
+async def test_without_langalpha_data_notices_come_from_edgar():
+    from mcp_servers._ownership_tools import get_proposed_insider_sales
+
+    page_ = {"rows": [_NOTICE], "total": 168, "next_offset": 7}
+    with _no_ginlix(), patch(f"{_DIRECT}.engine_available", return_value=True), \
+            patch(f"{_DIRECT}.edgar_form144.notices", AsyncMock(return_value=page_)) as read:
+        got = await get_proposed_insider_sales("AUGO", limit=7)
+        assert (got["notices_total"], got["offset"], got["next_offset"], got["count"], got["source"]) == (
+            168, 0, 7, 1, "sec")
+        assert list(got["data"][0]) == list(own.NOTICE_FIELDS)
+        read.assert_awaited_once_with("AUGO", limit=7, offset=0)
+        read.return_value = {"rows": [], "total": 168, "next_offset": 21}  # a page of only seller-side notices
+        empty = await get_proposed_insider_sales("AUGO", limit=7, offset=7)
+        assert (empty["data"], empty["count"], empty["offset"], empty["next_offset"], empty["build"]) == (
+            [], 0, 7, 21, None)
+        read.return_value = page_
+        assert (await get_proposed_insider_sales("AUGO", limit=101))["error"] == "invalid_argument"
+        read.return_value = None  # EDGAR knows no such company
+        assert (await get_proposed_insider_sales("ZZZZQX")) == {
+            "error": "not_found", "symbol": "ZZZZQX",
+            "detail": "EDGAR lists no company with ticker ZZZZQX; check that it is a US-listed ticker"}
+        read.side_effect = RuntimeError("boom")
+        assert (await get_proposed_insider_sales("AUGO"))["error"] == "upstream_error"
+
+
+@pytest.mark.asyncio
+async def test_without_langalpha_data_a_later_notices_page_asked_with_an_anchor_is_rebuilt():
+    from mcp_servers._ownership_tools import get_proposed_insider_sales
+
+    with _no_ginlix(), patch(f"{_DIRECT}.engine_available", return_value=True), \
+            patch(f"{_DIRECT}.edgar_form144.notices", AsyncMock()) as read:
+        assert (await get_proposed_insider_sales("AUGO", offset=50, build="2026-11-20.0001.ab12cd34")) == {
+            "error": "rebuilt", "symbol": "AUGO",
+            "detail": "the build passed was replaced since the last page; start again at offset 0 with no build"}
+        read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_with_langalpha_data_every_tool_reads_its_routes():
+    from mcp_servers import _ownership_tools as tools
+
+    client = _reader(get_fund_holders_page_v2={"rows": [_FUND], "total": 1, "build": "n1", "publisher": "sec"},
+                     get_insider_roster_v2={"rows": [_ROSTER], "publisher": "sec"})
+    client.ensure.return_value = True
+    with patch(f"{_TOOLS}.get_ginlix_mcp_client", return_value=client):
+        got = await tools.get_mutual_fund_holders("AAPL", limit=1, offset=0, build="n1")
+        assert got["build"] == "n1"
+        client.get_fund_holders_page_v2.assert_awaited_once_with("AAPL.XNAS", limit=1, offset=0, build="n1")
+        assert (await tools.get_insider_roster("AAPL"))["count"] == 1
+
+# -- the four ownership tools over LangAlpha Data's routes ---------------------------
+
+
+_NOTICE = {"filing_date": "2026-08-03", "seller": "S", "seller_cik": "0000000002", "relationship": ["officer"],
+           "security_class": "Common", "shares_to_sell": 100.0, "market_value": 2500.5, "approx_sale_date": "2026-08-04",
+           "plan_adoption_date": None, "acquired": [{"date": "2020-01-02", "nature": "Grant", "shares": 100.0}],
+           "sold_past_3_months": [], "accession": "0000000002-26-000001",
+           "url": "https://www.sec.gov/Archives/edgar/data/1/000000000226000001/0000000002-26-000001-index.htm",
+           "form": "144", "amends": None}
+_FUND = {"fund": "F", "series_id": "S000000001", "registrant": "R", "shares": 7.0, "value": 9.5, "pctheld": None,
+         "pct_of_fund": 0.01, "pctchange": None, "date_reported": "2026-09-30", "filing_date": "2026-11-20",
+         "accession": "a", "url": "u-n", "cik": "0000000003", "cusip": "037833100"}
+_ROSTER = {"name": "N", "owner_cik": "0000000004", "relationship": ["director"], "officer_title": None,
+           "shares_direct": 10.0, "as_of_direct": "2026-05-01", "shares_indirect": 4607790.5,
+           "as_of_indirect": "2026-04-15", "indirect_detail": [{"nature": "By Trust", "shares": 4607790.5}],
+           "latest_transaction": "S-Sale", "latest_transaction_date": "2026-05-01",
+           "latest_filing_date": "2026-05-03", "url": "u"}
+_BREAKDOWN = {"insiders_pct": 0.000584, "institutions_pct": 0.662977, "institutions_float_pct": 0.663364,
+              "institutions_count": 6112, "insider_shares": 8524884.0, "institution_shares": 9675604519.0,
+              "shares_outstanding": 14594180000.0, "shares_outstanding_date": "2026-07-18"}
+
+
+@pytest.mark.asyncio
+async def test_fund_holders_map_the_route_to_the_documented_envelope():
+    body = {"instrument_key": "AAPL.XNAS", "kind": "mutual_fund_holders", "publisher": "sec", "rows": [_FUND],
+            "total": 2170, "offset": 100, "next_offset": 101, "build": "n1"}
+    reader = _reader(get_fund_holders_page_v2=body)
+    got = await own.fund_holders_from_route(reader, "AAPL.XNAS", "AAPL", limit=1, offset=100, build="n1")
+    assert set(got) == {"symbol", "build", "holders_total", "offset", "next_offset", "count", "data", "source"}
+    assert (got["build"], got["holders_total"], got["offset"], got["next_offset"], got["count"], got["source"]) == (
+        "n1", 2170, 100, 101, 1, "sec")
+    assert list(got["data"][0]) == list(own.FUND_HOLDER_FIELDS) and got["data"][0]["shares"] == 7
+    assert got["data"][0]["url"] == "u-n"
+    reader.get_fund_holders_page_v2.assert_awaited_once_with("AAPL.XNAS", limit=1, offset=100, build="n1")
+    assert (await own.fund_holders_from_route(AsyncMock(), "K", "K", limit=501, offset=0, build=None))["error"] == \
+        "invalid_argument"
+
+
+@pytest.mark.asyncio
+async def test_a_fund_holders_page_of_a_replaced_build_is_rebuilt_with_no_period_to_keep():
+    got = await own.fund_holders_from_route(_reader(get_fund_holders_page_v2=_status(409)), "K", "K", limit=5,
+                                            offset=5, build="n1")
+    assert (got["error"], got["detail"]) == (
+        "rebuilt", "the build passed was replaced since the last page; start again at offset 0 with no build")
+
+
+@pytest.mark.asyncio
+async def test_a_notices_page_of_a_replaced_build_is_rebuilt_with_no_period_to_keep():
+    got = await own.notices_from_route(_reader(get_form144_page_v2=_status(409)), "K", "K", limit=5, offset=5,
+                                       build="b1")
+    assert (got["error"], got["detail"]) == (
+        "rebuilt", "the build passed was replaced since the last page; start again at offset 0 with no build")
+
+
+@pytest.mark.asyncio
+async def test_the_n_port_build_reaches_the_route_and_its_409():
+    class Routes(GinlixDataV2Routes):
+        async def _v2_get(self, path, params=None, *, user_id=None):
+            self.params = params
+            request = httpx.Request("GET", f"http://gd{path}")
+            if params.get("build") != "n2":
+                return httpx.Response(409, json={"detail": "replaced"}, request=request)
+            return httpx.Response(200, json={"rows": [], "total": 0, "build": "n2"}, request=request)
+
+    routes = Routes()
+    got = await own.fund_holders_from_route(routes, "AAPL.XNAS", "AAPL", limit=5, offset=5, build="n1")
+    assert got["error"] == "rebuilt" and routes.params["build"] == "n1"
+    assert (await own.fund_holders_from_route(routes, "AAPL.XNAS", "AAPL", limit=5, offset=5, build="n2"))[
+        "build"] == "n2"
+
+
+@pytest.mark.asyncio
+async def test_notices_count_notices_and_drop_the_route_only_keys():
+    body = {"instrument_key": "META.XNAS", "kind": "proposed_insider_sales", "publisher": "sec",
+            "rows": [_NOTICE, {**_NOTICE, "security_class": "Class B"}], "total": 20, "offset": 0, "next_offset": 1}
+    reader = _reader(get_form144_page_v2={**body, "build": "2026-08-03.0000000002-26-000001", "covered_from": None})
+    got = await own.notices_from_route(reader, "META.XNAS", "META", limit=1, offset=0, build=None)
+    assert set(got) == {"symbol", "build", "notices_total", "offset", "next_offset", "count", "data", "source"}
+    assert (got["build"], got["notices_total"], got["next_offset"], got["count"]) == (
+        "2026-08-03.0000000002-26-000001", 20, 1, 2)
+    assert list(got["data"][0]) == list(own.NOTICE_FIELDS) and got["data"][0]["shares_to_sell"] == 100
+    reader.get_form144_page_v2.assert_awaited_once_with("META.XNAS", limit=1, offset=0, build=None)
+    assert (await own.notices_from_route(AsyncMock(), "K", "K", limit=101, offset=0, build=None))["error"] == \
+        "invalid_argument"
+
+
+@pytest.mark.asyncio
+async def test_notices_pass_their_anchor_back_and_say_how_far_back_a_first_load_reaches():
+    loading = {"rows": [_NOTICE], "total": 3, "offset": 1, "next_offset": 2, "publisher": "sec",
+               "build": "2026-08-03.0000000002-26-000001", "covered_from": "2026-08-01"}
+    reader = _reader(get_form144_page_v2=loading)
+    got = await own.notices_from_route(reader, "META.XNAS", "META", limit=1, offset=1,
+                                       build="2026-08-03.0000000002-26-000001")
+    assert (got["build"], got["covered_from"]) == ("2026-08-03.0000000002-26-000001", "2026-08-01")
+    reader.get_form144_page_v2.assert_awaited_once_with("META.XNAS", limit=1, offset=1,
+                                                        build="2026-08-03.0000000002-26-000001")
+
+    class Routes(GinlixDataV2Routes):
+        async def _v2_get(self, path, params=None, *, user_id=None):
+            self.params = params
+            return httpx.Response(200, json=loading, request=httpx.Request("GET", f"http://gd{path}"))
+
+    routes = Routes()
+    await own.notices_from_route(routes, "META.XNAS", "META", limit=1, offset=1, build="2026-08-03.x")
+    assert (routes.params["build"], routes.params["offset"]) == ("2026-08-03.x", 1)
+
+
+@pytest.mark.asyncio
+async def test_the_roster_and_the_breakdown_map_the_route():
+    roster = await own.roster_from_route(
+        _reader(get_insider_roster_v2={"kind": "insider_roster", "publisher": "sec", "rows": [_ROSTER]}),
+        "JPM.XNYS", "JPM")
+    assert set(roster) == {"symbol", "count", "data", "source"} and roster["count"] == 1
+    assert list(roster["data"][0]) == list(own.ROSTER_FIELDS) and roster["data"][0]["shares_indirect"] == 4607790.5
+    reader = _reader(get_ownership_breakdown_v2={"kind": "ownership_breakdown", "period": "2026-06-30",
+                                                 "publisher": "sec", "data": _BREAKDOWN})
+    got = await own.breakdown_from_route(reader, "AAPL.XNAS", "AAPL", period=None)
+    assert set(got) == {"symbol", "period", "count", "data", "source"}
+    assert (got["period"], got["count"], list(got["data"])) == ("2026-06-30", 1, list(own.BREAKDOWN_FIELDS))
+    assert got["data"]["institutions_count"] == 6112 and got["data"]["insider_shares"] == 8524884
+    reader.get_ownership_breakdown_v2.assert_awaited_once_with("AAPL.XNAS", period=None)
+    assert (await own.breakdown_from_route(AsyncMock(), "K", "K", period="2026-05-31"))["error"] == \
+        "invalid_argument"
+    empty = await own.breakdown_from_route(_reader(get_ownership_breakdown_v2={"data": None}), "K", "K", period=None)
+    assert (empty["error"], empty["symbol"]) == ("not_found", "K")
+    assert empty["detail"] == "no SEC ownership data is stored for K; check that it is a US-listed ticker"
+    for body in ({"data": None}, None):
+        missing = await own.breakdown_from_route(_reader(get_ownership_breakdown_v2=body), "K", "K",
+                                                 period="2026-09-30")
+        assert (missing["error"], missing["detail"]) == ("not_found", (
+            "no SEC ownership data is stored for K for 2026-09-30; pass another quarter end as period, or check "
+            "that K is a US-listed ticker"))
+    assert (await own.roster_from_route(_reader(get_insider_roster_v2=None), "K", "K"))["error"] == "not_found"
+
+
+class _Routes(GinlixDataV2Routes):
+    """The real route calls over a canned answer, so a test sees what _v2_json makes of a status."""
+
+    def __init__(self, status: int, detail: str, **body):
+        self.status, self.body = status, {"detail": detail, **body}
+
+    async def _v2_get(self, path, params=None, *, user_id=None):
+        return httpx.Response(self.status, json=self.body, request=httpx.Request("GET", f"http://gd{path}"))
+
+
+async def _every_route(reader) -> list[dict]:
+    return [
+        await own.holders_from_route(reader, "AAPL.XNAS", "AAPL", period=None, limit=5, offset=0, build=None),
+        await own.manager_from_route(reader, "1067983", period=None, limit=5, offset=0, build=None),
+        await own.fund_holders_from_route(reader, "AAPL.XNAS", "AAPL", limit=5, offset=0, build=None),
+        await own.notices_from_route(reader, "AAPL.XNAS", "AAPL", limit=5, offset=0, build=None),
+        await own.roster_from_route(reader, "AAPL.XNAS", "AAPL"),
+        await own.breakdown_from_route(reader, "AAPL.XNAS", "AAPL", period=None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_not_ready_503s_detail_reaches_the_agent_word_for_word():
+    detail = ("Mutual fund holders are still loading and are usually complete within a day. "
+              "Answer without them for now and retry later.")
+    answers = await _every_route(_Routes(503, detail, reason="not_ready"))
+    assert [(a["error"], a["detail"]) for a in answers] == [("upstream_error", detail)] * 6
+    other = await _every_route(_Routes(503, "Every provider failed for fund_holders: sec: UpstreamError"))
+    assert [(a["error"], a["detail"]) for a in other] == [
+        ("upstream_error", "ownership data request failed (503); a retry may succeed")] * 6
