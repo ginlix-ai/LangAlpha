@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
@@ -29,6 +29,7 @@ from langgraph.channels import DeltaChannel
 
 from ptc_agent.agent.claude_code.relay import anthropic_content
 from ptc_agent.agent.pending_calls import pending_calls
+from src.llms.claude_code import COMPUTER_LOST, ClaudeTurnFailed, computer_lost
 
 SESSION_SNAPSHOT_FREQUENCY = 250
 #: How long a step waits for the CLI's records behind the messages it commits.
@@ -321,11 +322,53 @@ class SessionState(TypedDict):
     claude_session: NotRequired[Annotated[SessionRecords, session_channel()]]
 
 
+class Reach:
+    """Whether the CLI can be reached now: off while its transport reattaches
+    after a lost connection (``SSHTransport``), when nothing it would
+    report can arrive, and for good once the transport gave up (``gone``).
+    ``probe``, set by a transport that can ask, says whether the machine
+    still answers, for a wait that ran out with the CLI in reach."""
+
+    def __init__(self) -> None:
+        self.up = asyncio.Event()
+        self.up.set()
+        #: How many times the CLI has gone out of reach.
+        self.drops = 0
+        #: Why the transport gave up reaching the CLI, once it has.
+        self.failure: BaseException | None = None
+        self.probe: Callable[[], Awaitable[bool]] | None = None
+
+    def lost(self) -> None:
+        """Out of reach until ``back``; never once the transport gave up, whose
+        failure the waits must still find."""
+        if self.failure is None and self.up.is_set():
+            self.drops += 1
+            self.up.clear()
+
+    def back(self) -> None:
+        self.up.set()
+
+    def gone(self, failure: BaseException) -> None:
+        self.failure = failure
+        self.up.set()
+
+    def still(self, drops: int) -> bool:
+        """Whether the CLI has stayed in reach since it had gone out of it
+        ``drops`` times, the transport not having given up."""
+        return self.failure is None and self.drops == drops and self.up.is_set()
+
+    async def answers(self) -> bool:
+        """Whether the machine still answers (``probe``); a probe that finds
+        it does not also takes the CLI out of reach, as a lost connection would."""
+        return self.probe is None or await self.probe()
+
+
 class Arrivals:
     """Values the CLI's side reported, by key, and a wait for the ones a step needs."""
 
-    def __init__(self, what: str) -> None:
+    def __init__(self, what: str, reach: Reach) -> None:
         self._what = what
+        self._reach = reach
         self._got: dict[str, str] = {}
         self._changed = asyncio.Condition()
 
@@ -335,18 +378,39 @@ class Arrivals:
             self._changed.notify_all()
 
     async def wait(self, keys: Sequence[str], timeout: float) -> list[str]:
-        """The value of each key, once all have arrived; ``SessionDrift`` if they don't in time."""
+        """The value of each key, once all have arrived; ``SessionDrift`` if
+        they don't in time. A wait the CLI went out of reach during is given
+        the time again once it is back: what it would report could not come.
+        One that ran out first asks whether the machine still answers
+        (``Reach.answers``). Its time starts only with the CLI in reach. Once
+        the transport gave up, the wait ends with its failure: the turn's
+        lost computer, else a drift."""
 
         async def ready() -> None:
             async with self._changed:
                 await self._changed.wait_for(lambda: all(k in self._got for k in keys))
 
-        try:
-            await asyncio.wait_for(ready(), timeout)
-        except TimeoutError:
-            missing = [k for k in keys if k not in self._got]
-            raise SessionDrift(f"{self._what} {missing} did not arrive within {timeout:g}s") from None
-        return [self._got[k] for k in keys]
+        def missing() -> list[str]:
+            return [k for k in keys if k not in self._got]
+
+        while True:
+            if missing():
+                while not self._reach.up.is_set():
+                    await self._reach.up.wait()
+                if (failure := self._reach.failure) is not None:
+                    if (lost := computer_lost(failure)) is not None:
+                        raise ClaudeTurnFailed(COMPUTER_LOST, str(lost)) from failure
+                    raise SessionDrift(f"{self._what} {missing()} did not arrive: the CLI's connection ended") from failure
+            drops = self._reach.drops
+            try:
+                await asyncio.wait_for(ready(), timeout)
+                return [self._got[k] for k in keys]
+            except TimeoutError:
+                if self._reach.still(drops) and await self._reach.answers():
+                    if not missing():
+                        return [self._got[k] for k in keys]
+                    if self._reach.still(drops):
+                        raise SessionDrift(f"{self._what} {missing()} did not arrive within {timeout:g}s") from None
 
 
 class CheckpointSessionStore:
@@ -371,14 +435,16 @@ class CheckpointSessionStore:
     def __init__(self) -> None:
         #: (session id, record), in the order the CLI wrote them.
         self._pending: list[tuple[str, dict[str, Any]]] = []
-        self.arrived = Arrivals("session records")
+        #: Whether the CLI can be reached, which its transport keeps.
+        self.reach = Reach()
+        self.arrived = Arrivals("session records", self.reach)
         #: The record of each tool result, by tool use id, including the ones
         #: the CLI writes without saying so on its stream (a cut-off call's).
-        self.results = Arrivals("tool result records")
+        self.results = Arrivals("tool result records", self.reach)
         #: Each result's (record, block), by tool use id.
         self.result_blocks: dict[str, tuple[str, dict[str, Any]]] = {}
         #: The record of each call a hook deferred, by tool use id.
-        self.deferrals = Arrivals("deferred call records")
+        self.deferrals = Arrivals("deferred call records", self.reach)
 
     async def append(self, key: dict[str, Any], entries: list[dict[str, Any]]) -> None:
         if key.get("subpath"):

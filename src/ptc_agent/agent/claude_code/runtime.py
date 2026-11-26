@@ -122,7 +122,7 @@ from ptc_agent.agent.transcript.sender import name_senders
 from ptc_agent.agent.transcript.store import TranscriptTarget
 from ptc_agent.agent.prompts import release
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
-from src.llms.claude_code import ClaudeTurnFailed, PlanStopped, another_model_replied_last, last_reply_index
+from src.llms.claude_code import ClaudeTurnFailed, PlanStopped, another_model_replied_last, computer_lost, last_reply_index
 from src.llms.model_identity import CATALOG_MODEL_KEY
 from src.tools.secretary.approvals import StandingApprovalState
 
@@ -906,7 +906,7 @@ class ClaudeTurn:
             held = await self._compact(state)
         except BaseException as e:
             context_signal("summarize", "error", error=str(e))
-            if not isinstance(e, Exception):
+            if not isinstance(e, Exception) or computer_lost(e) is not None:
                 raise
             logger.warning("[ClaudeCode] the session's compaction failed; the turn runs on its pin", exc_info=True)
             return []
