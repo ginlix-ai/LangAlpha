@@ -249,3 +249,14 @@ class TestStopper:
         assert (asked_for(row), is_user_stop(row), is_suspension_stop(row)) == (True, False, True)
         member = self._stopped(stopped_by_member=True, cancelled_by_user=True)
         assert (is_user_stop(member), is_suspension_stop(member)) == (True, False)
+
+    def test_a_run_end_names_a_suspension_or_a_lost_computer_and_never_the_users_stop(self):
+        """Live and replayed stops read the same rule, so they cannot drift."""
+        from src.server.contracts.status import run_end_stopper
+
+        assert run_end_stopper(self._stopped(stopped_by_suspension=True)) == "suspension"
+        assert run_end_stopper(self._stopped(interrupted_by="computer_lost", interrupted_by_restart=True)) == "computer_lost"
+        assert run_end_stopper(self._stopped(interrupted_by="computer_lost")) == "computer_lost"
+        assert run_end_stopper(self._stopped(interrupted_by="computer_lost", cancelled_by_user=True)) is None
+        assert run_end_stopper(self._stopped(cancelled_by_user=True)) is None
+        assert run_end_stopper({"status": "error", "metadata": {"interrupted_by": "computer_lost"}}) is None

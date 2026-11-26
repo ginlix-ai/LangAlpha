@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_RESUME_TTL
+from src.llms.claude_code import COMPUTER_LOST
+from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_REASON_META, RESTART_RESUME_TTL
 from src.server.services.report_back import notify_turn, restart
 from src.server.services.report_back.notify_turn import NotOwed
 from src.server.services.runs.pending_input import PENDING_INPUT_KEY
@@ -160,6 +161,67 @@ def test_the_resume_message_for_an_interrupted_turn():
         "from that turn, check whether it already took effect.\n"
         "</system>"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_lost_its_computer_is_resumed_saying_so():
+    verdict = await _verdict(_state(**{RESTART_REASON_META: COMPUTER_LOST}))
+    assert isinstance(verdict, restart.OwedResume) and verdict.computer_lost
+    assert verdict.message(steered=False) == (
+        "<system>\n"
+        "Your previous turn was paused because the connection to the computer "
+        "running it was lost. Continue where you left off. Before repeating a "
+        "tool call from that turn, check whether it already took effect.\n"
+        "</system>"
+    )
+    assert not (await _verdict(_state())).computer_lost
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resumes_lost_computer, owed",
+    [(True, False), (False, True)],
+    ids=["its-resume-lost-it-again", "another-turn-lost-it"],
+)
+async def test_a_resume_that_loses_its_computer_again_is_not_resumed(resumes_lost_computer, owed):
+    """A machine that keeps dropping must not resume without end: the
+    resume of a lost computer's turn that loses it again stops there. Any
+    other turn that loses it, the user's or a report-back's, is resumed."""
+    state = {**_state(**{RESTART_REASON_META: COMPUTER_LOST}), "resumes_lost_computer": resumes_lost_computer}
+    verdict = await _verdict(state)
+    assert isinstance(verdict, restart.OwedResume) is owed
+    if not owed:
+        assert isinstance(verdict, NotOwed) and "lost it again" in verdict.reason
+
+
+@pytest.mark.asyncio
+async def test_a_resume_that_lost_its_computer_again_still_offers_back_the_subagents_it_stopped():
+    """Its stop took them down for a resume to offer back; declining the turn
+    must not leave that work killed with no word to the agent."""
+    state = {
+        **_state(**{RESTART_REASON_META: COMPUTER_LOST, PENDING_INPUT_KEY: {"checkpoint_id": "cp-1"}}),
+        "resumes_lost_computer": True,
+    }
+    verdict = await _verdict(state, [{**_TASK, "parent_run_id": "run-1"}])
+    assert isinstance(verdict, restart.OwedResume)
+    assert not verdict.interrupted and verdict.retry_run_id is None
+    assert verdict.message(steered=False) == (
+        "<system>\n"
+        "A lost connection to the computer paused these background subagents before they finished:\n"
+        "- Task-abc123 (research): Pull the 10-K\n"
+        "Their prior work is preserved. Resume each one still needed with "
+        'Task(action="resume", task_id=...).\n'
+        "</system>"
+    )
+
+
+def test_a_lost_computers_resume_says_the_lost_connection_paused_its_subagents():
+    message = restart.OwedResume(
+        user_id="u-1", workspace_id="ws-1", interrupted=True,
+        tasks=(restart.StoppedTask(**_TASK),), computer_lost=True,
+    ).message(steered=False)
+    assert "\nThe lost connection also paused these background subagents before they finished:\n" in message
+    assert "deployment" not in message
 
 
 def test_the_resume_message_lists_the_stopped_subagents():

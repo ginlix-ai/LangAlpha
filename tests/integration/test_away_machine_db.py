@@ -20,10 +20,18 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
+from src.server.contracts.status import (
+    COMPUTER_LOST_REASON,
+    RESTART_INTERRUPTED_META,
+    RESTART_REASON_META,
+    RESTART_RESUME_TTL,
+)
 from src.server.database import automation_executions as ex
 from src.server.database import ssh_tunnels as tunnels_db
 from src.server.database.runs import command_runs as cr
 from src.server.database.runs import outbox as ob
+from src.server.database.runs import restart_resume as rr_db
+from src.server.database.runs.hook_jobs import RESTART_RESUME_HOOK
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -1150,3 +1158,92 @@ async def test_the_stand_ins_computer_lists_homes_threads_at_the_stand_ins_folde
         async with test_db_pool.connection() as conn:
             await conn.execute("DELETE FROM conversation_threads WHERE workspace_id = %s", (home_id,))
             await conn.execute("DELETE FROM workspaces WHERE user_id = %s", (machine.user_id,))
+
+
+async def _run(pool, thread_id: str, turn_index: int, metadata: dict) -> str:
+    run_id = str(uuid.uuid4())
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO conversation_responses (conversation_response_id,"
+            " conversation_thread_id, turn_index, status, metadata, created_at)"
+            " VALUES (%s, %s, %s, 'in_progress', %s::jsonb, NOW())",
+            (run_id, thread_id, turn_index, json.dumps(metadata)),
+        )
+        await conn.execute(
+            "UPDATE conversation_responses SET status = 'cancelled' WHERE conversation_response_id = %s",
+            (run_id,),
+        )
+    return run_id
+
+
+async def _dispatched(pool, thread_id: str, hook_type: str, payload: dict) -> None:
+    """A job that posted its turn and is done, as the report-back executor leaves it."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO hook_outbox (conversation_thread_id, hook_type, payload,"
+            " ordering_key, idempotency_key, status, completed_at)"
+            " VALUES (%s, %s, %s::jsonb, %s, %s, 'done', NOW())",
+            (thread_id, hook_type, json.dumps(payload), f"{hook_type}:{thread_id}", uuid.uuid4().hex),
+        )
+
+
+async def test_a_restarts_resume_past_its_ttl_is_released_with_the_machine_away(
+    machine, test_db_pool
+):
+    """Its executor declines it then, so its stop settles and says why now,
+    not once the machine is back or a week on. One within its TTL waits."""
+    await machine.seen(timedelta(hours=2))
+    stale = await _parked(
+        test_db_pool, machine, RESTART_RESUME_HOOK,
+        payload={"run_id": str(uuid.uuid4())}, ordering_key=f"stale:{machine.thread_id}",
+    )
+    fresh = await _parked(
+        test_db_pool, machine, RESTART_RESUME_HOOK,
+        payload={"run_id": str(uuid.uuid4())}, ordering_key=f"fresh:{machine.thread_id}",
+    )
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE hook_outbox SET created_at = NOW() - make_interval(secs => %s)"
+            " WHERE hook_outbox_id = %s",
+            (RESTART_RESUME_TTL.total_seconds() + 60, stale),
+        )
+
+    released = {str(r["hook_outbox_id"]) for r in await ob.release_for_reachable_computers()}
+
+    assert stale in released and fresh not in released
+    assert (await _job(test_db_pool, stale))["waiting"] is False
+    assert (await _job(test_db_pool, fresh))["waiting"] is True
+
+
+async def test_a_machine_gone_a_week_leaves_a_restarts_resume_to_its_executor(
+    machine, test_db_pool
+):
+    """Closed here, its stop would settle outside the executor and its retries."""
+    await machine.seen(timedelta(days=8))
+    job = await _parked(test_db_pool, machine, RESTART_RESUME_HOOK, payload={"run_id": str(uuid.uuid4())})
+
+    assert job not in {str(r["hook_outbox_id"]) for r in await ob.close_for_lost_computers()}
+    assert (await _job(test_db_pool, job))["status"] == "pending"
+
+
+async def test_a_run_resumes_a_lost_computer_only_when_that_resume_posted_it(
+    machine, test_db_pool
+):
+    """The resume cap tells a lost computer's resume from any other turn that
+    loses the computer after it: a report-back's, or the resume of a deploy."""
+    lost = {RESTART_INTERRUPTED_META: True, RESTART_REASON_META: COMPUTER_LOST_REASON}
+    first = await _run(test_db_pool, machine.thread_id, 0, {RESTART_REASON_META: COMPUTER_LOST_REASON})
+    resumed = await _run(test_db_pool, machine.thread_id, 1, lost)
+    reported = await _run(test_db_pool, machine.thread_id, 2, lost)
+    deployed = await _run(test_db_pool, machine.thread_id, 3, {})
+    after_deploy = await _run(test_db_pool, machine.thread_id, 4, lost)
+    await _dispatched(test_db_pool, machine.thread_id, RESTART_RESUME_HOOK, {"run_id": first, "dispatched_run_id": resumed})
+    await _dispatched(test_db_pool, machine.thread_id, "task_report_back", {"run_id": first, "dispatched_run_id": reported})
+    await _dispatched(test_db_pool, machine.thread_id, RESTART_RESUME_HOOK, {"run_id": deployed, "dispatched_run_id": after_deploy})
+
+    async def resumes(run_id: str) -> bool:
+        return (await rr_db.read_resume_state(machine.thread_id, run_id))["resumes_lost_computer"]
+
+    assert await resumes(resumed) is True
+    assert await resumes(reported) is False
+    assert await resumes(after_deploy) is False
