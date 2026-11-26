@@ -28,8 +28,9 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
-from langgraph.config import get_config, get_stream_writer
+from langgraph.config import get_stream_writer
 
+from ptc_agent.agent.middleware._utils import configurable
 from ptc_agent.agent.middleware.provenance.body_store import (
     drain_body_writes,
     schedule_body_write,
@@ -271,13 +272,6 @@ def _is_error_result(result: Any) -> bool:
     return False
 
 
-def _configurable() -> dict[str, Any]:
-    try:
-        return get_config().get("configurable") or {}
-    except RuntimeError:
-        return {}  # outside a runnable context: no run to report into
-
-
 def _main_thread_id() -> str | None:
     """The thread a main agent's call runs in; None for a subagent's."""
     from ptc_agent.agent.middleware.background_subagent.context import (
@@ -286,7 +280,7 @@ def _main_thread_id() -> str | None:
 
     if current_background_agent_id.get():
         return None
-    thread_id = _configurable().get("thread_id")
+    thread_id = configurable().get("thread_id")
     return str(thread_id) if thread_id else None
 
 
@@ -433,7 +427,7 @@ class ProvenanceMiddleware(AgentMiddleware):
         try:
             state = getattr(request, "state", None) or {}
             await self._emit_commands(
-                reported_commands(state.get("messages") or [], _configurable())
+                reported_commands(state.get("messages") or [], configurable())
             )
         except Exception:
             logger.warning(
