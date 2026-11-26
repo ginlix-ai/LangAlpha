@@ -1,4 +1,5 @@
 import { createContext, useMemo, useState, useSyncExternalStore, type RefCallback } from 'react';
+import type { DockFloatState } from './useDockFloat';
 
 /**
  * What a file tab needs to take the chat's composer while the chat is out of
@@ -23,6 +24,9 @@ export interface ComposerDock {
   /** The height, in px, the composer's stack is expected to take at the
    *  file's foot, for the room kept for it until it arrives. */
   expectedHeight: () => number;
+  /** On a wide screen the composer floats over the file, and folds away
+   *  from it (useDockFloat); on a phone it is null and takes room below. */
+  float: DockFloatState | null;
 }
 
 export const ComposerDockContext = createContext<ComposerDock | null>(null);
@@ -121,11 +125,12 @@ function createPlaces(): Places {
  * knows where its comments go. `docked` is whether the composer is at a
  * file's foot now.
  */
-export function useComposerDock({ threadId, open, taken, knownFiles }: {
+export function useComposerDock({ threadId, open, taken, knownFiles, float }: {
   threadId: string | undefined;
   open: boolean;
   taken: boolean;
   knownFiles: ReadonlySet<string>;
+  float: DockFloatState | null;
 }): {
   context: ComposerDock | null;
   host: HTMLElement;
@@ -136,8 +141,8 @@ export function useComposerDock({ threadId, open, taken, knownFiles }: {
   const { host, home, holdAt, expectedHeight } = places;
   const docked = useSyncExternalStore(places.subscribe, places.isAway, () => false);
   const context = useMemo<ComposerDock | null>(
-    () => (threadId ? { threadId, knownFiles, open, taken: open && taken, holdAt, expectedHeight } : null),
-    [threadId, knownFiles, open, taken, holdAt, expectedHeight],
+    () => (threadId ? { threadId, knownFiles, open, taken: open && taken, holdAt, expectedHeight, float } : null),
+    [threadId, knownFiles, open, taken, holdAt, expectedHeight, float],
   );
   return { context, host, home, docked };
 }

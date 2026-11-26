@@ -1834,7 +1834,12 @@
       "stepDone": "done",
       "stepRunning": "in progress",
       "stepPending": "not started"
-    }
+    },
+    "dockMinimize": "Minimize composer",
+    "dockRestore": "Message",
+    "dockWorking": "Working",
+    "dockPillHint": "Click to open, drag to move",
+    "dockWaiting": "Waiting for you"
   },
   "context": {
     "quote": {

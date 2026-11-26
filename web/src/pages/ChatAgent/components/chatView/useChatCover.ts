@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type RefObject } from 'react';
 import { useMotionSafe } from '@/lib/reducedMotion';
 import { dockFileKey, useComposerDock } from './useComposerDock';
+import { useDockFloat } from './useDockFloat';
 import { usePanelExpand } from './usePanelExpand';
 
 /**
@@ -38,7 +39,7 @@ export function useChatCoverReads(): FilledReads {
  * covering the chat: the edges of one expanding over it (usePanelExpand), or
  * a phone's sheet sliding in, which reports its landing (`onSheetLanded`).
  */
-export function useChatCover({ isMobile, filePanel, panelExpanded, panelWidth, threadId, mainAgent, queuedComments, reads }: {
+export function useChatCover({ isMobile, filePanel, panelExpanded, panelWidth, threadId, mainAgent, queuedComments, running, waiting, reads }: {
   isMobile: boolean;
   /** The right panel shows files. */
   filePanel: boolean;
@@ -52,6 +53,10 @@ export function useChatCover({ isMobile, filePanel, panelExpanded, panelWidth, t
   /** The comments queued for this thread, whose files take the composer
    *  before their records load. */
   queuedComments: readonly { workspace_id: string; path: string }[];
+  /** A turn is running in the chat. */
+  running: boolean;
+  /** The agent is waiting on the person's answer. */
+  waiting: boolean;
   reads: FilledReads;
 }): {
   /** The chat is going out of view, so the file in front makes room for the composer. */
@@ -71,11 +76,13 @@ export function useChatCover({ isMobile, filePanel, panelExpanded, panelWidth, t
   const dockOpen = covered && mainAgent;
   const queuedKey = queuedComments.map((c) => dockFileKey(c.workspace_id, c.path)).join('\n');
   const knownFiles = useMemo(() => new Set(queuedKey ? queuedKey.split('\n') : []), [queuedKey]);
+  const float = useDockFloat({ floating: !isMobile, open: dockOpen, running, waiting, queued: queuedComments.length });
   const dock = useComposerDock({
     threadId,
     open: dockOpen,
     taken: isMobile ? sheetLanded || !motionSafe : !panelMoving,
     knownFiles,
+    float,
   });
   useLayoutEffect(() => reads.fill(covered, dock.docked));
 

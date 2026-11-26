@@ -1063,7 +1063,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // file's foot while it does (chatView/useChatCover).
   const { dockOpen, dock: composerDock, panelInnerRef, onSheetLanded } = useChatCover({
     isMobile, filePanel: rightPanelType === 'file', panelExpanded, panelWidth: rightPanelWidth, threadId: panelThreadId,
-    mainAgent: activeAgentId === 'main', queuedComments: commentDeck.comments, reads: coverReads,
+    mainAgent: activeAgentId === 'main', queuedComments: commentDeck.comments, running: isLoading, waiting: !!pendingInterrupt, reads: coverReads,
   });
   const deckComposer = useDeckComposer(chatInputRef);
   const openArtifactComment = useMemo(

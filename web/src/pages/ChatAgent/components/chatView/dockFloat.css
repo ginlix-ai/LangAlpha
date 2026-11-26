@@ -1,0 +1,112 @@
+/* The composer floating over a file on a wide screen (dockFloat.tsx). The
+   layer spans the file and lets the pointer through; only the composer and
+   the controls beside it take it. Over the page, and under what the app
+   draws over the page (BridgedFrame.css): the comment pins, the selection's
+   offer and the comment list stay reachable over the composer, and a
+   loading cover hides it with the page. */
+.composer-float {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 0 16px 16px;
+  pointer-events: none;
+}
+/* While the pill is pressed the layer takes the pointer itself, so a frame
+   in the file never catches the moves. */
+.composer-float:has(.composer-float-pill[data-pressed]) {
+  pointer-events: auto;
+}
+.composer-float:has(.composer-float-pill[data-dragging]) {
+  cursor: grabbing;
+}
+
+/* Folded, the composer is unseen but stays in place to take the focus that
+   opens it (dockFloat.tsx); nothing in it takes the pointer meanwhile. */
+.composer-float-box[data-folded],
+.composer-float-box[data-folded] * {
+  pointer-events: none;
+}
+
+/* The chat composer's width cap, centred. */
+.composer-float-frame {
+  position: relative;
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+}
+
+/* Fold: a small round control just over the composer's top right corner. */
+.composer-float-fold {
+  position: absolute;
+  right: 4px;
+  bottom: 100%;
+  margin-bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  box-shadow: var(--shadow-card);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
+}
+
+/* Folded: a pill on the composer's bottom edge, centred, out of the layout so
+   the composer folding into it holds still; a drag moves it by `translate`. */
+.composer-float-pill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-default);
+  box-shadow: var(--shadow-card);
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
+  animation: pop-in var(--motion-quick) var(--ease-out);
+}
+.composer-float-pill-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.composer-float-fold:hover,
+.composer-float-pill:hover,
+.composer-float-pill[data-dragging] {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+.composer-float-fold:focus-visible,
+.composer-float-pill:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
