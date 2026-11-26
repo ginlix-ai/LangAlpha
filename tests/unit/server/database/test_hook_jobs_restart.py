@@ -7,7 +7,8 @@ into one ``restart_resume`` job, and the endings that would close the work
 
 import pytest
 
-from src.server.contracts.status import RESTART_INTERRUPTED_META, is_restart_interrupted
+from src.llms.claude_code import COMPUTER_LOST, ClaudeTurnFailed
+from src.server.contracts.status import RESTART_INTERRUPTED_META, RESTART_REASON_META, is_restart_interrupted
 from src.server.database.runs.hook_jobs import (
     build_finalize_jobs,
     RESTART_HELD_HOOKS,
@@ -106,7 +107,7 @@ def test_is_restart_interrupted(row, expected):
     assert is_restart_interrupted(row) is expected
 
 
-async def _persist_metadata(*, status, cancelled_by_user, restart):
+async def _persist_metadata(*, status, cancelled_by_user, restart, exc=None):
     outcome = await assemble_finalize_artifacts(
         ("thread-1", "run-1"),
         metadata={},
@@ -120,6 +121,7 @@ async def _persist_metadata(*, status, cancelled_by_user, restart):
         workspace_id=None,
         recorded_as=None,
         restart=restart,
+        exc=exc,
     )
     return outcome.metadata
 
@@ -129,6 +131,15 @@ async def test_the_finalize_stamps_a_restart_cancel():
     meta = await _persist_metadata(status="cancelled", cancelled_by_user=False, restart=True)
     assert meta[RESTART_INTERRUPTED_META] is True
     assert meta["cancelled_by_user"] is False
+    assert RESTART_REASON_META not in meta
+
+
+@pytest.mark.asyncio
+async def test_the_finalize_names_a_lost_computer_beside_the_mark():
+    lost = ClaudeTurnFailed(COMPUTER_LOST, "Lost the connection to studio")
+    meta = await _persist_metadata(status="cancelled", cancelled_by_user=False, restart=True, exc=lost)
+    assert meta[RESTART_INTERRUPTED_META] is True
+    assert meta[RESTART_REASON_META] == COMPUTER_LOST
 
 
 @pytest.mark.asyncio

@@ -8,12 +8,15 @@ from psycopg.rows import dict_row
 
 from ptc_agent.agent.middleware.background_subagent.task import WORKFLOW_SUBAGENT_TYPE
 from src.server.contracts.status import (
+    COMPUTER_LOST_REASON,
     RESTART_INTERRUPTED_META,
+    RESTART_REASON_META,
     RESTART_STOP_ERROR_TYPE,
     is_restart_interrupted,
 )
 from src.server.database import pool
 from src.server.database.runs.hook_jobs import (
+    RESTART_RESUME_HOOK,
     automation_handoff_job,
     restart_held_jobs,
     restart_resume_job,
@@ -24,7 +27,9 @@ from src.server.database.runs.outbox import enqueue_hooks, release_deferred_noti
 async def read_resume_state(thread_id: str, run_id: str) -> Optional[Dict[str, Any]]:
     """The thread's owner, workspace, whether a turn may still come to it, its
     latest run, and the status, metadata and start of the run a resume job
-    names, under their row names; None when the thread is gone."""
+    names, under their row names, with whether that run is itself the
+    resume of a turn that lost its computer (``resumes_lost_computer``);
+    None when the thread is gone."""
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -32,7 +37,16 @@ async def read_resume_state(thread_id: str, run_id: str) -> Optional[Dict[str, A
                 SELECT w.user_id, c.workspace_id,
                        (c.archived_at IS NOT NULL OR w.status = 'deleted') AS no_turn,
                        latest.conversation_response_id AS latest_run_id,
-                       r.status, r.metadata, r.created_at
+                       r.status, r.metadata, r.created_at,
+                       EXISTS (
+                           SELECT 1 FROM hook_outbox j
+                           JOIN conversation_responses lost
+                             ON lost.conversation_response_id::text = j.payload->>'run_id'
+                           WHERE j.conversation_thread_id = c.conversation_thread_id
+                             AND j.hook_type = %s
+                             AND j.payload->>'dispatched_run_id' = r.conversation_response_id::text
+                             AND lost.metadata->>%s = %s
+                       ) AS resumes_lost_computer
                 FROM conversation_threads c
                 JOIN workspaces w ON w.workspace_id = c.workspace_id
                 LEFT JOIN LATERAL (
@@ -45,7 +59,7 @@ async def read_resume_state(thread_id: str, run_id: str) -> Optional[Dict[str, A
                  AND r.conversation_thread_id = c.conversation_thread_id
                 WHERE c.conversation_thread_id = %s
                 """,
-                (run_id, thread_id),
+                (RESTART_RESUME_HOOK, RESTART_REASON_META, COMPUTER_LOST_REASON, run_id, thread_id),
             )
             row = await cur.fetchone()
             return dict(row) if row else None

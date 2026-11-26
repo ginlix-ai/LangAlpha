@@ -7,10 +7,11 @@ import type { MessageRecord, SetMessages } from '../../hooks/utils/types';
 import type { StreamRefs } from '../streamRefs';
 import type { SSEEvent } from '../types';
 
-/** How the turn a frame closes was stopped: only the account's suspension
- *  is told apart from its user. */
+/** How the turn a frame closes was stopped: the account's suspension and a
+ *  computer that stopped answering are told apart from its user. */
 export function readStop(event: SSEEvent): TurnStop {
-  return event.stopped_by === 'suspension' ? 'suspension' : true;
+  const by = event.stopped_by;
+  return by === 'suspension' || by === 'computer_lost' ? by : true;
 }
 
 // Always-live tools (TaskOutput, WebFetch) spin off `isInProgress` whatever

@@ -1753,6 +1753,34 @@ class TestTimeLimitStop:
         assert not any(r.exc_info for r in producer_records)
 
 
+class TestLostComputerStop:
+    @pytest.mark.asyncio
+    async def test_a_turn_that_lost_its_computer_sends_no_error_frame(self, caplog):
+        """Stopped to be resumed, not failed: the run's end says so, and the
+        log holds a warning rather than a traceback."""
+        from src.llms.claude_code import COMPUTER_LOST, ClaudeTurnFailed
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        class _LostGraph:
+            def astream(self, *_args, **_kwargs):
+                async def _gen():
+                    yield ((), "custom", {"type": "context_window", "action": "offload"})
+                    raise ClaudeTurnFailed(COMPUTER_LOST, "Lost the connection to studio")
+
+                return _gen()
+
+        handler = RunSSEProducer(thread_id="t-lost", run_id="r-lost")
+        frames = []
+        with caplog.at_level("WARNING", logger="src.server.services.runs.sse_producer"):
+            with pytest.raises(ClaudeTurnFailed):
+                async for frame in handler.stream_workflow(_LostGraph(), {}, {"configurable": {}}):
+                    frames.append(frame)
+        assert not [f for f in frames if "event: error" in f]
+        producer_records = [r for r in caplog.records if r.name == "src.server.services.runs.sse_producer"]
+        assert any("lost its Claude Code computer" in r.getMessage() for r in producer_records)
+        assert not any(r.exc_info for r in producer_records)
+
+
 class TestSanitizeErrorText:
     """Credential shapes are masked before error text reaches the wire."""
 

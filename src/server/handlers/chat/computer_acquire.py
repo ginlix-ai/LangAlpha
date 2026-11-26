@@ -13,9 +13,8 @@ from fastapi import HTTPException
 
 from src.server.contracts.status import (
     RESTART_INTERRUPTED_META,
-    SUSPENSION_STOPPER,
     is_restart_interrupted,
-    is_suspension_stop,
+    run_end_stopper,
 )
 from src.server.services.runs import restart_drain
 from src.server.services.runs.coordinator import protected_finalize
@@ -249,7 +248,7 @@ async def close_stopped_while_acquiring(
             # outcome.
             await manager.append_run_end_event(
                 thread_id, run_id, status,
-                stopped_by=SUSPENSION_STOPPER if is_suspension_stop(settled) else None,
+                stopped_by=run_end_stopper(settled),
             )
         return status
 

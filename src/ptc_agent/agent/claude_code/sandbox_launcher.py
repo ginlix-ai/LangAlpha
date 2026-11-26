@@ -268,5 +268,5 @@ def sandbox_launcher(
 
     return SSHLauncher(
         Machine(connect, lambda: sandbox.working_dir), identity=identity, token_file=None, credential=credential,
-        env=dict(env or {}), plan=plan, cli_slot=cli_slot, slot_wait_s=slot_wait_s,
+        env=dict(env or {}), plan=plan, cli_slot=cli_slot, slot_wait_s=slot_wait_s, resumes=True,
     )

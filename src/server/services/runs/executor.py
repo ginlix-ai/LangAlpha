@@ -39,9 +39,8 @@ from src.config.settings import (
 )
 from src.server.contracts.status import (
     COLLECTED_ENDINGS,
-    SUSPENSION_STOPPER,
     bills_subagents,
-    is_suspension_stop,
+    run_end_stopper,
 )
 from src.server.services.runs import (
     admission,
@@ -51,6 +50,7 @@ from src.server.services.runs import (
     subagent_collection,
     teardown,
 )
+from src.llms.claude_code import computer_lost
 from src.server.services.runs.finalization import FinalizeVerdict
 from src.server.services.runs.teardown import StopTeardown
 from src.server.dependencies.usage_limits import release_burst_slot
@@ -933,6 +933,26 @@ class LocalRunExecutor:
         except Exception as e:
             from src.server.services.runs.sse_producer import TurnTimeLimitError
 
+            if computer_lost(e) is not None:
+                # Stopped where its checkpoint stands, to be resumed once
+                # the computer answers again, as a restart's stop is: its
+                # subagents too, so the resume offers them back.
+                logger.warning(
+                    f"[LocalRunExecutor] Workflow {key} lost its Claude Code computer; stopping it for a resume: {e}"
+                )
+                stop = StopTeardown()
+                async with self.task_lock:
+                    ti = self.executions.get(key)
+                    if ti is not None:
+                        ti.stop_teardown = stop
+                        if not ti.user_stop:
+                            ti.restart = True
+                try:
+                    with suppress(Exception):
+                        await self._shielded(self._teardown_subagents_on_stop(thread_id, run_id, stop))
+                finally:
+                    await self._shielded(self._finalize_run(thread_id, run_id, kind="cancelled", exc=e))
+                return
             if isinstance(e, TurnTimeLimitError):
                 # Planned, so no traceback: it would only show the producer's
                 # own raise, and read as a crash in the logs.
@@ -1341,7 +1361,7 @@ class LocalRunExecutor:
                         applied=True,
                         status=row["status"],
                         bills_subagents=bills_subagents(row),
-                        stopped_by_suspension=is_suspension_stop(row),
+                        stopped_by=run_end_stopper(row),
                     ),
                     kind=kind,
                     stop=stop,
@@ -1488,7 +1508,7 @@ class LocalRunExecutor:
             # terminal handshake once the local mark lands.
             await self.append_run_end_event(
                 thread_id, run_id, status,
-                stopped_by=SUSPENSION_STOPPER if verdict.stopped_by_suspension else None,
+                stopped_by=verdict.stopped_by,
             )
 
             if status == "completed" and completion_callback:

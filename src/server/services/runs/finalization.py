@@ -15,13 +15,16 @@ from typing import Literal, Optional
 from ptc_agent.agent.middleware.image_capture import CAPTURE_TIMEOUT_SECONDS
 from ptc_agent.core.sandbox.unreachable import unanswered_code
 from src.config.settings import get_checkpoint_flush_timeout
+from src.llms.claude_code import computer_lost
 from src.server.contracts.status import (
+    COMPUTER_LOST_REASON,
     GATEWAY_OUTAGE_META,
     INTERRUPT_REASON_CREDIT_PAUSE,
     RESTART_INTERRUPTED_META,
-    classify_interrupts,
+    RESTART_REASON_META,
     bills_subagents,
-    is_suspension_stop,
+    classify_interrupts,
+    run_end_stopper,
 )
 from src.server.database.runs.hook_jobs import IDLE_COMPACTION_META, WAKEUP_QUIET_META
 from src.server.database.runs.lifecycle import (
@@ -60,9 +63,10 @@ class FinalizeVerdict:
     status: str
     survivor_status: Optional[str] = None
     bills_subagents: bool = False
-    #: The winning row was cancelled by its account's suspension, which its
-    #: ``run_end`` says so a reader tells it from the user's own stop.
-    stopped_by_suspension: bool = False
+    #: Who stopped the winning row, when not its user: its account's
+    #: suspension or its lost computer, which its ``run_end`` names so a
+    #: reader tells it from the user's own stop (``run_end_stopper``).
+    stopped_by: Optional[str] = None
 
     @property
     def concluded(self) -> bool:
@@ -172,6 +176,8 @@ async def assemble_finalize_artifacts(
         persist_metadata["cancelled_by_user"] = cancelled_by_user
         if restart:
             persist_metadata[RESTART_INTERRUPTED_META] = True
+            if computer_lost(exc) is not None:
+                persist_metadata[RESTART_REASON_META] = COMPUTER_LOST_REASON
     if exc is not None:
         config = getattr(handler, "agent_config", None)
         persist_metadata.update(model_call_failure(exc, config))
@@ -380,7 +386,7 @@ async def drive_finalize_cas(
                 applied=True,
                 status=status,
                 bills_subagents=bills_subagents(run),
-                stopped_by_suspension=is_suspension_stop(run),
+                stopped_by=run_end_stopper(run),
             )
         survivor_status = run.get("status")
         logger.warning(

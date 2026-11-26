@@ -336,6 +336,7 @@ def check_launcher(machine: Machine[Link], user_id: str, token_file: str, *, pla
 
     return SSHLauncher(
         machine, identity=user_id, token_file=token_file, install=False, slot_wait_s=START_TIMEOUT_S, plan=plan,
+        dial_wait_s=0,
     )
 
 
@@ -737,7 +738,7 @@ class MachineHome:
         token = ComputerToken(self.user_id, self.computer_id)
         launcher = SSHLauncher(
             self._machine, identity=self.user_id, token_file=token_name(self.computer_id),
-            on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported,
+            on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported, dial_wait_s=0,
         )
         try:
             await launcher.ready()

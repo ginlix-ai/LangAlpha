@@ -34,6 +34,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 )
 from src.server.services.runs import subagent_collection
 from src.server.services.runs.teardown import StopTeardown
+from src.llms.claude_code import COMPUTER_LOST, ClaudeTurnFailed
 
 REGISTRY_STORE_MOD = "src.server.services.background_registry_store"
 
@@ -944,6 +945,81 @@ class TestFailedFinalizeCleanup:
 # ---------------------------------------------------------------------------
 # _run_workflow stop path: flush + teardown gated on explicit_cancel
 # ---------------------------------------------------------------------------
+
+class TestALostComputerStopsTheRunForAResume:
+    """A Claude Code turn whose computer stopped answering is stopped where its
+    checkpoint stands, marked as a restart's stop is, so the next turn resumes
+    it; a user's stop still wins."""
+
+    async def _drive(self, btm, *, user_stop: bool):
+        async def lost():
+            yield "event-0"
+            raise ClaudeTurnFailed(COMPUTER_LOST, "Lost the connection to studio")
+
+        task_info = _make_task_info(thread_id="t-lost", run_id="r-lost", status=LocalRunStatus.RUNNING)
+        task_info.user_stop = user_stop
+        btm.executions[("t-lost", "r-lost")] = task_info
+        restarts: list[bool] = []
+
+        async def teardown(thread_id, run_id, stop):
+            restarts.append(btm.executions[(thread_id, run_id)].restart)
+
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as finalize, \
+             patch.object(btm, "_teardown_subagents_on_stop", side_effect=teardown), \
+             patch.object(btm, "append_run_end_event", new_callable=AsyncMock):
+            await btm._run_workflow(
+                thread_id="t-lost", run_id="r-lost", workflow_generator=lost(), cancel_event=asyncio.Event(),
+            )
+        self.restarts = restarts
+        return task_info, finalize
+
+    @pytest.mark.asyncio
+    async def test_the_run_is_finalized_cancelled_and_marked_for_a_resume(self):
+        task_info, finalize = await self._drive(_make_btm(), user_stop=False)
+        finalize.assert_awaited_once()
+        assert finalize.await_args.kwargs["kind"] == "cancelled"
+        assert finalize.await_args.kwargs["exc"].kind == COMPUTER_LOST
+        assert task_info.restart
+        assert self.restarts == [True], "its subagents are stopped as a restart stops them, for the resume to offer back"
+        assert task_info.stop_teardown is not None
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_during_its_teardown_still_finalizes_it(self):
+        btm = _make_btm()
+
+        async def lost():
+            yield "event-0"
+            raise ClaudeTurnFailed(COMPUTER_LOST, "Lost the connection to studio")
+
+        btm.executions[("t-lost", "r-lost")] = _make_task_info(thread_id="t-lost", run_id="r-lost", status=LocalRunStatus.RUNNING)
+        tearing = asyncio.Event()
+
+        async def teardown(thread_id, run_id, stop):
+            tearing.set()
+            await asyncio.sleep(0.2)
+
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as finalize, \
+             patch.object(btm, "_teardown_subagents_on_stop", side_effect=teardown), \
+             patch.object(btm, "append_run_end_event", new_callable=AsyncMock):
+            run = asyncio.ensure_future(btm._run_workflow(
+                thread_id="t-lost", run_id="r-lost", workflow_generator=lost(), cancel_event=asyncio.Event(),
+            ))
+            await asyncio.wait_for(tearing.wait(), 5)
+            run.cancel()
+            try:
+                await run
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(0.3)
+        finalize.assert_awaited_once()
+        assert finalize.await_args.kwargs["kind"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_a_users_stop_is_not_resumed(self):
+        task_info, finalize = await self._drive(_make_btm(), user_stop=True)
+        assert finalize.await_args.kwargs["kind"] == "cancelled"
+        assert not task_info.restart
+
 
 class TestStopPathFlushGating:
     """The except-CancelledError handler flushes the checkpoint and tears down

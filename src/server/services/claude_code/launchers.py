@@ -121,7 +121,7 @@ def turn_launcher(
         picked = _PickedComputer(admitted.cli_computer, user_id, workspace_id)
         return _ssh_launcher(
             Machine(picked.link, picked.root), user_id=user_id, computer_id=admitted.cli_computer, saved=admitted.saved,
-            slot_wait_s=slot_wait_s, queue=queue,
+            slot_wait_s=slot_wait_s, queue=queue, resumes=False,
         )
     if not isinstance(sandbox.provider, SSHProvider):
         plan = UserPlan(user_id)
@@ -146,24 +146,29 @@ def turn_launcher(
 
     return _ssh_launcher(
         Machine(link, lambda: sandbox.working_dir), user_id=user_id, computer_id=computer_id, saved=admitted.saved,
-        slot_wait_s=slot_wait_s, queue=queue,
+        slot_wait_s=slot_wait_s, queue=queue, resumes=sandbox.provider.channel == "ssh_tunnel",
     )
 
 
 def _ssh_launcher(
     machine: Machine[Link], *, user_id: str, computer_id: str, saved: str | None, slot_wait_s: float,
-    queue: CliQueue | None,
+    queue: CliQueue | None, resumes: bool,
 ) -> SSHLauncher:
     """The CLI on the own computer ``computer_id``'s ``machine``, signed in with
     the token kept there, or relayed the saved one where admission let it
-    (``saved``), and telling the backend what it found of either."""
+    (``saved``), and telling the backend what it found of either. A turn
+    that loses the machine stops to be resumed (``resumes``) only where the
+    resume waits for that computer: the workspace's own, connected through a
+    tunnel, whose return the backend sees. A directly dialed one, or one
+    picked to run the CLI for a workspace on another, fails as a lost
+    connection instead, since its resume would post at once and fail."""
     token = ComputerToken(user_id, computer_id)
     return SSHLauncher(
         machine, identity=user_id, token_file=token_name(computer_id), cli_slot=partial(computer_cli_slot, computer_id, queue=queue),
         credential=token if saved else None, on_announced=token.announced, on_file_refused=token.file_refused,
         on_blocked=token.blocked, on_no_perl=token.no_perl, on_unsupported=token.unsupported,
         plan=UserPlan(user_id, computer_id),
-        slot_wait_s=slot_wait_s,
+        slot_wait_s=slot_wait_s, resumes=resumes,
     )
 
 

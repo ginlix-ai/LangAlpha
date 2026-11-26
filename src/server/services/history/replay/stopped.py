@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.server.contracts.status import (
-    SUSPENSION_STOPPER,
-    is_suspension_stop,
-    is_user_stop,
-)
+from src.server.contracts.status import is_user_stop, run_end_stopper
 from src.server.services.history.replay.lanes import MAIN_LANE, agent_lane
 
 
@@ -27,11 +23,13 @@ def stop_close_item(
     assistant event, has no message to name, so its close carries no ``id``:
     clients apply a close to the turn's bubble by ``turn_index``. A stop
     the account's suspension asked for closes the same way and says so
-    (``stopped_by``), as its live ``run_end`` did; other system cancels are
-    not stops and get no close.
+    (``stopped_by``), as its live ``run_end`` did, and so does a Claude Code
+    turn stopped because its computer stopped answering
+    (``run_end_stopper``); other system cancels are not stops and get no
+    close.
     """
-    suspended = is_suspension_stop(response)
-    if not suspended and not is_user_stop(response):
+    stopper = run_end_stopper(response)
+    if stopper is None and not is_user_stop(response):
         return None
     last: dict[str, Any] | None = None
     closed: set[str] = set()
@@ -54,8 +52,8 @@ def stop_close_item(
         "role": "assistant",
         "finish_reason": "stopped",
     }
-    if suspended:
-        close["stopped_by"] = SUSPENSION_STOPPER
+    if stopper is not None:
+        close["stopped_by"] = stopper
     if last is not None:
         close["id"] = last["id"]
         if last.get("agent"):

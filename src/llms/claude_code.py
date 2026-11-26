@@ -74,6 +74,23 @@ class ClaudeTurnFailed(RuntimeError):
 #: request was made, and a later try may find one.
 SLOTS_FULL = frozenset({"clis_full", "commands_full"})
 
+#: The kind of a turn whose CLI's computer stopped answering mid-turn and did
+#: not answer again within the wait, or that no longer runs the CLI: the
+#: turn stops where its checkpoint stands, to be resumed once the computer is
+#: back.
+COMPUTER_LOST = "computer_lost"
+
+
+def computer_lost(exc: BaseException | None) -> ClaudeTurnFailed | None:
+    """The ``COMPUTER_LOST`` failure ``exc`` is or was raised from, else None."""
+    for _ in range(32):
+        if exc is None:
+            return None
+        if isinstance(exc, ClaudeTurnFailed) and exc.kind == COMPUTER_LOST:
+            return exc
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    return None
+
 
 #: The Claude plan's limits, as the CLI names them, each with the model
 #: family it binds; None binds every model. ``seven_day_overage_included`` is
