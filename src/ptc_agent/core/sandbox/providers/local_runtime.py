@@ -23,7 +23,7 @@ import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Coroutine, Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -236,8 +236,9 @@ class _Run(ScriptRun):
             cwd=env["HOME"],
             start_new_session=True,
         )
-        stdin = transport.get_pipe_transport(0)
-        assert isinstance(stdin, asyncio.WriteTransport)
+        # A cast, not an isinstance check: uvloop's pipe transports write like
+        # asyncio's but are not its subclasses.
+        stdin = cast(asyncio.WriteTransport, transport.get_pipe_transport(0))
         # On stdin, so a secret in its env stays out of argv, as over a login.
         stdin.write(script.encode())
         stdin.write_eof()
