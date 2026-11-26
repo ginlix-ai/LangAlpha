@@ -5,11 +5,12 @@ for as long as the browser's stream is there to serve."""
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 from . import host
@@ -38,29 +39,32 @@ def listening(port: int, wait_s: float = 0.0) -> bool:
         time.sleep(_POLL_S)
 
 
-def detach(*argv: str, log: str | None = None) -> None:
-    """Run this package with *argv* on its own, its output to the state file *log*.
+def detach(*argv: str, log: str | None = None, env: Mapping[str, str] | None = None) -> None:
+    """Run this package with *argv* on its own, its output to the state file *log*,
+    with *env* added to this process's environment.
 
     Its own session with no inherited stream, or a Daytona exec waits for it
     until the call's timeout.
     """
     command = [sys.executable, "-I", str(Path(__file__).resolve().parent), *argv]
+    environment = {**os.environ, **(env or {})}
     if log is None:
-        _spawn(command, subprocess.DEVNULL)
+        _spawn(command, subprocess.DEVNULL, environment)
         return
     path = state_file(log)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as out:
-        _spawn(command, out)
+        _spawn(command, out, environment)
 
 
-def _spawn(command: list[str], out: object) -> None:
+def _spawn(command: list[str], out: object, env: Mapping[str, str]) -> None:
     subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=out,
         stderr=out,
         cwd="/",
+        env=env,
         start_new_session=True,
         close_fds=True,
     )

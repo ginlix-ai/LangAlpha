@@ -5,11 +5,12 @@ the person holds the page or memory is short."""
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import json
+import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
@@ -17,7 +18,20 @@ from . import care, daemon, engine, hold, launch, proxy, quality, relay, signin,
 from .care import Look
 from .host import Host
 from .launch import Launch
-from .protocol import MEMORY_MESSAGE, REOPEN_MESSAGE, TABS_CLOSED_MESSAGE, USER_AGENT_MESSAGE, page_address
+from .protocol import (
+    FOR_PERSON_ENV,
+    MEMORY_MESSAGE,
+    RETINA_BY_DEFAULT,
+    STREAM_QUALITIES,
+    PERSON_CLOSED_MESSAGE,
+    REOPEN_MESSAGE,
+    TABS_CLOSED_MESSAGE,
+    USER_AGENT_MESSAGE,
+    fit_max,
+    page_address,
+    state_file,
+    write_state,
+)
 
 #: How long the page goes unused, by the agent's commands and the person alike,
 #: before the next command moves the browser onto the engine a tool update
@@ -27,16 +41,24 @@ from .protocol import MEMORY_MESSAGE, REOPEN_MESSAGE, TABS_CLOSED_MESSAGE, USER_
 ENGINE_MOVE_AFTER_S = 300.0
 #: What the engine is given to close its browser, or to open the page again.
 _ENGINE_STEP_S = 20.0
+#: When a person last closed the browser from the Browser tab.
+_PERSON_CLOSED = "person-closed"
+#: How many closes people have asked for, counted under the admission.
+_PERSON_CLOSES = "person-closes"
 
 
 class Refused(Exception):
     """The gate's own refusal, the one failure here that stops a command."""
 
 
-def check(use: str, user_agent: str = "", *, opens_page: bool = False) -> tuple[Launch, Callable[[], None]]:
+def check(
+    use: str, user_agent: str = "", *, opens_page: bool = False, sizes_page: bool = False
+) -> tuple[Launch, Callable[[], None]]:
     """The launch a command must run with, and what lets the next command in.
     *opens_page* is a command that goes to an address before anything else,
     which a browser moved to a new engine opens instead of the page it showed.
+    *sizes_page* sets the page's size itself, which no viewer's panel then
+    changes until the browser closes (``fit``).
 
     One command is admitted at a time, so two arriving together cannot each
     wait on the other to end a browser whose Chrome died, and both run on its
@@ -46,6 +68,11 @@ def check(use: str, user_agent: str = "", *, opens_page: bool = False) -> tuple[
     """
     admission = care.admit()
     try:
+        # A person's start waits here for the admission, where a close finds no
+        # browser yet and says it closed, so the start is what has to give way.
+        asked = os.environ.get(FOR_PERSON_ENV)
+        if asked and asked != str(person_closes()):
+            raise Refused("browser: closed by the person since this start was asked for")
         # Read before this command is noted, which starts the pause again.
         quiet_s = care.quiet_for()
         care.note_use()
@@ -54,7 +81,10 @@ def check(use: str, user_agent: str = "", *, opens_page: bool = False) -> tuple[
         seen, moved = _move_engine(seen, record, use, quiet_s)
         # The browser the move closed starts on the new engine with this
         # command, on its user agent unless the command asks for another.
-        settled = _settle(seen, use, user_agent or moved.user_agent)
+        settled = _settle(seen, use, user_agent or moved.user_agent, sizes_page)
+        # Before the command's own output, so the agent reads it first.
+        if not os.environ.get(FOR_PERSON_ENV) and _person_closed():
+            print(PERSON_CLOSED_MESSAGE, file=sys.stderr)
         if moved.closed:
             # Before the command's own output, so the agent reads it first.
             print(TABS_CLOSED_MESSAGE.format(", ".join(moved.closed)), file=sys.stderr)
@@ -66,7 +96,41 @@ def check(use: str, user_agent: str = "", *, opens_page: bool = False) -> tuple[
         raise
 
 
-def _settle(seen: Look, use: str, user_agent: str) -> Launch:
+def note_person_closed() -> None:
+    """A person closed the browser from the Browser tab, which the agent's next
+    command is told: what it had open is gone. Never waking the agent for it."""
+    write_state(_PERSON_CLOSED, str(time.time()))
+
+
+def person_closes() -> int:
+    """How many closes people have asked for; a person's start carries the
+    count it saw (``FOR_PERSON_ENV``), and one asked for since cancels it."""
+    try:
+        return int(state_file(_PERSON_CLOSES).read_text())
+    except (OSError, ValueError):
+        return 0
+
+
+def note_close_asked() -> None:
+    """Count a close a person asked for, under the admission, whether or not a
+    browser was up: one still starting for them is not yet."""
+    write_state(_PERSON_CLOSES, str(person_closes() + 1))
+
+
+def _person_closed() -> bool:
+    """Whether a person closed the browser since the agent's last command,
+    within the time the browser would have closed by itself anyway, unused:
+    after that the agent had lost what it had open either way. Told once."""
+    path = state_file(_PERSON_CLOSED)
+    try:
+        at = float(path.read_text())
+    except (OSError, ValueError):
+        return False
+    path.unlink(missing_ok=True)
+    return time.time() - at < launch.IDLE_CLOSE_S
+
+
+def _settle(seen: Look, use: str, user_agent: str, sizes_page: bool = False) -> Launch:
     """``look`` only reads the page, ``act`` changes it, ``grow`` opens another tab
     or runs script that can, ``close`` ends the browser, ``closes`` acts on it and
     then ends it, and ``reopen`` ends it and opens another. An open browser keeps
@@ -131,6 +195,7 @@ def _settle(seen: Look, use: str, user_agent: str) -> Launch:
         found,
         user_agent=user_agent if use == "reopen" else user_agent or held_agent,
         closing=use in ("close", "closes"),
+        agent_sized=sizes_page or found.agent_sized,
     )
     if settled.kept and not up and not joins:
         seen.ready_profile()
@@ -206,13 +271,7 @@ def _move_engine(seen: Look, record: Launch | None, use: str, quiet_s: float) ->
             # read, and when memory has since filled, which would refuse the
             # browser opened for it.
             return seen, _Moved()
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            # The engine's own close first, so Chrome writes a kept profile's
-            # sign-ins back before it goes; whatever is left is ended after.
-            record.run(seen.host, "close", timeout=_ENGINE_STEP_S)
-        seen = seen.reread()
-        seen = seen.close(seen.daemons() + seen.browsers())
-        care.forget_browser()
+        seen = seen.shut(record, timeout=_ENGINE_STEP_S)
     closed = tuple(url for url in tabs[1] if url not in _BLANK_PAGES)
     return seen, _Moved(record.user_agent, address, closed)
 
@@ -265,10 +324,24 @@ def _open_again(settled: Launch, h: Host, address: str) -> None:
 def _chosen(h: Host) -> Launch:
     """The launch the computer's choices give a browser starting now, on the
     engine's newest version, which it keeps until it closes."""
+    chosen = quality.chosen()
+    page_width, page_height = _page_max(h, STREAM_QUALITIES[chosen].scale)
     return Launch(
         "",
-        quality.chosen(),
+        chosen,
         kept=signin.kept(),
         window=window.chosen(),
         engine=engine.pinned(h),
+        page_width=page_width,
+        page_height=page_height,
     )
+
+
+def _page_max(h: Host, scale: int) -> tuple[int, int]:
+    """The largest page a viewer's panel fits the browser to (``fit``). A cloud
+    computer drawing retina on fewer than ``RETINA_BY_DEFAULT`` CPUs keeps the
+    agent's own size: retina already takes all of such a computer's CPU while
+    someone watches, which the agent's commands share."""
+    if not h.own and scale > 1 and quality.cpus() < RETINA_BY_DEFAULT:
+        return launch.VIEWPORT
+    return fit_max(h.own)

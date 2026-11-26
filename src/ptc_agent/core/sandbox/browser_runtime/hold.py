@@ -98,10 +98,11 @@ def _change(apply: Callable[[Hold], T]) -> T:
 
 
 @contextmanager
-def navigating() -> Iterator[None]:
-    """Held while the person's navigation runs, which can outlast their hold."""
-    with locked(_NAVIGATING):
-        yield
+def navigating(*, wait: bool = True) -> Iterator[bool]:
+    """Held while the person's navigation runs, which can outlast their hold;
+    whether it was taken. Without *wait*, one running is not waited for."""
+    with locked(_NAVIGATING, wait=wait) as taken:
+        yield taken
 
 
 @contextmanager
@@ -125,6 +126,12 @@ def unseen() -> bool:
 
 def holds(holder: str) -> bool:
     return holder in _read().leases
+
+
+def held_by_other(holder: str) -> bool:
+    """Whether someone but *holder* holds the page, whether or not *holder* does
+    too: every viewer takes a lease of its own."""
+    return any(other != holder for other in _read().leases)
 
 
 def forget() -> None:

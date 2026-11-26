@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import MISSING, asdict, dataclass, fields
 from pathlib import Path
 from typing import IO, Literal, Optional, TypeVar, Union, get_args, get_origin, get_type_hints
-from urllib.parse import urlsplit
+from urllib.parse import quote_plus, urlsplit
 
 #: The package directory under ``_internal/src/``, run as ``python3 -I <it> <command>``:
 #: ``agent-browser`` with the CLI's own arguments is the wrapper on the agent's
@@ -179,6 +179,19 @@ STREAM_QUALITIES: dict[StreamQualityName, StreamQuality] = {
     "sharp": StreamQuality(1280, 800, 85),
     "retina": StreamQuality(2560, 1600, 70, scale=2),
 }
+#: The sizes, in page pixels, a page takes to fit the view it is watched in
+#: (``fit``): anything outside is brought to the nearest edge. A cloud
+#: computer's largest is smaller, since every pixel is drawn and encoded by the
+#: CPU its agent works on; a person's own machine's CPU is theirs.
+FIT_MIN = (320, 240)
+FIT_MAX_OWN = (1920, 1600)
+FIT_MAX_CLOUD = (1600, 1000)
+
+
+def fit_max(own: bool) -> tuple[int, int]:
+    """The largest page a view is fitted to on a machine of the person's own,
+    or *own* False, on a cloud computer."""
+    return FIT_MAX_OWN if own else FIT_MAX_CLOUD
 #: Retina's frames take a whole CPU to draw, so a computer with fewer than this
 #: many gets ``sharp`` in its place, and one with ``RETINA_BY_DEFAULT`` or more
 #: gets retina when no one has chosen.
@@ -247,6 +260,10 @@ NAVIGATE_ACTIONS: tuple[NavigateAction, ...] = get_args(NavigateAction)
 #: browser is open, the address is not a web page's, or the engine failed.
 NavigateRefusal = Literal["not_held", "not_running", "bad_address", "failed"]
 NAVIGATE_REFUSALS: tuple[NavigateRefusal, ...] = get_args(NavigateRefusal)
+#: Why a person's close left the browser open: someone else holds its page, or
+#: it did not end.
+CloseRefusal = Literal["held", "failed"]
+CLOSE_REFUSALS: tuple[CloseRefusal, ...] = get_args(CloseRefusal)
 #: Why bringing in an everyday browser's sign-ins did nothing, as the machine
 #: answers: no such profile here, sign-ins are not kept, the browser's key could
 #: not be read, memory is short, or anything else.
@@ -257,7 +274,11 @@ BRING_REFUSALS: tuple[BringRefusal, ...] = get_args(BringRefusal)
 #: Chrome-family browser to drive.
 InstallRefusal = Literal["unsupported", "engine", "ports", "no_chrome"]
 INSTALL_REFUSALS: tuple[InstallRefusal, ...] = get_args(InstallRefusal)
+#: The most a person may type into the address field.
 MAX_ADDRESS_LENGTH = 2048
+#: The longest page address opened: what a search for the longest text typed
+#: becomes, every character of it taking up to twelve once percent-encoded.
+MAX_URL_LENGTH = 32 * 1024
 # Typed without a scheme, these are the person's own apps, which serve plain HTTP,
 # the wildcard addresses included, which a dev server prints as where it listens.
 _LOCAL_HOSTS = re.compile(
@@ -270,7 +291,7 @@ def page_address(text: str) -> str | None:
     typed without a scheme, or None for anything but an http or https page:
     another scheme reaches Chrome's own pages or the machine's files."""
     text = text.strip()
-    if not text or len(text) > MAX_ADDRESS_LENGTH or any(c.isspace() or not c.isprintable() for c in text):
+    if not text or len(text) > MAX_URL_LENGTH or any(c.isspace() or not c.isprintable() for c in text):
         return None
     if "://" not in text:
         text = ("http://" if _LOCAL_HOSTS.match(text) else "https://") + text
@@ -281,6 +302,87 @@ def page_address(text: str) -> str | None:
     if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
         return None
     return text
+
+
+#: Where text that names no site is searched for. DuckDuckGo and Google put a
+#: robot check in front of a browser on a cloud computer's address.
+SEARCH_URL = "https://www.bing.com/search?q="
+#: Schemes a person may type that open no web page; refused rather than searched.
+_OTHER_SCHEMES = re.compile(r"^(file|javascript|data|chrome|about|view-source|ftp|blob|mailto|tel):", re.IGNORECASE)
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_HOST = re.compile(r"^(?P<host>\[[0-9a-f:.]+\]|[^\s/:?#@\[\]]+)(?::(?P<port>\d{1,5}))?(?P<rest>[/?#].*)?$", re.IGNORECASE)
+_IPV4 = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$")
+_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$", re.IGNORECASE)
+#: Top-level names kept for local use, which no TLD list carries: multicast
+#: DNS's ``local``, private-use ``internal`` and RFC 6761's ``test`` and
+#: ``example``. Chrome reads a name under one as a site.
+_LOCAL_TLDS = frozenset({"local", "internal", "test", "example"})
+
+
+def typed_address(text: str) -> str | None:
+    """Where text typed into a browser's address bar goes, as Chrome's reads it:
+    an http or https address, a search for what names no site, or None for
+    another scheme, which reaches Chrome's own pages or the machine's files.
+
+    A site is named with a scheme at the start, or as ``localhost``, an IP
+    address, or a name whose last label is a top-level domain (``tlds``) or one
+    kept for local use such as ``local``, in any script, with or without a port
+    and a path; a bare name with a port or a path names one too, as an intranet
+    host does. Anything else, spaces included, is searched for, and a leading
+    ``?`` searches whatever follows it.
+    """
+    text = text.strip()
+    if not text or len(text) > MAX_ADDRESS_LENGTH or not text.isprintable():
+        return None
+    if text.startswith("?"):
+        return _search(text[1:])
+    if _OTHER_SCHEMES.match(text):
+        return None
+    if _SCHEME.match(text):
+        return page_address(text.replace(" ", "%20"))
+    if any(c.isspace() for c in text):
+        return _search(text)
+    named = _HOST.match(text)
+    if named is None:
+        return _search(text)
+    host = named["host"].lower().rstrip(".")
+    scheme = _site_scheme(host, bare_ok=bool(named["port"] or named["rest"]))
+    if scheme is None:
+        return _search(text)
+    # The scheme given here, so a ``://`` later in the text is not read as one.
+    return page_address(f"{scheme}://{text}")
+
+
+def _site_scheme(host: str, *, bare_ok: bool) -> str | None:
+    """The scheme a site named *host* is opened on, or None for no site. As
+    Chrome does, a public name is opened on https, and a local name, an IP
+    address or a bare intranet name, which serve plain http, on http."""
+    if host == "localhost" or host.endswith(".localhost") or host.startswith("["):
+        return "http"
+    ip = _IPV4.match(host)
+    if ip:
+        return "http" if all(int(part) <= 255 for part in ip.groups()) else None
+    try:
+        # A name in another script is checked as the ASCII it is looked up by.
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    labels = host.split(".")
+    if not all(_LABEL.match(label) for label in labels):
+        return None
+    if len(labels) == 1:
+        return "http" if bare_ok else None
+    from .tlds import TLDS
+
+    tld = labels[-1]
+    if tld in _LOCAL_TLDS:
+        return "http"
+    return "https" if tld in TLDS else None
+
+
+def _search(text: str) -> str | None:
+    text = text.strip()
+    return SEARCH_URL + quote_plus(text) if text else None
 
 
 #: The machine's state, in one directory beside the ``src`` this package ships into.
@@ -436,6 +538,14 @@ CHANGED_MESSAGE = (
 REOPEN_MESSAGE = (
     "browser: the browser restarted for a tool update and could not open {} again. "
     "Nothing was done. Open that address with `agent-browser open`, then repeat the command."
+)
+#: Set on a command the runtime runs for a person (opening the browser from the
+#: Browser tab), which is not the agent's and is told nothing meant for it. Its
+#: value is the count of closes the start saw (``gate.person_closes``).
+FOR_PERSON_ENV = "LANGALPHA_BROWSER_FOR_PERSON"
+PERSON_CLOSED_MESSAGE = (
+    "browser: the user closed this computer's browser from the Browser tab, so the tabs it "
+    "had open are gone and this command runs in a new browser. Open again any page you still need."
 )
 TABS_CLOSED_MESSAGE = (
     "browser: the browser restarted for a tool update and kept only the tab that was "

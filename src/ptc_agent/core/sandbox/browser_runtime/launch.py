@@ -10,6 +10,7 @@ for the person, runs with that record (``engine_env``).
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import pwd
 import stat
@@ -51,6 +52,9 @@ _UNSET = (
 # shorter than the viewport, only taller. A window size given here replaces the
 # engine's.
 VIEWPORT = (1280, 800)
+#: How long an open Chrome is left unused before it closes, so the memory it
+#: holds goes back to the computer's other work.
+IDLE_CLOSE_S = 20 * 60
 _TOOLBAR_PX = 143
 _DISK_CACHE_BYTES = 64 * 1024 * 1024
 # The longest folder whose engine socket (``<folder>/default.sock``) a Mac allows.
@@ -88,6 +92,13 @@ class Launch:
     the browser under it, so a new one reaches the browser when it next starts.
     A browser that started with none, whose engine an update replaced since, is
     pinned to the file its daemon runs (``engine.held_by``).
+
+    ``page_width`` and ``page_height`` are the largest page a viewer's panel
+    fits it to (``fit``), zero for a browser from before fitting, which keeps
+    the agent's own size. They set how large its frames may be, which the
+    engine would restart the browser to change, so they are the ones it
+    started with. ``agent_sized`` is a page the agent sized itself
+    (``set viewport``, ``set device``), which no viewer's panel resizes.
     """
 
     user_agent: str
@@ -96,10 +107,17 @@ class Launch:
     kept: bool = False
     window: bool = False
     engine: str = ""
+    page_width: int = 0
+    page_height: int = 0
+    agent_sized: bool = False
 
     @property
     def stream(self) -> StreamQuality:
         return STREAM_QUALITIES[self.quality]
+
+    @property
+    def page_max(self) -> tuple[int, int]:
+        return (self.page_width, self.page_height) if self.page_width and self.page_height else VIEWPORT
 
     def engine_env(self, base: Mapping[str, str], h: Host) -> dict[str, str]:
         """What the engine runs with on *h*: *base* without what would launch
@@ -147,6 +165,11 @@ class Launch:
         """What the engine starts this launch's browser with, and so must get on
         every command while that browser is open."""
         quality = self.stream
+        # A page fitted to the person's view (``fit``) can be larger than the
+        # agent's, and is drawn at the quality's own share of a page pixel.
+        largest = self.page_max
+        max_width = math.ceil(quality.width * largest[0] / VIEWPORT[0])
+        max_height = math.ceil(quality.height * largest[1] / VIEWPORT[1])
         args = [
             "--proxy-bypass-list=<-loopback>",
             f"--window-size={VIEWPORT[0]},{VIEWPORT[1] + _TOOLBAR_PX}",
@@ -170,8 +193,8 @@ class Launch:
             # One argument a line: the window size holds a comma.
             "AGENT_BROWSER_ARGS": "\n".join(args),
             "AGENT_BROWSER_STREAM_QUALITY": str(quality.jpeg),
-            "AGENT_BROWSER_STREAM_MAX_WIDTH": str(quality.width),
-            "AGENT_BROWSER_STREAM_MAX_HEIGHT": str(quality.height),
+            "AGENT_BROWSER_STREAM_MAX_WIDTH": str(max_width),
+            "AGENT_BROWSER_STREAM_MAX_HEIGHT": str(max_height),
         }
         if self.kept:
             env["AGENT_BROWSER_PROFILE"] = signin.profile()
@@ -182,7 +205,7 @@ class Launch:
             # left unused ends well before the engine's default hour. A window is
             # left to the engine, which keeps a headed one open: it cannot see the
             # person using it, and they close it themselves.
-            env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = "1200000"
+            env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(IDLE_CLOSE_S * 1000)
         return env
 
 

@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import subprocess
 import shutil
 import signal
 import time
 from collections.abc import Iterable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
@@ -116,8 +117,9 @@ def look() -> Look:
 
 def forget_browser() -> None:
     """Drop what lasts as long as a browser, once it is gone: the person's hold
-    on its page and what it was launched with. Kept, the next browser would
-    start held, or on the closed one's user agent."""
+    on its page and what it was launched with, a size the agent set the page
+    among it. Kept, the next browser would start held, at a size no one asked
+    of it, or on the closed one's user agent."""
     hold.forget()
     launch.forget()
 
@@ -199,7 +201,8 @@ class Look:
         deadline = time.monotonic() + _GONE_S
         while time.monotonic() < deadline and _any_left(tree):
             time.sleep(0.05)
-        if ended:
+        # Only once it is gone: a browser still up keeps its launch and hold.
+        if ended and not _any_left(tree):
             forget_browser()
         gone = {p.pid for p in tree}
         return dataclasses.replace(self, processes=tuple(p for p in self.processes if p.pid not in gone))
@@ -234,6 +237,22 @@ class Look:
         if seen.busy() and _kept_may_start():
             seen = seen.close(seen.commands() + seen.daemons()).reread()
         return seen.close(seen.browsers(kept_only=True)).end_browserless()
+
+    def shut(self, record: launch.Launch | None, *, timeout: float) -> Look:
+        """Close the browser and end whatever is left of it: the engine's own
+        close first, so Chrome writes a kept profile's sign-ins back, then its
+        daemons, commands and Chrome. What lasted as long as the browser goes
+        only once it has, so a close that failed leaves the browser it could not
+        end its launch and hold. Gone is no Chrome of this runtime's left, not
+        none up (``browser_up``): one that outlives the kill past its daemon is
+        run by no engine, and is still the browser."""
+        if record is not None and self.browser_up():
+            with suppress(OSError, subprocess.SubprocessError):
+                record.run(self.host, "close", timeout=timeout)
+        seen = self.reread().end_all().reread()
+        if not seen.browsers():
+            forget_browser()
+        return seen
 
     def end_all(self) -> Look:
         """End the engine's daemons, its commands and every Chrome of this

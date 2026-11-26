@@ -1,6 +1,7 @@
 """What the server asks of the machine's browser: ``status`` and ``start`` print
 a ``Status``, ``control`` takes, renews or hands back a viewer's hold,
-``navigate`` takes the page somewhere for the viewer holding it, ``choices``
+``navigate`` takes the page somewhere for the viewer holding it, ``fit`` sizes
+the page to a viewer's view, ``close`` closes the browser for a viewer, ``choices``
 keeps the computer's choices for the browsers it starts (the live view's
 quality, whether one shows as a window on a Mac's screen, whether sign-ins are
 kept), ``install`` sets the browser up on a person's own machine, ``everyday``
@@ -18,12 +19,14 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import care, choices, daemon, everyday, hold, host, install, launch, proxy, relay, signin
+from . import care, choices, daemon, everyday, fit, gate, hold, host, install, launch, proxy, relay, signin
 from .protocol import (
+    FOR_PERSON_ENV,
     HOLD_ACTIONS,
     NAVIGATE_ACTIONS,
     TOKEN_FILE,
     Choices,
+    CloseRefusal,
     NavigateRefusal,
     Status,
     installing,
@@ -36,8 +39,17 @@ from .protocol import (
 # A read: it starts the browser on its blank page and takes it nowhere, so one
 # that lands after the agent's own first command leaves the agent's page alone.
 _ENGINE_START_ARGS = ("tab", "list")
-# The engine's own wait for a page to load, with room to answer.
+# The engine's own wait for a page to load, with room to answer: one for all of
+# a navigation's commands, since a close waits for them (``hold.navigating``)
+# inside the server's wait.
 _NAVIGATE_WAIT_S = 30
+# What the engine is given to close its browser before what is left is ended.
+_CLOSE_WAIT_S = 20.0
+# How long a close waits for the agent's command still running to end, so it
+# lands between the agent's commands, and how often it looks; past that it
+# closes the browser under the command. Inside the server's wait with the above.
+_CLOSE_COMMAND_WAIT_S = 10.0
+_CLOSE_COMMAND_POLL_S = 0.25
 # Letting go of what a person had down, all of it inside the server's wait for
 # the hand-back.
 _RELEASES_WAIT_S = 8.0
@@ -87,6 +99,9 @@ def start(wait_s: float) -> Status:
     rather than started twice. With memory short the wrapper would refuse the
     open, so it is not tried and the answer says why.
     """
+    # Before anything is read: a close the person asks for from here on finds
+    # no browser yet, and is what keeps this one from opening (``gate.check``).
+    closes = gate.person_closes()
     seen = care.look()
     if seen.host.ready() and not seen.browser_up() and not seen.busy():
         if care.memory_full():
@@ -96,7 +111,7 @@ def start(wait_s: float) -> Status:
         hold.forget()
         hold.mark_seen()
         # A start that loses to the agent's own is harmless: both reach one daemon.
-        daemon.detach("agent-browser", *_ENGINE_START_ARGS)
+        daemon.detach("agent-browser", *_ENGINE_START_ARGS, env={FOR_PERSON_ENV: str(closes)})
     return status(wait_s)
 
 
@@ -147,6 +162,7 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
                 # A browser no command of the wrapper's opened, whose launch is
                 # unknown, so any command could restart it.
                 return _refused("failed")
+            deadline = time.monotonic() + _NAVIGATE_WAIT_S
             try:
                 moved = launched.run(seen.host, *args, timeout=_NAVIGATE_WAIT_S) is not None
             finally:
@@ -161,13 +177,52 @@ def navigate(holder: str, action: str, address: str = "") -> dict[str, object]:
                 # nothing. Reading the address is what does, and the tab list the
                 # engine sends after a command carries the page's new address only
                 # once the next one has run, so the panel's address follows it too.
-                moved = launched.run(seen.host, "get", "url", timeout=_NAVIGATE_WAIT_S) is not None
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    # Slow to finish loading, as below.
+                    return {"done": True}
+                moved = launched.run(seen.host, "get", "url", timeout=left) is not None
     except subprocess.TimeoutExpired:
         # A page slow to finish loading is still the page the browser is on.
         return {"done": True}
     except OSError:
         return _refused("failed")
     return {"done": True} if moved else _refused("failed")
+
+
+def close(viewer: str) -> dict[str, object]:
+    """Close the browser for *viewer*, as the agent's ``close`` would, unless
+    someone else holds its page; a browser already closed is closed.
+
+    Under the gate's admission, so no command of the agent's starts meanwhile,
+    after the one already running ends, a while at most, and under the hold's
+    locks in the gate's order, so no take or navigation lands on the browser as
+    it goes. The engine's close first, so Chrome writes a kept profile's
+    sign-ins back, then whatever is left, as a tool update closes one
+    (``gate._move_engine``); what lasted as long as the browser goes with it,
+    the viewer's own hold among it.
+    """
+    with care.admitted() as seen, hold.moving(), hold.navigating():
+        if hold.held_by_other(viewer):
+            return _close_refused("held")
+        gate.note_close_asked()
+        deadline = time.monotonic() + _CLOSE_COMMAND_WAIT_S
+        while seen.busy() and time.monotonic() < deadline:
+            time.sleep(_CLOSE_COMMAND_POLL_S)
+            seen = seen.reread()
+        was_up = seen.browser_up()
+        seen = seen.shut(seen.pin_engine(launch.current()), timeout=_CLOSE_WAIT_S)
+        # Any Chrome left, run by its daemon or outliving it (``Look.shut``).
+        if seen.browsers():
+            return _close_refused("failed")
+        # The agent hears of a browser the person closed, not of one already gone.
+        if was_up:
+            gate.note_person_closed()
+    return {"done": True}
+
+
+def _close_refused(reason: CloseRefusal) -> dict[str, object]:
+    return {"done": False, "reason": reason}
 
 
 def control(holder: str, action: str, releases: list[list[str]] | None = None) -> bool:
@@ -298,6 +353,25 @@ def _navigate_command(args: list[str]) -> object | None:
     return navigate(args[0], args[1], args[2] if len(args) == 3 else "")
 
 
+def _close_command(args: list[str]) -> object | None:
+    if len(args) != 1 or not hold.valid_holder(args[0]):
+        return None
+    return close(args[0])
+
+
+def _fit_command(args: list[str]) -> object | None:
+    if len(args) != 3 or not hold.valid_holder(args[0]):
+        return None
+    try:
+        width, height = int(args[1]), int(args[2])
+    except ValueError:
+        return None
+    taken = fit.fit(args[0], width, height)
+    if taken == fit.KEPT:
+        return {"kept": True}
+    return {"size": list(taken) if taken else None}
+
+
 def _choices_command(args: list[str]) -> object | None:
     if len(args) != 1:
         return None
@@ -334,6 +408,8 @@ _COMMANDS: dict[str, Callable[[list[str]], object | None]] = {
     "start": _start_command,
     "control": _control_command,
     "navigate": _navigate_command,
+    "fit": _fit_command,
+    "close": _close_command,
     "choices": _choices_command,
     "install": _install_command,
     "everyday": _everyday_command,
@@ -366,7 +442,7 @@ def _usage() -> int:
     print(
         f"usage: python3 -I {Path(__file__).resolve().parent.name} agent-browser [argument ...]"
         " | status [wait seconds] | start [wait seconds] | control <holder> take|renew|release [releases]"
-        " | navigate <holder> open <address>|back|forward|reload"
+        " | navigate <holder> open <address>|back|forward|reload | fit <viewer> <width> <height> | close <viewer>"
         ' | choices \'{"quality": light|standard|sharp|retina|null, "window": bool,'
         ' "signins": bool, "signins_revision": <revision>, "revision": <revision>}\''
         " | install [chrome [--wait]] | everyday list | everyday bring <browser> <profile>"
