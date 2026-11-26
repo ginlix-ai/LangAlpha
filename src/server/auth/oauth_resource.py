@@ -221,7 +221,7 @@ async def _ask_platform(
     sub: str, sid: str, client_id: str | None, audience: str
 ) -> dict:
     """Fails closed: without an answer the app is refused, never let through."""
-    url = f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/connect/verify"
+    url = f"{PLATFORM_SERVICE_URL}/api/auth/connect/verify"
     body = {"sub": sub, "sid": sid, "client_id": client_id, "aud": audience}
     try:
         client = await get_http_client()

@@ -229,7 +229,7 @@ class PlatformCreditGatePort:
     """Lease + heartbeat operations for one deployment. Stateless."""
 
     def _url(self, path: str) -> str:
-        return f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/billing/leases/{path}"
+        return f"{PLATFORM_SERVICE_URL}/api/auth/billing/leases/{path}"
 
     async def account_refusal(self, user_id: str) -> Optional[BaseException]:
         """The refusal of a suspended account, read through the account's

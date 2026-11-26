@@ -86,3 +86,16 @@ async def test_an_event_that_cannot_be_built_sends_nothing_and_does_not_raise():
             "automation.failed", unowned, "exec-1", None, None,
         ) is None
     fire.assert_not_awaited()
+
+
+def test_a_webhook_url_is_logged_without_its_secrets():
+    from src.server.services.webhook_client import _loggable
+
+    url = "https://user:pw@hooks.example.test:8443/T0/B0/secret?key=secret#frag"
+    assert _loggable(url) == "https://hooks.example.test:8443"
+
+
+def test_an_unparsable_webhook_url_is_logged_without_raising():
+    from src.server.services.webhook_client import _loggable
+
+    assert _loggable("http://[hook.example.test:8443/a") == "an unparsable URL"

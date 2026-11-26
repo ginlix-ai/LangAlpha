@@ -140,7 +140,7 @@ async def call_validate(
     if surface:
         body["surface"] = surface
 
-    url = f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/validate"
+    url = f"{PLATFORM_SERVICE_URL}/api/auth/validate"
     reason = "unknown"
     delays = _VALIDATE_RETRY_DELAYS if strict else ()
     give_up_at = time.monotonic() + _VALIDATE_RETRY_WINDOW

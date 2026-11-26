@@ -329,7 +329,7 @@ async def _post(path: str, body: dict[str, Any], report_id: str) -> PlatformResu
         # 60s, and an answer after that would land on a rolled-back dialog.
         async with asyncio.timeout(_FORWARD_TIMEOUT_S):
             resp = await (await get_http_client()).post(
-                f"{PLATFORM_SERVICE_URL.rstrip('/')}{path}",
+                f"{PLATFORM_SERVICE_URL}{path}",
                 json=body,
                 headers=service_headers(),
                 timeout=_FORWARD_TIMEOUT_S,

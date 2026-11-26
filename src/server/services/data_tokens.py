@@ -250,13 +250,13 @@ def _payload(minted: Minted) -> dict[str, Any]:
         "expires_at": minted.expires_at.astimezone(UTC).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         ),
-        # Sandboxes are remote, so they reach ginlix-data at its public address.
-        "ginlix_data_url": LANGALPHA_DATA_SANDBOX_URL or LANGALPHA_DATA_URL.rstrip("/"),
+        # Sandboxes are remote, so they reach LangAlpha Data at its sandbox address.
+        "ginlix_data_url": LANGALPHA_DATA_SANDBOX_URL,
     }
 
 
 def _url(path: str = "") -> str:
-    return f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/data-tokens/computer{path}"
+    return f"{PLATFORM_SERVICE_URL}/api/auth/data-tokens/computer{path}"
 
 
 def _expires_at(body: dict[str, Any]) -> datetime:

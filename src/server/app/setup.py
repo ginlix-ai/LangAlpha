@@ -256,6 +256,13 @@ async def lifespan(app: FastAPI):
     # orphaned browser subprocesses will accumulate until cgroup exhausts.
     _log_container_hardening()
 
+    # Where each URL setting came from, and the URL settings a managed
+    # deployment cannot run on, checked before anything opens: a refusal once
+    # the pools are open leaves the process waiting on their tasks.
+    from src.config.urls import check_at_boot
+
+    check_at_boot()
+
     # Security warnings (one-time, startup only)
     from src.config.env import HOST_MODE
 
@@ -622,8 +629,11 @@ async def lifespan(app: FastAPI):
     # one of its computers as too small.
     if agent_config is not None:
         from src.server.services.claude_code.hosted import check_sandbox_tiers
+        from src.server.services.egress.reachability import check_sandbox_urls
 
         check_sandbox_tiers(agent_config.sandbox)
+        # Whether the provider's sandboxes can dial the addresses minted for them.
+        check_sandbox_urls(agent_config.sandbox)
 
     setup_settings.start()
 

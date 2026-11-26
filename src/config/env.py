@@ -6,6 +6,7 @@ No YAML dependency — pure os.getenv.
 """
 
 import os
+from typing import NamedTuple
 
 #: Settings a release renamed, each former name to the name read now. A former
 #: name is never read, and set to anything but empty, whitespace included, it
@@ -46,8 +47,43 @@ def _refuse_renamed(renamed: dict[str, str], blank_is_a_value: frozenset[str] = 
 
 _refuse_renamed(RENAMED_SETTINGS)
 
+
+class UrlSource(NamedTuple):
+    #: "set", or what an unset setting fell back to: "default", "listener",
+    #: "from:<NAME>" or "unset"; prefixed "blank," when it is set empty and
+    #: "whitespace," when it is set to only whitespace.
+    source: str
+    #: The value read, before any trailing slash is cut.
+    value: str
+
+
+#: Each URL setting below, by name, for the boot report and checks in
+#: src/config/urls.py.
+URL_SOURCES: dict[str, UrlSource] = {}
+
+
+def _url(name: str, fallback: str = "", fallback_source: str = "default") -> str:
+    """*name* stripped of whitespace, else *fallback*, recording which in URL_SOURCES.
+
+    Blank counts as unset.
+    """
+    value = os.getenv(name, "").strip()
+    if value:
+        source = "set"
+    else:
+        source = fallback_source if fallback else "unset"
+        if name in os.environ:
+            source = f"{'whitespace' if os.environ[name] else 'blank'},{source}"
+        value = fallback
+    URL_SOURCES[name] = UrlSource(source, value)
+    return value
+
 # Deployment mode: "oss" (self-hosted, no auth) or "platform" (Supabase auth + quota service)
 HOST_MODE: str = os.getenv("HOST_MODE", "oss")
+# The config overlay this process layers on its YAML (APP_ENV=production reads
+# agent_config.production.yaml). With HOST_MODE=platform, production also makes
+# a deployment managed: it refuses to start on a URL setting it cannot run on.
+APP_ENV: str = os.getenv("APP_ENV", "").strip()
 
 # Auth / Login Service (Supabase) — credential, not a mode flag
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
@@ -55,7 +91,8 @@ LOCAL_DEV_USER_ID: str = os.getenv("AUTH_USER_ID", "local-dev-user")
 
 # The platform service this deployment validates turns against: sign-in tokens,
 # quota, billing leases and data tokens. Unset runs standalone.
-PLATFORM_SERVICE_URL: str = os.getenv("PLATFORM_SERVICE_URL", "")
+_PLATFORM_SERVICE_URL = _url("PLATFORM_SERVICE_URL")
+PLATFORM_SERVICE_URL: str = _PLATFORM_SERVICE_URL.rstrip("/") or _PLATFORM_SERVICE_URL
 
 # Access tokens outside apps get from an OAuth issuer. Off unless all three
 # are set; see src/server/auth/oauth_resource.py for what accepts them.
@@ -87,11 +124,12 @@ SEARCH_PROVIDER_MIN_TIER: int = int(os.getenv("SEARCH_PROVIDER_MIN_TIER", "1"))
 # LangAlpha Data, the hosted market-data service behind LangAlpha.ai. It runs only
 # as a hosted service; a stack without LANGALPHA_DATA_URL gets prices,
 # fundamentals and news from FMP and the other configured providers.
-LANGALPHA_DATA_URL: str = os.getenv("LANGALPHA_DATA_URL", "")
-LANGALPHA_DATA_WS_URL: str = os.getenv("LANGALPHA_DATA_WS_URL", "") or (
-    LANGALPHA_DATA_URL.replace("http://", "ws://").replace("https://", "wss://")
-    if LANGALPHA_DATA_URL
-    else ""
+LANGALPHA_DATA_URL: str = _url("LANGALPHA_DATA_URL")
+_data_scheme, _, _data_rest = LANGALPHA_DATA_URL.partition("://")
+LANGALPHA_DATA_WS_URL: str = _url(
+    "LANGALPHA_DATA_WS_URL",
+    f"{_data_scheme.lower().replace('http', 'ws')}://{_data_rest}" if _data_rest else "",
+    "from:LANGALPHA_DATA_URL",
 )
 LANGALPHA_DATA_ENABLED: bool = bool(LANGALPHA_DATA_URL)
 # Whether get_sec_filing reads filings from LangAlpha Data before SEC EDGAR, with
@@ -102,15 +140,17 @@ LANGALPHA_DATA_SEC_ENABLED: bool = os.getenv("LANGALPHA_DATA_SEC_ENABLED", "true
 # Where sandboxes reach LangAlpha Data. Sandboxes are remote, so this stays
 # publicly reachable even when this server reaches the service over a private
 # address; unset, they use LANGALPHA_DATA_URL as this server does.
-LANGALPHA_DATA_SANDBOX_URL: str = os.getenv("LANGALPHA_DATA_SANDBOX_URL", "").rstrip("/")
+LANGALPHA_DATA_SANDBOX_URL: str = _url(
+    "LANGALPHA_DATA_SANDBOX_URL", LANGALPHA_DATA_URL, "from:LANGALPHA_DATA_URL"
+).rstrip("/")
 
 # Public base URL of this server (used in agent-generated URLs like preview links)
-SERVER_BASE_URL: str = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
+SERVER_BASE_URL: str = _url("SERVER_BASE_URL", "http://localhost:8000")
 
 # Where the web app is served, for links the agent hands to a person
 # (``/a/<code>``). Defaults to the API origin, which is where the app lives
 # unless the frontend is served from its own host.
-PUBLIC_APP_URL: str = (os.getenv("PUBLIC_APP_URL", "") or SERVER_BASE_URL).rstrip("/")
+PUBLIC_APP_URL: str = _url("PUBLIC_APP_URL", SERVER_BASE_URL, "from:SERVER_BASE_URL").rstrip("/")
 
 # Where this server serves previews that a browser cannot open directly (a
 # private E2B computer's ports) and the pages the agent publishes: a scheme and
@@ -152,8 +192,11 @@ PLUGIN_MARKETPLACE_TOKEN: str = os.getenv("PLUGIN_MARKETPLACE_TOKEN", "")
 # HTML, and directly bound MCP tools going through its egress relay. Each has
 # to reach this process rather than the public ingress. Unset, server.py's
 # --host and --port name it (LANGALPHA_LISTEN_URL), else port 8000.
-SERVER_LOOPBACK_URL: str = (
-    os.getenv("SERVER_LOOPBACK_URL") or os.getenv("LANGALPHA_LISTEN_URL") or "http://127.0.0.1:8000"
+_LISTEN_URL = os.getenv("LANGALPHA_LISTEN_URL", "").strip()
+SERVER_LOOPBACK_URL: str = _url(
+    "SERVER_LOOPBACK_URL",
+    _LISTEN_URL or "http://127.0.0.1:8000",
+    "listener" if _LISTEN_URL else "default",
 ).rstrip("/")
 
 # Shared HS256 secret authenticating sandboxes to the egress relay
@@ -169,7 +212,11 @@ EGRESS_RELAY_SECRET: str = os.getenv("EGRESS_RELAY_SECRET", "")
 # falls back to the server base, adapted per sandbox provider (Docker host
 # gateway) or warned about (a remote provider with a local address). Point it
 # at the API origin, not an SPA-fallback frontend.
-SERVER_SANDBOX_URL: str = os.getenv("SERVER_SANDBOX_URL", "")
+SERVER_SANDBOX_URL: str = _url("SERVER_SANDBOX_URL")
+if not SERVER_SANDBOX_URL:
+    URL_SOURCES["SERVER_SANDBOX_URL"] = UrlSource(
+        URL_SOURCES["SERVER_SANDBOX_URL"].source.replace("unset", "from:SERVER_BASE_URL"), SERVER_BASE_URL
+    )
 
 # Credit conversion rate (USD → credits).  Override with USD_TO_CREDITS_RATE env var.
 USD_TO_CREDITS_RATE: int = int(os.getenv("USD_TO_CREDITS_RATE", "1000"))
@@ -187,14 +234,14 @@ FIRECRAWL_PARTNER_BASE_URL: str = os.getenv(
 ).rstrip("/")
 
 # Automation webhook delivery (channel gateway)
-AUTOMATION_WEBHOOK_URL: str = os.getenv("AUTOMATION_WEBHOOK_URL", "")
+AUTOMATION_WEBHOOK_URL: str = _url("AUTOMATION_WEBHOOK_URL")
 AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")
 
 # Base URL of a channel gateway's API, path prefix included. Set together with
 # INTERNAL_SERVICE_TOKEN, it gives the agent send_message and
 # list_message_targets, which deliver to the messaging channels connected to
 # the user's account. Unset, neither tool exists.
-CHANNEL_GATEWAY_URL: str = os.getenv("CHANNEL_GATEWAY_URL", "").strip().rstrip("/")
+CHANNEL_GATEWAY_URL: str = _url("CHANNEL_GATEWAY_URL").rstrip("/")
 
 # Apple Push Notification service, for the iOS app. Push is on only when the
 # key id, the team id, the .p8 key (inline PEM, whose newlines may arrive as

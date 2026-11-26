@@ -73,7 +73,7 @@ def _is_answer(value: object) -> bool:
 async def _ask_platform(token: str) -> dict:
     # No service headers: /validate checks a service token before the key,
     # and would answer for the service instead.
-    url = f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/validate"
+    url = f"{PLATFORM_SERVICE_URL}/api/auth/validate"
     try:
         client = await get_http_client()
         resp = await client.post(url, headers={"X-Api-Key": token})

@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
+from src.config.urls import host_class
 from src.server.models.computer import (
     ComputerSSHPairingError,
     ComputerSSHPairingMachine,
@@ -392,14 +393,18 @@ def pairing_base(request_base: str) -> str:
     """Where the machine fetches the script and reports back.
 
     The script runs where the computer's code will, so it reaches this server
-    at the address a remote computer does. A base with no host (an empty
-    SERVER_BASE_URL) or one only containers resolve gives way to the address
-    the dialog's browser reached this server at, which at least the machine
-    running that browser can dial.
+    at the address a remote computer does. A base with no host, a loopback
+    one (SERVER_BASE_URL left at its default) or one only containers resolve
+    gives way to the address the dialog's browser reached this server at,
+    which at least the machine running that browser can dial.
     """
     base = effective_relay_base_url(SSH_KIND)
     host = (urlsplit(base).hostname or "").lower()
-    if not host or host in _CONTAINER_HOSTS or host.endswith(".docker.internal"):
+    if (
+        host_class(base) in ("none", "loopback")
+        or host in _CONTAINER_HOSTS
+        or host.endswith(".docker.internal")
+    ):
         base = request_base
     return base.rstrip("/")
 
