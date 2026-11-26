@@ -540,17 +540,23 @@ register.
 - `menubar`: `enabled`, `items` (what sits beside the icon, in order: `{ kind: 'portfolio' }`
   or a quote `{ symbol, kind: 'index' | 'stock' }`, an index bare as `GSPC`; deduplicated,
   at most 8), `style` (`rotate` or `side`), `rotateSeconds` (2 to 30), `show` (`change`,
-  `price` or `both`), `extendedHours`.
+  `price` or `both`), `extendedHours`, `logo` (macOS only, `support.trayLogo`).
 - `panel`: `sections` (all four of `market`, `portfolio`, `watchlist`, `agent` exactly once,
   in display order, each with `visible`), `tiles` (at most 4 quotes), `watchlistId` (null
   for the default list), `watchlistRows` (1 to 10).
+- `badge`: `count`, `dot` or `off`, the app icon's badge for what `setAttention` counts.
+  Each platform draws the nearest it can (`shownBadge`, by the `badge` trait): the Dock all
+  three (the dot is a `•` badge), a Windows overlay a dot or nothing, the Unity launcher
+  a number or nothing. Electron draws no other Linux badge, so none is offered there.
+  `support.badge` lists what it can draw, and the view's `badge` is the one drawn, so a
+  Windows view of `count` reads `dot`.
 
 Lists are repaired rather than refused: a bad or repeated entry goes, a section left out
 is put back where the previous settings had it, a number out of range is clamped. A patch
 is one level deep and replaces whole arrays (`items`, `sections`, `tiles`).
 
 **The lines beside the icon.** The menu bar page formats each item as a line
-(`NVDA ▼5.60%`, `Port ▲0.42%`) and hands the shell the list (`setTrayItems(items,
+(`NVDA −5.60%`, `Port +0.42%`) and hands the shell the list (`setTrayItems(items,
 { refreshMs })`); the shell lays them out (`layout` in `tray.js`, pure) by the settings'
 `menubar.style` and `menubar.rotateSeconds`, never by anything the page sends. On macOS `rotate` is one slot turning
 every `rotateSeconds`, each frame padded to the longest line and drawn in the monospaced
@@ -562,7 +568,10 @@ timers are throttled to once a minute: a four-second slot would sit for sixty. A
 that brings new lines keeps the slot and its timer running rather than restarting them.
 Both timers stop when the icon is hidden and at quit. With nothing chosen in
 `menubar.items` the icon stands alone whatever the page sends, and a settings change
-re-lays or clears the lines at once rather than when the page next reports.
+re-lays or clears the lines at once rather than when the page next reports. With
+`menubar.logo` off the lines stand alone (an empty image, and no leading space), but only
+while there are lines: a status item with neither image nor title is a sliver nobody can
+find to click, so the logo returns whenever the title is empty.
 
 **The icon's menu** (a right-click on macOS and Windows; the icon's only menu on Linux):
 Open LangAlpha; "In the menu bar" and each item, checked, a click removing it; "With more
@@ -610,7 +619,7 @@ platform's answers directly. Any platform other than macOS and Windows is treate
 | Icon | template image; click opens the panel under it, right-click the menu | the app's colours; click opens the panel beside it, whichever edge the taskbar is on, right-click the menu | a menu only (the lines, Open Market Glance…, Open, the menu's settings, Quit), since an AppIndicator reports no clicks; Market Glance is the same page in an ordinary window |
 | Menu bar text | beside the icon: one slot rotating every `rotateSeconds`, padded and monospaced, or the first three side by side | the tooltip: the app's name, then a line each, as many as fit in 127 characters | disabled items heading the icon's menu |
 | Notifications | replaced by id, subtitle, Open / Mark as read | replaced by id, subtitle folded into the body, Open / Mark as read; the AppUserModelID is the bundle id, which the installer's shortcut carries | title, body and click; no replace, so a run's start is not shown |
-| Badge | Dock badge, and a Dock menu of New Thread, Market Glance and up to five threads | an overlay dot on the taskbar button, and a jump list New Thread (`--command=new-thread`, read from the launch's own argv and in `second-instance`) | `setBadgeCount`, where the desktop shows one |
+| Badge | Dock badge, and a Dock menu of New Thread, Market Glance and up to five threads | an overlay dot on the taskbar button, and a jump list New Thread (`--command=new-thread`, read from the launch's own argv and in `second-instance`) | `setBadgeCount`, under Unity only |
 | Last window closed | keeps running | keeps running in the tray when the icon is on and `keepRunningInTray` (telling the user once), else quits | quits |
 | Open at login | the login item; a login launch opens no window | the Run key with `--hidden` | an XDG autostart entry with `--hidden`, pointing at the AppImage when there is one |
 | Global shortcut | toggles the panel | toggles the panel | X11 only: Wayland lets no app grab a key outside its windows |

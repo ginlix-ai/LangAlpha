@@ -89,6 +89,7 @@ function createGlance({ traits, settings, commands, lifecycle, store, host, time
     onNewThread: () => commands.deliver({ command: 'new-thread' }),
     onGlance: () => show(),
     onOpen: openAppPath,
+    badge: () => settings.get().badge,
   })
 
   /** The icon follows the setting; the window does not. */
@@ -100,6 +101,7 @@ function createGlance({ traits, settings, commands, lifecycle, store, host, time
   settings.onChange((next, prev) => {
     if (prev.menubar.enabled !== next.menubar.enabled) setTrayEnabled(next.menubar.enabled)
     tray.update()
+    attention.drawBadge()
   })
 
   /** The menu bar window and, with the setting on, its icon. Only once there is an app to load. */
@@ -193,7 +195,7 @@ function createGlance({ traits, settings, commands, lifecycle, store, host, time
     isMaterial: (w) => menubar.isMaterial(w),
     keepRunningInTray,
     isOpenAsWindow: menubar.isOpenAsWindow,
-    applyOverlay: attention.applyOverlay,
+    drawBadge: attention.drawBadge,
     installUserTasks: attention.installUserTasks,
     // The quit is certain: the icon goes, and its rotation and refresh with it.
     // Not before: a quit a page can still cancel must not leave a running app

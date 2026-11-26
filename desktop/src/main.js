@@ -370,7 +370,7 @@ function createMainWindow(url) {
   })
   commands.attachMainWindow(mainWindow)
   navigate(mainWindow, url)
-  glance.applyOverlay()
+  glance.drawBadge()
   return mainWindow
 }
 

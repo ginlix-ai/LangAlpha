@@ -60,6 +60,7 @@ function view(overrides: Partial<DesktopSettingsView> = {}): DesktopSettingsView
       rotateSeconds: 4,
       show: 'change',
       extendedHours: true,
+      logo: true,
     },
     panel: {
       sections: [
@@ -72,12 +73,15 @@ function view(overrides: Partial<DesktopSettingsView> = {}): DesktopSettingsView
       watchlistId: null,
       watchlistRows: 5,
     },
+    badge: 'count',
     openAtLogin: false,
     shortcut: '',
     keepRunningInTray: true,
     support: {
       menubarPanel: true,
       trayTitle: true,
+      trayLogo: true,
+      badge: ['count', 'dot', 'off'],
       openAtLogin: true,
       shortcut: true,
       keepRunningInTray: false,
@@ -170,6 +174,43 @@ describe('DesktopPanel menu bar and panel', () => {
     await screen.findByText("Shown in the tray icon's tooltip. Drag to reorder.");
     expect(screen.queryByRole('button', { name: 'Rotate' })).not.toBeInTheDocument();
     expect(screen.getByText('Extended hours')).toBeInTheDocument();
+  });
+
+  it('hides the logo where the shell can, and offers no switch where it cannot', async () => {
+    const { unmount } = renderWithProviders(<DesktopPanel />);
+    fireEvent.click(await screen.findByRole('switch', { name: 'Show the LangAlpha logo' }));
+    expect(h.patches.at(-1)).toEqual({ menubar: { logo: false } });
+    unmount();
+
+    // A shell older than the switch would drop the patch, so it is not offered.
+    const { trayLogo: _, ...older } = view().support;
+    h.view = view({ support: older });
+    renderWithProviders(<DesktopPanel />);
+    await screen.findByText('Extended hours');
+    expect(screen.queryByRole('switch', { name: 'Show the LangAlpha logo' })).not.toBeInTheDocument();
+  });
+
+  it('offers the badge as this platform draws it', async () => {
+    const { unmount } = renderWithProviders(<DesktopPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Dot' }));
+    expect(h.patches.at(-1)).toEqual({ badge: 'dot' });
+    unmount();
+
+    // Only what the shell says this platform draws: no number on Windows.
+    h.platform = 'win32';
+    h.view = view({ badge: 'dot', support: { ...view().support, trayTitle: false, badge: ['dot', 'off'] } });
+    const windows = renderWithProviders(<DesktopPanel />);
+    await screen.findByText('App icon badge');
+    expect(screen.queryByRole('button', { name: 'Number' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dot' })).toHaveAttribute('aria-pressed', 'true');
+    windows.unmount();
+
+    // A shell older than the choice would drop it, so it is not offered.
+    const { badge: _, ...older } = view().support;
+    h.view = view({ support: older });
+    renderWithProviders(<DesktopPanel />);
+    await screen.findByText('Extended hours');
+    expect(screen.queryByText('App icon badge')).not.toBeInTheDocument();
   });
 
   it('says where the items go on Linux', async () => {
