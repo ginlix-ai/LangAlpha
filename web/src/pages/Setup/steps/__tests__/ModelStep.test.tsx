@@ -551,6 +551,7 @@ describe('ModelStep, a subscription or an API key answered', () => {
     h.settled = () => true;
     h.pick = null;
     h.saveDefault = vi.fn(async () => true);
+    h.finish = vi.fn(async () => true);
   });
 
   function renderConnected(settledNow: boolean) {
@@ -569,20 +570,40 @@ describe('ModelStep, a subscription or an API key answered', () => {
     return { view: render(tree()), tree };
   }
 
-  it('holds Continue on a key just connected until its default is decided, then saves it', async () => {
+  it('holds Continue on a key just connected until its default is decided, saves it, and goes on', async () => {
     const { view, tree } = renderConnected(false);
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    expect(h.finish).not.toHaveBeenCalled();
     h.settled = () => true;
     h.pick = 'gpt-x';
     view.rerender(tree());
     await waitFor(() => expect(h.saveDefault).toHaveBeenCalledWith('gpt-x'));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled());
+    await waitFor(() => expect(h.finish).toHaveBeenCalledTimes(1));
   });
 
-  it('lets Continue go once it is decided that no default is saved', async () => {
+  it('goes on with no default saved once it is decided there is none', async () => {
     renderConnected(true);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled());
+    await waitFor(() => expect(h.finish).toHaveBeenCalledTimes(1));
     expect(h.saveDefault).not.toHaveBeenCalled();
+  });
+
+  it('goes on even when the default could not be saved, since the next step picks it', async () => {
+    h.pick = 'gpt-x';
+    h.saveDefault = vi.fn(async () => false);
+    renderConnected(true);
+    await waitFor(() => expect(h.finish).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not go on from a step the user left while the default was saved', async () => {
+    let saved!: (ok: boolean) => void;
+    h.pick = 'gpt-x';
+    h.saveDefault = vi.fn(() => new Promise<boolean>((resolve) => { saved = resolve; }));
+    const { view } = renderConnected(true);
+    await waitFor(() => expect(h.saveDefault).toHaveBeenCalledWith('gpt-x'));
+    view.unmount();
+    saved(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.finish).not.toHaveBeenCalled();
   });
 
   it('lists the subscription chooser, with keys as a quiet way on under it', async () => {
