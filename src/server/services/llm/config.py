@@ -117,11 +117,14 @@ def deployment_key(provider_info: dict) -> str | None:
     import os
 
     from src.config.settings import HOST_MODE
+    from src.llms.llm import provider_env_keys
 
-    env_key = provider_info.get("env_key")
-    if HOST_MODE != "oss" or not env_key:
+    if HOST_MODE != "oss":
         return None
-    return os.getenv(env_key) or None
+    for env_key in provider_env_keys(provider_info):
+        if key := os.getenv(env_key):
+            return key
+    return None
 
 
 def _default_route() -> tuple[str | None, dict]:

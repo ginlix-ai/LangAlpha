@@ -498,6 +498,23 @@ def _drop_connection_params(params: dict, model: str) -> None:
 CUSTOM_MODEL_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,62}$"
 
 
+
+def provider_env_keys(provider_info: dict) -> list[str]:
+    """Env vars that can hold a provider's deployment key: the manifest's
+    ``env_key`` first, then any ``env_key_aliases`` (de-duplicated, in order).
+
+    Every reader of a provider's deployment key goes through this so an alias
+    is honoured the same way everywhere (key resolution, status checks).
+    """
+    env_keys: list[str] = []
+    primary = provider_info.get("env_key")
+    if primary:
+        env_keys.append(primary)
+    for alias in provider_info.get("env_key_aliases", []):
+        if alias and alias not in env_keys:
+            env_keys.append(alias)
+    return env_keys
+
 class LLM:
     """Factory class for creating LangChain LLM clients."""
 
@@ -830,12 +847,12 @@ class LLM:
         """
         if self.api_key_override is not None:
             return self.api_key_override or "EMPTY"
-        env_keys = []
-        if self.env_key:
-            env_keys.append(self.env_key)
-        for env_key in self.provider_info.get("env_key_aliases", []):
-            if env_key and env_key not in env_keys:
-                env_keys.append(env_key)
+        env_keys = provider_env_keys(
+            {
+                "env_key": self.env_key,
+                "env_key_aliases": self.provider_info.get("env_key_aliases", []),
+            }
+        )
         for env_key in env_keys:
             key = os.getenv(env_key)
             if key:
