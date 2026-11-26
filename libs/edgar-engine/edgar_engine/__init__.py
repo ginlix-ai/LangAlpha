@@ -4,7 +4,8 @@ The public API is what this package exports, plus edgar_engine.filings (filing s
 edgar_engine.amendments (amended_sections, amendment_scope, merge, read, restates_statements), edgar_engine.cache,
 edgar_engine.documents, edgar_engine.forms (item_order, item_title, mdna_item), edgar_engine.statements (Financials,
 from_submission, read), edgar_engine.submission (fetching, reading and parsing a filing's .txt), edgar_engine.ownership
-(Forms 3, 4 and 5, and Form 144) and edgar_engine.thirteenf (Form 13F); each declares it in __all__.
+(Forms 3, 4 and 5, and Form 144), edgar_engine.thirteenf (Form 13F) and edgar_engine.nport (Form N-PORT); each
+declares it in __all__.
 Everything else, and every module of edgar_engine.sections except model, is internal.
 
 edgar_engine.periods (13F deadlines and the period expected on a day) is public too. The exports load on first use,

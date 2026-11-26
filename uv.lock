@@ -2592,7 +2592,7 @@ requires-dist = [
     { name = "edgartools", specifier = ">=5.62.1,<7" },
     { name = "lxml", specifier = ">=5.3" },
     { name = "pandas", specifier = ">=2.2" },
-    { name = "pyarrow", specifier = ">=14" },
+    { name = "pyarrow", specifier = ">=23.0.1" },
 ]
 
 [package.metadata.requires-dev]

@@ -283,6 +283,41 @@ edgartools' identity, rate limit and retries. A body without its `</SEC-DOCUMENT
 it is fetched once more past edgartools' HTTP cache, then raises and is never cached. The parsers are strict: an XML document cut short or not well formed reads as no
 document, never as a partial one.
 
+
+## N-PORT fund holdings
+
+`edgar_engine.nport` reads Form N-PORT (NPORT-P and NPORT-P/A), the portfolio report every registered fund other than a
+money market fund files; a fund's report for the last month of each fiscal quarter turns public 60 days after it.
+
+```python
+from edgar_engine.nport import EQUITY, holding_rows, latest_positions, parse_nport, read_nport_dataset
+
+report = parse_nport(submission)              # one series' report: fund fields and every investment, as filed
+rows = holding_rows(report, EQUITY)           # flat rows of its common and preferred equity
+filings, holdings = read_nport_dataset("2026q3_nport.zip", EQUITY)   # SEC's quarterly data set, same columns
+positions = latest_positions(filings, holdings)   # each fund's positions as of its latest report
+```
+
+**Reports.** `parse_nport` reads the fund (registrant, series and class ids, report date, fiscal year end, assets and
+net assets, whether it is the final filing) and every investment of Part C in document order: name, LEI, title,
+CUSIP, ISIN, ticker and other identifiers, balance and its units (`NS` shares, `PA` principal, `NC` contracts, `OU`
+other), currency and exchange rate, value in US dollars, percent of net assets, payoff profile, asset and issuer
+category (an "other" category keeps its description), country, restricted flag, fair value level and derivative
+category. Codes stay as filed; identifiers keep their inner spaces (an option symbol's padding).
+
+**Data sets.** `read_nport_dataset` reads SEC's Form N-PORT Data Sets (one zip per filing quarter, about 450 MB) into
+the same columns. The holdings table runs to millions of rows, mostly debt, so it is streamed in blocks and cut to the
+asset categories asked for as it is read: a quarter's equity (about 1.9 million rows) reads in about 20 seconds with
+under 2 GB resident. The data sets name no class ids, and `seq` follows their holding key, which follows document
+order.
+
+**Holders.** `latest_positions` turns reports into who holds what. A fund is its EDGAR series, or the registrant when
+it names none (a closed-end fund, a unit investment trust). One report stands per fund and report date: a later
+filing for the date (an NPORT-P/A restates the whole report) replaces the earlier one. Each fund counts as of its
+latest report, a fund whose latest report is its final filing is left out, and the report before gives
+`shares_prior`. A share position is long equity counted in shares; its security is the CUSIP as filed, or the CUSIP
+inside a US or Canadian ISIN when the filed one fails its check digit (many funds file `N/A` beside an ISIN).
+
 ## Filings and cache
 
 `edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks an
