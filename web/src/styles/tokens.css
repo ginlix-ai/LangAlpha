@@ -81,8 +81,7 @@ html {
   --font-content: 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Menlo', 'Noto Sans SC', ui-monospace, SFMono-Regular, monospace;
 
-  --sidebar-width: 64px;
-  --sidebar-rail-width: 64px;
+  --sidebar-width: 0px;
   --bottom-tab-bar: 78px;
   /* What is fixed to the screen's bottom measures off this, which is the keyboard
      while one is up (App.css). */

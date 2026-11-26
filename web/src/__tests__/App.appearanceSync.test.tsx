@@ -34,6 +34,7 @@ vi.mock('@/components/WarmHome', () => ({ WarmHome: () => null }));
 vi.mock('@/pages/Plugins/components/ConnectConsentHost', () => ({ ConnectConsentHost: () => null }));
 vi.mock('@/pages/Plugins/components/ConnectLandingHost', () => ({ ConnectLandingHost: () => null }));
 vi.mock('@/components/Sidebar/AppSidebar', () => ({ default: () => null }));
+vi.mock('@/components/TopBar/AppTopBar', () => ({ default: () => null }));
 
 import App from '../App';
 

@@ -7,7 +7,7 @@ export type GroupKey = FeatureCategory | 'other';
 
 /** The order the groups are listed in. A category this build does not know
  *  yet lands in `other`, at the end, rather than being dropped. */
-const GROUP_ORDER: readonly GroupKey[] = ['chat', 'tools', 'autonomy', 'long_threads', 'dashboard', 'other'];
+const GROUP_ORDER: readonly GroupKey[] = ['chat', 'tools', 'autonomy', 'long_threads', 'dashboard', 'layout', 'other'];
 
 export interface ExperimentRow {
   feature: ExperimentFeature;

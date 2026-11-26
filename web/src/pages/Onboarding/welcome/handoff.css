@@ -24,7 +24,7 @@ html[data-handoff] [data-handoff-scope] [data-handoff='composer'] {
 html[data-handoff] [data-handoff-scope] [data-handoff='header'] {
   view-transition-name: handoff-header;
 }
-html[data-handoff] :is([data-handoff-scope] .wizard-topbar img, .sidebar-brand > img, .sidebar-logo > img) {
+html[data-handoff] :is([data-handoff-scope] .wizard-topbar img, .sidebar-brand > img) {
   view-transition-name: handoff-logo;
 }
 html[data-handoff] :is([data-handoff-scope] .wizard-topbar .title-font, .sidebar-wordmark) {

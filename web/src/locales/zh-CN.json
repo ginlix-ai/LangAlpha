@@ -141,10 +141,10 @@
     "newChat": "新对话",
     "workspaces": "工作区",
     "workspaceGallery": "工作区总览",
-    "collapse": "收起侧边栏",
+    "collapse": "隐藏侧边栏",
     "back": "后退",
     "forward": "前进",
-    "expand": "展开侧边栏",
+    "expand": "显示侧边栏",
     "resize": "调整侧边栏宽度",
     "plugins": "插件",
     "orders": "订单",
@@ -3831,5 +3831,12 @@
     "openInBrowser": "在 Agent 浏览器中打开",
     "openInNewTab": "在新标签页中打开",
     "copyLink": "复制链接"
+  },
+  "pageTabs": {
+    "label": "已打开的页面",
+    "newTab": "新标签页",
+    "close": "关闭{{title}}",
+    "untitled": "LangAlpha",
+    "full": "已打开 {{count}} 个标签页，请先关闭一个再打开新的。"
   }
 }

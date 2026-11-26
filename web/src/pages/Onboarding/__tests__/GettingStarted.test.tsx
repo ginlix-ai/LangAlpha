@@ -27,14 +27,10 @@ function LocationProbe() {
   return <span data-testid="loc">{useLocation().pathname}</span>;
 }
 
-function renderLauncher(variant: 'row' | 'rail' = 'row', onExpand = vi.fn()) {
+function renderLauncher() {
   return render(
     <MemoryRouter initialEntries={['/settings']}>
-      {variant === 'row' ? (
-        <GettingStartedLauncher variant="row" />
-      ) : (
-        <GettingStartedLauncher variant="rail" onExpand={onExpand} />
-      )}
+      <GettingStartedLauncher />
       <Routes>
         <Route path="*" element={<LocationProbe />} />
       </Routes>
@@ -76,19 +72,6 @@ describe('GettingStartedLauncher', () => {
     expect(header()).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(header());
     expect(screen.getByRole('button', { name: /Check live markets/ })).toBeInTheDocument();
-  });
-
-  it('the rail ring opens the sidebar on the list, focused on the next task', () => {
-    localStorage.setItem('onboarding.guideOpen', '0');
-    const onExpand = vi.fn();
-    const { unmount } = renderLauncher('rail', onExpand);
-    fireEvent.click(header());
-    expect(onExpand).toHaveBeenCalledTimes(1);
-    // The sidebar swaps the rail for the panel, which draws the section.
-    unmount();
-    renderLauncher();
-    expect(header()).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('button', { name: /Check live markets/ })).toHaveFocus();
   });
 
   it('clicking a pending task navigates to its target', () => {

@@ -54,6 +54,7 @@ export async function framerMock() {
     useTransform: () => ({ get: () => 0, set: () => {}, on: () => () => {} }),
     useSpring: (v: unknown) => ({ get: () => v, set: () => {}, on: () => () => {} }),
     useReducedMotion: () => false,
+    useIsPresent: () => true,
     cubicBezier,
   };
 }

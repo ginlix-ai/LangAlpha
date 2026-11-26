@@ -8,6 +8,7 @@ import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 import { isImeComposing } from '@/lib/ime';
 import { matchesAllWords, queryWords } from '@/lib/textMatch';
 import { GROUPS, SECTIONS, searchableSettings, sectionShown, settingSearchText, type Section, type SettingEntry } from '../sections';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 
 /**
  * The page's navigation: a search over every setting, then the sections in
@@ -74,57 +75,63 @@ export function SettingsRail({ section }: { section: Section }) {
 
   return (
     <div className={cn('page-rail settings-rail', (searchOpen || searching) && 'is-searching')}>
-      <div className="page-search settings-search">
-        <Search className="settings-search-icon" aria-hidden />
-        <input
-          ref={inputRef}
-          type="search"
-          className="page-search-input"
-          role="combobox"
-          aria-expanded={searching}
-          aria-controls={listId}
-          aria-autocomplete="list"
-          aria-activedescendant={searching && matches.length > 0 ? `${listId}-${shownActive}` : undefined}
-          aria-label={t('settings:search.label')}
-          placeholder={t('settings:search.placeholder')}
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setActive(0); }}
-          onFocus={() => setFocused(true)}
-          onBlur={() => {
-            setFocused(false);
-            if (!query) setSearchOpen(false);
-          }}
-          onKeyDown={(e) => {
-            // Keys that commit an IME composition edit the query; they pick nothing.
-            if (isImeComposing(e)) return;
-            if (e.key === 'Escape') {
-              e.preventDefault();
-              if (query) setQuery('');
-              else e.currentTarget.blur();
-            } else if (e.key === 'ArrowDown' && matches.length > 0) {
-              e.preventDefault();
-              setActive((shownActive + 1) % matches.length);
-            } else if (e.key === 'ArrowUp' && matches.length > 0) {
-              e.preventDefault();
-              setActive((shownActive - 1 + matches.length) % matches.length);
-            } else if (e.key === 'Enter' && matches[shownActive]) {
-              e.preventDefault();
-              open(matches[shownActive], true);
-            }
-          }}
-        />
-        {!query && !focused && <kbd className="settings-search-key" aria-hidden>/</kbd>}
-        {query && (
-          <button
-            type="button"
-            className="settings-search-clear"
-            aria-label={t('settings:search.clear')}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => setQuery('')}
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
+      {/* The search keeps a usable width: beside the hidden sidebar's toggle
+          where they fit, under it where they do not (the desktop app's back
+          and forward take more room). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <SidebarReveal titlebar />
+        <div className="page-search settings-search min-w-0 flex-[1_1_160px]">
+          <Search className="settings-search-icon" aria-hidden />
+          <input
+            ref={inputRef}
+            type="search"
+            className="page-search-input"
+            role="combobox"
+            aria-expanded={searching}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-activedescendant={searching && matches.length > 0 ? `${listId}-${shownActive}` : undefined}
+            aria-label={t('settings:search.label')}
+            placeholder={t('settings:search.placeholder')}
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setActive(0); }}
+            onFocus={() => setFocused(true)}
+            onBlur={() => {
+              setFocused(false);
+              if (!query) setSearchOpen(false);
+            }}
+            onKeyDown={(e) => {
+              // Keys that commit an IME composition edit the query; they pick nothing.
+              if (isImeComposing(e)) return;
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                if (query) setQuery('');
+                else e.currentTarget.blur();
+              } else if (e.key === 'ArrowDown' && matches.length > 0) {
+                e.preventDefault();
+                setActive((shownActive + 1) % matches.length);
+              } else if (e.key === 'ArrowUp' && matches.length > 0) {
+                e.preventDefault();
+                setActive((shownActive - 1 + matches.length) % matches.length);
+              } else if (e.key === 'Enter' && matches[shownActive]) {
+                e.preventDefault();
+                open(matches[shownActive], true);
+              }
+            }}
+          />
+          {!query && !focused && <kbd className="settings-search-key" aria-hidden>/</kbd>}
+          {query && (
+            <button
+              type="button"
+              className="settings-search-clear"
+              aria-label={t('settings:search.clear')}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setQuery('')}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {searching ? (

@@ -52,6 +52,10 @@
         "title": "仪表盘",
         "description": "仪表盘上显示的内容。"
       },
+      "layout": {
+        "title": "布局",
+        "description": "应用窗口的排布方式。"
+      },
       "other": {
         "title": "其他",
         "description": "更多可以试用的功能。"
@@ -142,6 +146,14 @@
     "claude_oauth": {
       "label": "Claude 登录（旧版）",
       "description": "通过登录你的 Claude 账户使用 Claude Pro 或 Max 套餐，由 LangAlpha 直接调用 Claude。Claude Code 模式将取代它。"
+    },
+    "page_tabs": {
+      "label": "页面标签",
+      "description": "把打开的页面作为标签排在窗口顶部，不用侧边栏也能在对话、行情和仪表盘之间切换。",
+      "on_if": "你常同时开着几个页面来回切换，而且经常隐藏侧边栏。",
+      "off_if": "你习惯用侧边栏切换页面，想让窗口顶部保持清爽。",
+      "cost": "不产生额外费用",
+      "good_to_know": "标签记住的是所在的页面，不是滚动到的位置。所有标签共用一套后退和前进记录，并且只保存在这台设备上。"
     }
   },
   "theme": "主题",

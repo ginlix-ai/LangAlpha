@@ -26,6 +26,7 @@ import { OrderFilters } from './components/OrderFilters';
 import { OrdersTable } from './components/OrdersTable';
 import { parseOrderDetail, withOrderDetail } from './utils/detailParam';
 import './Orders.css';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 
 /** An unknown status in the URL is no filter, not a request for nothing. */
 function statusGroupParam(raw: string | null): OrderStatusGroup | null {
@@ -120,12 +121,15 @@ function Orders() {
         <div className="orders-container">
           <div className="flex items-start justify-between gap-3 mb-6">
             <div className="min-w-0">
-              <h1
-                className="font-[family-name:var(--cs-face,var(--font-ui))] text-[length:var(--cs-text-title,1.25rem)] leading-7 font-semibold tracking-[var(--cs-title-track,normal)] mb-1"
-                style={{ color: 'var(--color-text-primary)' }}
-              >
-                {t('orders:title')}
-              </h1>
+              <div className="flex items-center gap-3 mb-1">
+                <SidebarReveal />
+                <h1
+                  className="font-[family-name:var(--cs-face,var(--font-ui))] text-[length:var(--cs-text-title,1.25rem)] leading-7 font-semibold tracking-[var(--cs-title-track,normal)]"
+                  style={{ color: 'var(--color-text-primary)' }}
+                >
+                  {t('orders:title')}
+                </h1>
+              </div>
               <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
                 {t('orders:description')}
               </p>

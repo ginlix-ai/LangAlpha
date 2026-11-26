@@ -1,4 +1,4 @@
-import { Blocks, ChartCandlestick, HardDrive, LayoutDashboard, LibraryBig, MessagesSquare, Receipt, Settings, Timer } from 'lucide-react';
+import { Blocks, ChartCandlestick, HardDrive, LayoutDashboard, LibraryBig, MessagesSquare, Receipt, Settings, SquarePen, Timer } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 export interface NavItem {
@@ -7,8 +7,8 @@ export interface NavItem {
   icon: LucideIcon;
   /** i18n key resolved via t(). */
   labelKey: string;
-  /** Active-state strategy: 'prefix' = pathname.startsWith(key); 'exact-or-sub' = exact match or key + '/' sub-path. */
-  match: 'prefix' | 'exact-or-sub';
+  /** Active-state strategy: 'prefix' = pathname.startsWith(key); 'exact-or-sub' = exact match or key + '/' sub-path; 'never' = an action, not a place. */
+  match: 'prefix' | 'exact-or-sub' | 'never';
   /**
    * What has to be true before the item is drawn at all; absent = always.
    * Declared here rather than in a nav surface because three of them draw this
@@ -37,4 +37,13 @@ export const SETTINGS_ITEM: NavItem = {
   icon: Settings,
   labelKey: 'sidebar.settings',
   match: 'exact-or-sub',
+};
+
+// Where the desktop's lists put the chat item: an action that starts one,
+// never marked as the page you are on.
+export const NEW_CHAT_ITEM: NavItem = {
+  key: '/chat',
+  icon: SquarePen,
+  labelKey: 'sidebar.newChat',
+  match: 'never',
 };

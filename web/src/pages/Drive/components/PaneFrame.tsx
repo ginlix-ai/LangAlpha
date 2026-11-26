@@ -2,6 +2,7 @@ import type React from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 
 /** The page's small icon buttons (back, more): the ghost button at the list's 28px. */
 export const ICON_BUTTON = 'tap-target h-7 w-7 shrink-0 text-(--color-text-tertiary) hover:text-(--color-text-secondary)';
@@ -41,6 +42,7 @@ export function PaneFrame({
     <div className={cn('drive-pane', className)} {...rest}>
       <div className="drive-pane-head">
         <div className="drive-pane-title-row">
+          <SidebarReveal />
           {back && <BackButton {...back} />}
           <h1 className="drive-title">{title}</h1>
           <div className="drive-pane-actions">{actions}</div>

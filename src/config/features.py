@@ -64,6 +64,7 @@ class FeatureCategory(StrEnum):
     AUTONOMY = "autonomy"
     LONG_THREADS = "long_threads"
     DASHBOARD = "dashboard"
+    LAYOUT = "layout"
 
 
 @dataclass(frozen=True)
@@ -327,6 +328,32 @@ FEATURES: dict[str, FeatureSpec] = {
             good_to_know=(
                 "Archiving a thread deletes its scratchpad and notes, so keep "
                 "anything you want to last in the workspace's own files."
+            ),
+        ),
+    ),
+    "page_tabs": FeatureSpec(
+        key="page_tabs",
+        label="Page tabs",
+        description=(
+            "Keeps the pages you have open as tabs along the top of the window, "
+            "so you can move between a chat, the market and your dashboard "
+            "without the sidebar."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        category=FeatureCategory.LAYOUT,
+        preview=True,
+        guide=FeatureGuide(
+            on_if=(
+                "you keep a few pages going at once and switch between them, "
+                "often with the sidebar hidden."
+            ),
+            off_if="you move around from the sidebar and want the top of the window clear.",
+            cost="No extra cost",
+            good_to_know=(
+                "A tab remembers the page it was on, not what you scrolled to. "
+                "Tabs share one back and forward history, and they are kept on "
+                "this device only."
             ),
         ),
     ),

@@ -11,6 +11,7 @@ import { ArrowLeft, PanelRight, Menu, Users } from 'lucide-react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useLatestRef } from '@/hooks/useLatestRef';
+import { usePageTabLeaveGuard } from '@/components/PageTabs/usePageTabLeaveGuard';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { usePreferences } from '@/hooks/usePreferences';
 import { usePlanReader } from '@/hooks/useClaudeCodePlan';
@@ -72,6 +73,10 @@ import { WorkflowRunContext } from './WorkflowRunContext';
 import WorkflowRunDetail from './WorkflowRunDetail';
 import { WORKFLOW_TASK_TYPE } from '../session/subagents/workflowRunState';
 import { deriveSubagentStatus, isTerminalStatus } from '../session/subagents/subagentStatus';
+import { threadPath } from '../utils/chatRoutes';
+import { ChatBreadcrumb } from './chatView/ChatBreadcrumb';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
+import { useChatTrail } from './chatView/useChatTrail';
 import Markdown from './Markdown';
 import ChatMinimap from './ChatMinimap';
 import { DispatchStatusProvider } from '../hooks/usePTCDispatchStatus';
@@ -1203,7 +1208,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // id opens one of the thread's tasks there.
   const goToThread = useCallback((targetThreadId: string, navState: LocationState, taskId?: string) => {
     intentionalExitRef.current = true;
-    navigate(taskId ? `/chat/t/${targetThreadId}/${taskId}` : `/chat/t/${targetThreadId}`, { state: navState });
+    navigate(threadPath(targetThreadId, taskId), { state: navState });
   }, [navigate]);
   const leaveToThread = useCallback((targetThreadId: string, navState: LocationState, taskId?: string) => {
     leaveFiles(() => goToThread(targetThreadId, navState, taskId));
@@ -1224,6 +1229,32 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       dispatcherThreadId === fromThreadId && fromWorkspaceId ? { workspaceId: fromWorkspaceId } : {},
     );
   }, [leaveToThread, fromThreadId, fromWorkspaceId]);
+
+  // The header's trail: the workspace, the thread once it has a name, and the
+  // subagent or workflow open in it, a workflow's own step under its run. The
+  // back button takes one step up it. Leaving for the workspace asks the file
+  // panel first, as leaving for another thread does, and marks itself only
+  // once the user goes.
+  const exitToWorkspace = useCallback(() => {
+    leaveFiles(() => {
+      intentionalExitRef.current = true;
+      onBack();
+    });
+  }, [leaveFiles, onBack]);
+  // The tabs leave through the file panel too, while this view is on screen.
+  usePageTabLeaveGuard(isActive ? leaveFiles : null);
+  const { crumbs, up } = useChatTrail({
+    threadId: currentThreadId,
+    workspaceName,
+    isActive,
+    activeAgentId,
+    activeAgent,
+    agentRows: sidebarAgentRows,
+    onSelectAgent: handleSelectAgent,
+    fromThreadId,
+    onOpenDispatcher: openDispatcher,
+    onExit: exitToWorkspace,
+  });
 
   // "Fork from here": a new chat carrying on from this thread through a
   // reply, opened while this view is still the one in front. A view kept
@@ -1632,20 +1663,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
             through the global no-drag rule. */}
         <div data-chrome="drag" data-handoff="header" className="flex items-center justify-between px-4 py-2 border-b min-w-0 shrink-0" style={{ borderColor: 'var(--color-border-muted)', cursor: isMobile ? 'pointer' : undefined }} onClick={handleTopBarTap}>
           <div className="flex items-center gap-4 min-w-0 shrink">
+            <SidebarReveal titlebar />
             <button
-              onClick={() => {
-                if (activeAgentId !== 'main') {
-                  // Workflow-owned children step up to their run's view;
-                  // everything else returns to the main chat.
-                  handleSelectAgent(activeAgent?.ownerTaskId ?? 'main');
-                } else if (state?.fromThreadId) {
-                  // Back to the thread that dispatched this PTC thread.
-                  openDispatcher(state.fromThreadId);
-                } else {
-                  intentionalExitRef.current = true;
-                  onBack();
-                }
-              }}
+              onClick={up}
               className="p-2 rounded-md transition-colors shrink-0"
               style={{ color: 'var(--color-text-primary)' }}
               title={
@@ -1672,7 +1692,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <Menu className="h-5 w-5" />
               </button>
             )}
-            <h1 className="title-font text-[length:var(--cs-text-heading,1rem)] leading-6 font-semibold tracking-[var(--cs-title-track,-0.01em)] whitespace-nowrap truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="min-w-0 title-font text-[length:var(--cs-text-heading,1rem)] leading-6 font-semibold tracking-[var(--cs-title-track,-0.01em)] whitespace-nowrap truncate" style={{ color: 'var(--color-text-primary)' }}>
               {/* The bar's tap is a pointer's shortcut, and a bar holding buttons
                   cannot be one. The title is the same action as a real control,
                   named by the words on it, with what it does as its description. */}
@@ -1680,7 +1700,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <button type="button" className="block max-w-full truncate text-left" title={t('chat.scrollToTop')} onClick={scrollThreadToTop}>
                   {workspaceName || t('thread.workspace')}
                 </button>
-              ) : (workspaceName || t('thread.workspace'))}
+              ) : <ChatBreadcrumb crumbs={crumbs} />}
             </h1>
             {activeAgentId === 'main' && (
               <ForkedFromLink threadId={currentThreadId} onOpen={leaveToThread} />

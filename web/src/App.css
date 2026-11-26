@@ -29,7 +29,12 @@ html[data-keyboard-open] .app-layout {
   background-color: hsl(var(--bg-main));
   overflow: auto;
   box-sizing: border-box;
-  transition: padding-left var(--motion-fold) var(--ease-out);
+  /* Both offsets, since the column moves from one to the other as the top bar
+     comes and goes: one snapping while the other eases would slide the page
+     out from under the sidebar. */
+  transition:
+    padding-left var(--motion-fold) var(--ease-out),
+    margin-left var(--motion-fold) var(--ease-out);
 }
 
 /* Fixed overlays positioned off --sidebar-width. They are viewport-anchored, so
@@ -57,14 +62,69 @@ html[data-keyboard-open] .app-layout {
    needed from here: the strip is the first child of an unpadded column, so it
    already starts at the window's top edge and runs the column's full width. */
 
-/* In the desktop shell the window buttons live in the sidebar's titlebar row,
-   not over this column, so the strip is a drag handle and no longer needs a
-   band of its own. It keeps its full height but takes no room in the flow: the
+/* In the desktop shell the window buttons sit over the sidebar's top row, or
+   over a page's first row once the sidebar is hidden (SidebarReveal starts
+   past them), so the strip is a drag handle and no longer needs a band of its
+   own. It keeps its full height but takes no room in the flow: the
    route's content starts at the top edge and the strip lies over its top
    padding. Controls under it stay clickable because they declare `no-drag`
-   (chrome.css). The narrow layout below hides it. */
+   (chrome.css). The narrow layout and the top bar below hide it. */
 html.desktop-mac .app-main .chrome-drag-strip {
   margin-bottom: -38px;
+}
+
+/* The top bar (AppTopBar): a row across the top of the window, its left end
+   the sidebar's corner (brand, toggle, back and forward), which keeps one
+   spot whether the sidebar is shown, hidden under a spanning bar, or peeking.
+   The bar spans this column only while it holds something there (App.tsx):
+   the open pages with tabs on, or a page's own controls. Shown with neither,
+   the corner sits over the sidebar's own top row; hidden with neither, the
+   toggle moves into the page's own first row and the corner is drawn only
+   over a peek.
+
+   With the bar spanning, the window is two layers: the bar and the sidebar on
+   one ground, and the page a card set into it under the bar, its corner
+   rounded and its edge drawn, so the bar reads as the window's own chrome
+   rather than as an empty header on the page. The card's own box is the
+   scroll port, so the corner clips what scrolls under it. Under the bar a
+   page's first row starts a little higher than on a bare window, since the
+   bar above it already holds the window's top edge, but still clear of the
+   card's edge. */
+.app-layout {
+  --topbar-height: 38px;
+}
+
+.app-layout--topbar {
+  background: var(--color-shell-float, hsl(var(--sidebar-bg)));
+}
+
+.app-layout--topbar .app-main {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  height: calc(100% - var(--topbar-height));
+  margin-top: var(--topbar-height);
+  margin-left: var(--sidebar-width);
+  padding-left: 0;
+  border-top: 1px solid var(--color-shell-edge, hsl(var(--sidebar-border)));
+  border-left: 1px solid var(--color-shell-edge, hsl(var(--sidebar-border)));
+  border-top-left-radius: 12px;
+  --page-top: clamp(16px, 2vw, 24px);
+}
+
+/* The sidebar's edge is the card's now. */
+.app-layout--topbar .sidebar:not(.sidebar--hidden) {
+  border-right-color: transparent;
+}
+
+/* Hidden, a gutter of the ground keeps the card's edge and corner in view. */
+.app-layout--topbar.app-layout--sidebar-hidden .app-main {
+  margin-left: 8px;
+}
+
+/* The bar moves the window, so a route's own drag strip stands down. */
+.app-layout--topbar .app-main .chrome-drag-strip {
+  display: none;
 }
 
 @media (max-width: 767px) {

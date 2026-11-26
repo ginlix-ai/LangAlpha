@@ -53,6 +53,7 @@ vi.mock('@/lib/framer', async () => {
     useTransform: () => ({ get: () => 0, set: () => {}, on: () => () => {} }),
     useSpring: (v: unknown) => ({ get: () => v, set: () => {}, on: () => () => {} }),
     useReducedMotion: () => false,
+    useIsPresent: () => true,
     cubicBezier,
   };
 });
@@ -251,7 +252,9 @@ beforeEach(() => {
 describe('ChatView workflow run tabs', () => {
   it('opens the run detail for the deep-linked run', () => {
     mountAtRun('wfa');
-    expect(screen.getByText('first run')).toBeInTheDocument();
+    // Named in the run's detail and as the last step of the header's trail.
+    expect(screen.getAllByText('first run')).toHaveLength(2);
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('first run');
     expect(stopButton()).toBeEnabled();
   });
 
@@ -273,7 +276,7 @@ describe('ChatView workflow run tabs', () => {
       />,
     );
 
-    expect(screen.getByText('second run')).toBeInTheDocument();
+    expect(screen.getAllByText('second run')).toHaveLength(2);
     expect(stopButton()).toHaveTextContent('chat.workflowRun.stop');
     expect(stopButton()).toBeEnabled();
 
@@ -319,7 +322,7 @@ describe('ChatView workflow run tabs', () => {
     expect(stopButton()).toBeDisabled();
 
     back('wfa');
-    expect(screen.getByText('first run')).toBeInTheDocument();
+    expect(screen.getAllByText('first run')).toHaveLength(2);
     expect(stopButton()).toBeEnabled();
   });
 });

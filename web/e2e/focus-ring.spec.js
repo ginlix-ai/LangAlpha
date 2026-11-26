@@ -30,7 +30,7 @@ const EMPTY = { x: 760, y: 300 };
 
 // A route's content mounts from its own lazily loaded chunk after the shell
 // has painted, and on a loaded machine that first paint outlasts the 5s
-// default: under CPU contention the dashboard search box, the Workspaces field
+// default: under CPU contention the dashboard's fields, the Workspaces field
 // and the settings select each failed to appear within it. So a wait for a
 // page after navigating gets the budget the other specs give a first paint.
 const FIRST_PAINT = { timeout: 15_000 };
@@ -235,8 +235,12 @@ test.describe('a chart reached by keyboard', () => {
  * ring on every text field would satisfy every mouse assertion here and leave
  * a keyboard user with a caret for an indicator.
  */
-const SEARCH = '.dashboard-search-input';
 const COMPOSER = '.chat-input-container textarea';
+// The ticker filter in the dashboard's news feed: a bare field in a pill that
+// takes both its ring (`rings-within`) and its edge (`owns-its-edge`), on the
+// page every test here opens on.
+const NEWS_BOX = '.dash-news .dash-field';
+const NEWS = `${NEWS_BOX} > input`;
 const WORKSPACE_SEARCH = 'input[placeholder="Search workspaces..."]';
 // The pill around the Workspaces field: the field fills it, so the ring goes on
 // the container. See the `rings-within` block at the bottom of this file.
@@ -250,7 +254,7 @@ const SHARED_INPUT = '.cwm-modal .cwm-field input';
  * `rings` names the element the indicator lands on when it is not the field.
  */
 const CLICKED = [
-  { field: 'the dashboard search box', sel: SEARCH },
+  { field: 'the news feed ticker filter', sel: NEWS, rings: NEWS_BOX },
   { field: 'the chat composer', sel: COMPOSER },
   {
     field: 'the Workspaces search box',
@@ -273,7 +277,7 @@ const CLICKED = [
 ];
 
 test.describe('a text field clicked with the mouse', () => {
-  for (const { field, sel, open, edge } of CLICKED) {
+  for (const { field, sel, rings, open, edge } of CLICKED) {
     test(`leaves no ring on ${field}`, async ({ page }) => {
       if (open) await open(page);
       const target = page.locator(sel);
@@ -290,6 +294,12 @@ test.describe('a text field clicked with the mouse', () => {
       const clicked = await outlineOn(page, sel);
       expect(clicked.focused).toBe(true);
       expect(unpainted(clicked.style, clicked.color)).toBe(true);
+      // A field in a `rings-within` box never wears an outline itself, so the
+      // read that can fail is the box's.
+      if (rings) {
+        const box = await outlineOn(page, rings);
+        expect(unpainted(box.style, box.color)).toBe(true);
+      }
       if (edge) {
         // A bordered field marks the click with its edge, not a ring: the
         // accent border and the one-pixel soft halo the focused-field rule in
@@ -305,7 +315,7 @@ test.describe('a text field clicked with the mouse', () => {
 /**
  * The focused edge is a shadow, and a shadow draws on a field with no border
  * as well: a faint rectangle inside a box that is already lit. So a borderless
- * field inside an edge-owning box (the composer, the dashboard search form, a
+ * field inside an edge-owning box (the composer, the news feed's ticker pill, a
  * `rings-within` pill) must stay exactly as it rested, and the box is what
  * takes the edge. This is the regression a global field rule reopens first.
  * The composer owns its edge to keep it neutral: its pills open menus against
@@ -314,7 +324,7 @@ test.describe('a text field clicked with the mouse', () => {
 test.describe('a borderless field inside a box that owns the edge', () => {
   const BOXED = [
     { field: 'the chat composer', sel: COMPOSER, box: '.chat-input-container', lit: false },
-    { field: 'the dashboard search box', sel: SEARCH, box: '.dashboard-search-form' },
+    { field: 'the news feed ticker filter', sel: NEWS, box: NEWS_BOX },
     {
       field: 'the Workspaces search box',
       sel: WORKSPACE_SEARCH,
@@ -359,9 +369,10 @@ test.describe('a text field reached by keyboard', () => {
   test('wears the same ring as every other control', async ({ page }) => {
     // The tab order is only complete once the route has mounted; walking it
     // early wraps through a shorter ring and never arrives.
-    await expect(page.locator(SEARCH)).toBeVisible(FIRST_PAINT);
-    await tabTo(page, SEARCH);
-    const field = await outlineOn(page, SEARCH);
+    await expect(page.locator(NEWS)).toBeVisible(FIRST_PAINT);
+    // The dashboard's widgets put every row's attach button in the tab order.
+    await tabTo(page, NEWS, 120);
+    const field = await outlineOn(page, NEWS_BOX);
     expect(field.style).toBe('solid');
 
     // One baseline rule serves both; drift here means a field grew its own.
@@ -384,10 +395,13 @@ test.describe('a text field reached by keyboard', () => {
 
   test('still rings after the click that focused it is followed by typing', async ({ page }) => {
     // The trap in gating on "last input device": typing is a keydown, so a
-    // global flag would light the ring under the user mid-sentence.
-    await page.click(SEARCH);
+    // global flag would light the ring under the user mid-sentence. The
+    // composer, because it wears its ring itself: on a `rings-within` field
+    // the field's own outline is none whatever happens, so reading it would
+    // pass vacuously.
+    await page.click(COMPOSER);
     await page.keyboard.type('AAPL');
-    const typed = await outlineOn(page, SEARCH);
+    const typed = await outlineOn(page, COMPOSER);
     expect(typed.focused).toBe(true);
     expect(unpainted(typed.style, typed.color)).toBe(true);
   });
@@ -401,9 +415,10 @@ test.describe('a text field reached by keyboard', () => {
     // a transparent 2px outline instead. Read from the computed style rather
     // than under emulation: emulating the media query does not perform the
     // colour substitution that makes the outline visible, so the substitution
-    // is the browser's half of the contract and this is ours.
-    await page.click(SEARCH);
-    const clicked = await outlineOn(page, SEARCH);
+    // is the browser's half of the contract and this is ours. The composer
+    // for the reason the case above uses it.
+    await page.click(COMPOSER);
+    const clicked = await outlineOn(page, COMPOSER);
     expect(clicked.style).toBe('solid');
     expect(clicked.color).toMatch(/,\s*0\)$/);
   });
@@ -466,7 +481,7 @@ test.describe('a field whose container is the indicator', () => {
  */
 const PARKED = [
   { field: 'the chat composer', sel: COMPOSER },
-  { field: 'the dashboard search box', sel: SEARCH },
+  { field: 'the news feed ticker filter', sel: NEWS, rings: NEWS_BOX },
 ];
 
 /** What the browser fires around a trip out of the window and back. */
@@ -482,7 +497,7 @@ async function leaveWindowAndReturn(page) {
 }
 
 test.describe('a field left focused while the user is in another app', () => {
-  for (const { field, sel } of PARKED) {
+  for (const { field, sel, rings } of PARKED) {
     test(`comes back unringed on ${field}`, async ({ page }) => {
       await expect(page.locator(sel)).toBeVisible(FIRST_PAINT);
       const resting = await outlineOn(page, sel);
@@ -495,28 +510,30 @@ test.describe('a field left focused while the user is in another app', () => {
 
       const returned = await outlineOn(page, sel);
       expect(returned.focused).toBe(true);
-      expect(unpainted(returned.style, returned.color)).toBe(true);
       expect(returned.shadow).toBe(resting.shadow);
+      // A pill rings on its field's behalf, so the ring is read where it lands.
+      const ring = rings ? await outlineOn(page, rings) : returned;
+      expect(unpainted(ring.style, ring.color)).toBe(true);
     });
   }
 
   test('comes back still ringed for someone who tabbed to it', async ({ page }) => {
     // The over-eager fix passes every assertion above by never re-deciding at
     // all. A keyboard user has to leave and return to their own indicator.
-    await expect(page.locator(SEARCH)).toBeVisible(FIRST_PAINT);
-    await keyboardFocus(page, SEARCH);
-    expect(await outlineOn(page, SEARCH)).toMatchObject({ style: 'solid' });
+    await expect(page.locator(COMPOSER)).toBeVisible(FIRST_PAINT);
+    await keyboardFocus(page, COMPOSER);
+    expect(await outlineOn(page, COMPOSER)).toMatchObject({ style: 'solid' });
 
     await leaveWindowAndReturn(page);
-    expect(await outlineOn(page, SEARCH)).toMatchObject({ focused: true, style: 'solid' });
+    expect(await outlineOn(page, COMPOSER)).toMatchObject({ focused: true, style: 'solid' });
   });
 
   test('leaves the next real focus move free to decide for itself', async ({ page }) => {
     // Passing over the restore must consume exactly one focusin. If the flag
     // outlives it, the first control the user reaches after coming back
     // inherits the verdict of the one they left.
-    await expect(page.locator(SEARCH)).toBeVisible(FIRST_PAINT);
-    await page.click(SEARCH);
+    await expect(page.locator(COMPOSER)).toBeVisible(FIRST_PAINT);
+    await page.click(COMPOSER);
     await page.keyboard.type('AAPL');
     await leaveWindowAndReturn(page);
 

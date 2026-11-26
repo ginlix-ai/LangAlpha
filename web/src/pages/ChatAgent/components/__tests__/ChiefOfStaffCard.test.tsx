@@ -126,13 +126,14 @@ describe('ChiefOfStaffCard', () => {
     expect(onOpenThreads).toHaveBeenCalledWith(HOME.workspace_id, 'Chief of Staff', 'running');
   });
 
-  it('starts a blank thread from New thread', async () => {
+  it("opens Home's own page from New thread, as a workspace card does, not a bare chat", async () => {
     const user = userEvent.setup();
     mockThreads.mockResolvedValue({ threads: [], total: 0 });
-    renderCard();
+    const { onOpenThreads } = renderCard();
 
     await user.click(screen.getByTestId('chief-of-staff-new-thread'));
-    expect(mockNavigate).toHaveBeenCalledWith('/chat/t/__default__', { state: route });
+    expect(onOpenThreads).toHaveBeenCalledWith(HOME.workspace_id, 'Chief of Staff', 'running');
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('offers questions before it has a thread, each opening a thread with it typed but not sent', async () => {

@@ -2,8 +2,6 @@
   "title": "LangAlpha",
   "searchLabel": "按代码或公司名称搜索股票",
   "searchPlaceholder": "搜索股票代码或公司名称...",
-  "searching": "搜索中...",
-  "noResults": "未找到结果",
   "header": {
     "editLayout": "编辑布局",
     "exitEditLayout": "退出编辑"

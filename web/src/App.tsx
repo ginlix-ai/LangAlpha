@@ -1,8 +1,18 @@
-import React, { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { I18nProvider } from 'react-aria-components';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import AppSidebar from './components/Sidebar/AppSidebar';
+import AppTopBar from './components/TopBar/AppTopBar';
+import { TopBarSlotContext, useTopBarHost } from './components/TopBar/topBarSlot';
+import { useSidebarPeek } from './components/Sidebar/useSidebarPeek';
+import { SidebarRevealContext } from './components/Sidebar/sidebarRevealContext';
+import { useSidebarShortcut } from './components/Sidebar/sidebarShortcut';
+import { PageTabsProvider } from './components/PageTabs/PageTabsProvider';
+import { PAGE_TABS_FEATURE } from './components/PageTabs/pageTabsContext';
+import { useResumeTab } from './components/PageTabs/useResumeTab';
+import { useFeatureEnabled } from './hooks/useFeatures';
+import { cn } from '@/lib/utils';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './components/Sidebar/sidebarWidth';
 import { useScrollMemory } from './lib/scrollMemory';
 import BottomTabBar from './components/BottomTabBar/BottomTabBar';
@@ -210,16 +220,20 @@ function CallbackRoute() {
  * Redirects to dashboard or a ?redirect= target after login. A desktop window
  * that signed in on the portal comes back here without the query, so the target
  * it left with stands in. Read once: `App` clears that note once signed in.
+ * With page tabs on, the page the tab in front was showing takes the
+ * dashboard's place.
  */
 function RootRedirect() {
   const [redirectTo] = useState(() =>
     inAppPath(new URLSearchParams(window.location.search).get('redirect') ?? hostedSignInReturn())
   );
+  const resume = useResumeTab();
   if (redirectTo) {
     window.location.href = redirectTo;
     return null;
   }
-  return <Navigate to="/dashboard" replace />;
+  if (resume === undefined) return null;
+  return <Navigate to={resume ?? '/dashboard'} replace />;
 }
 
 /** Leaves the app for an address outside it, without a history entry to come back to. */
@@ -233,7 +247,9 @@ function LegacyAppPathRedirect() {
  * Authenticated app shell — sidebar + main content.
  * Redirects to the setup wizard if the user hasn't configured API keys.
  */
-const SIDEBAR_COLLAPSED_KEY = 'app-sidebar-collapsed';
+// The key predates hiding; it held the icon rail's collapsed state, which a
+// hidden sidebar inherits.
+const SIDEBAR_HIDDEN_KEY = 'app-sidebar-collapsed';
 const SIDEBAR_WIDTH_KEY = 'app-sidebar-width';
 /** Route state that only saves the page a fetch (the sidebar's workspace name and status). */
 const ROUTE_HINTS = new Set(['workspaceName', 'workspaceStatus']);
@@ -292,20 +308,20 @@ function AuthenticatedShell() {
     else preloadRouteChunk(window.location.pathname, queryClient);
   }, [queryClient]);
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+  const [sidebarHidden, setSidebarHidden] = useState(() => {
     try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+      return localStorage.getItem(SIDEBAR_HIDDEN_KEY) === 'true';
     } catch {
       return false;
     }
   });
   const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((prev) => {
+    setSidebarHidden((prev) => {
       const next = !prev;
       try {
-        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+        localStorage.setItem(SIDEBAR_HIDDEN_KEY, String(next));
       } catch {
-        // localStorage unavailable (private mode) — collapse still works for the session
+        // localStorage unavailable (private mode) — hiding still works for the session
       }
       return next;
     });
@@ -328,11 +344,19 @@ function AuthenticatedShell() {
   // Live drag updates write --sidebar-width straight to the DOM (no re-render
   // per pointermove — the whole route tree lives under this shell); React state
   // and localStorage only sync on commit (drag end / double-click reset).
+  const layoutRef = useRef<HTMLDivElement>(null);
+  // The one writer of the width, on the root and on the layout. The root's
+  // copy reaches what renders outside the layout (see below); the layout's
+  // starts out in its JSX, so its first frame already has it.
+  const writeSidebarWidth = useCallback((value: string) => {
+    document.documentElement.style.setProperty('--sidebar-width', value);
+    layoutRef.current?.style.setProperty('--sidebar-width', value);
+  }, []);
   const handleSidebarWidthChange = useCallback((width: number, commit = false) => {
     // Written on every call, commit or not: when the committed width equals the
     // current state React bails out of the render, so the effect below never
     // re-runs and the DOM would keep whatever the last pointermove left behind.
-    document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
+    writeSidebarWidth(`${width}px`);
     if (!commit) return;
     setSidebarWidth(width);
     try {
@@ -340,21 +364,37 @@ function AuthenticatedShell() {
     } catch {
       // localStorage unavailable — width still applies for the session
     }
-  }, []);
+  }, [writeSidebarWidth]);
   // Published on the document root, not on .app-layout: custom properties only
   // inherit downward, and every fixed overlay that has to dodge the sidebar
   // (the dashboard's floating chat and edit toolbar)
   // is viewport-anchored — some of them portalled clean out of the layout
-  // subtree. Off the root they'd read the collapsed default from tokens.css and
-  // sit under the sidebar. 0 on mobile, where no sidebar renders at all.
-  const sidebarWidthVar = isMobile ? '0px' : sidebarCollapsed ? 'var(--sidebar-rail-width)' : `${sidebarWidth}px`;
+  // subtree. Off the root they'd read the default from tokens.css and sit under
+  // the sidebar. 0 on mobile, where no sidebar renders, and while it is hidden.
+  const sidebarWidthVar = isMobile || sidebarHidden ? '0px' : `${sidebarWidth}px`;
   useLayoutEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty('--sidebar-width', sidebarWidthVar);
+    writeSidebarWidth(sidebarWidthVar);
     return () => {
-      root.style.removeProperty('--sidebar-width');
+      document.documentElement.style.removeProperty('--sidebar-width');
     };
-  }, [sidebarWidthVar]);
+  }, [writeSidebarWidth, sidebarWidthVar]);
+  // The bar spans the content column only while it holds something there: the
+  // open pages, or a page's own controls (TopBarActions), which live there in
+  // place of a page header. Otherwise its corner sits over the sidebar's own
+  // top row and the page keeps the window's full height.
+  const pageTabsOn = useFeatureEnabled(PAGE_TABS_FEATURE);
+  const topBar = useTopBarHost();
+  const showTopBar = !isMobile && (pageTabsOn || topBar.claimed);
+  const { peek, panelRef, cornerRef } = useSidebarPeek(sidebarHidden);
+  useSidebarShortcut(isMobile ? undefined : toggleSidebar);
+  // Hidden with no bar across the page, the toggle moves into the page's own
+  // top row rather than putting a row above it, so the page's header stays put,
+  // and the bar's corner comes back only over a peek.
+  const toggleInPage = !isMobile && sidebarHidden && !showTopBar;
+  const sidebarReveal = useMemo(
+    () => (toggleInPage ? { onToggle: toggleSidebar, hover: peek.toggleHover } : null),
+    [toggleInPage, toggleSidebar, peek.toggleHover],
+  );
 
   // While the user profile is loading, show the loading state to avoid
   // flashing protected content before the gate check completes.
@@ -393,24 +433,48 @@ function AuthenticatedShell() {
         </Suspense>
       ) : (
         <CreateWorkspaceHost>
+          <PageTabsProvider>
           <CommandPaletteProvider>
-            <div className="app-layout">
+            {/* The width again on the layout itself, so the sidebar, the top bar
+                and the column have it on their first frame: the root's copy can
+                land a commit later, and they would ease in from zero. */}
+            <div
+              ref={layoutRef}
+              className={cn('app-layout', showTopBar && 'app-layout--topbar', !isMobile && sidebarHidden && 'app-layout--sidebar-hidden')}
+              style={{ '--sidebar-width': sidebarWidthVar } as React.CSSProperties}
+            >
               {!isMobile && (
-                <AppSidebar
-                  collapsed={sidebarCollapsed}
-                  onToggleCollapse={toggleSidebar}
-                  width={sidebarWidth}
-                  onWidthChange={handleSidebarWidthChange}
-                />
+                <>
+                  <AppSidebar
+                    hidden={sidebarHidden}
+                    width={sidebarWidth}
+                    onWidthChange={handleSidebarWidthChange}
+                    peek={peek}
+                    panelRef={panelRef}
+                  />
+                  {(!toggleInPage || peek.open) && <AppTopBar
+                    sidebarHidden={sidebarHidden}
+                    onToggleSidebar={toggleSidebar}
+                    peek={peek}
+                    cornerRef={cornerRef}
+                    spans={showTopBar}
+                    slotRef={topBar.slotRef}
+                  />}
+                </>
               )}
               {isMobile && !hideTabBar && <BottomTabBar />}
               <main ref={mainRef} className={`app-main${hideTabBar ? ' app-main--no-tab' : ''}`}>
-                <Main />
+                <TopBarSlotContext.Provider value={topBar.context}>
+                  <SidebarRevealContext.Provider value={sidebarReveal}>
+                    <Main />
+                  </SidebarRevealContext.Provider>
+                </TopBarSlotContext.Provider>
               </main>
             </div>
             <OnboardingHostGate />
             <DesktopMenuCommands onToggleSidebar={isMobile ? undefined : toggleSidebar} />
           </CommandPaletteProvider>
+          </PageTabsProvider>
         </CreateWorkspaceHost>
       )}
       <ConnectConsentHost />

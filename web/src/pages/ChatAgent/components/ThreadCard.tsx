@@ -1,5 +1,7 @@
 import React from 'react';
-import { Trash2, Edit2, Link2, Archive, ArchiveRestore, Users } from 'lucide-react';
+import { Trash2, Edit2, ExternalLink, Link2, Archive, ArchiveRestore, Users } from 'lucide-react';
+import { useOpenInNewTab } from '@/components/PageTabs/useOpenInNewTab';
+import { threadPath } from '../utils/chatRoutes';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useLocale } from '@/hooks/useLocale';
@@ -41,6 +43,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
   const { t } = useTranslation();
   const locale = useLocale();
   const isMobile = useIsMobile();
+  const openInNewTab = useOpenInNewTab();
   // Lifecycle indicator: live store state first (updates in place via the
   // user feed), falling back to the row's own enrichment for threads the
   // store hasn't observed yet.
@@ -135,9 +138,21 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
         )}
       </div>
 
-      {/* Action icons - Show on hover */}
-      {(onRename || onDelete || onArchive || onUnarchive) && (
-        <div className={`flex items-center gap-1 transition-opacity ${isMobile ? 'opacity-60' : 'opacity-0 group-hover:opacity-100'}`}>
+      {/* Action icons - Show on hover, or while one has keyboard focus */}
+      {(openInNewTab || onRename || onDelete || onArchive || onUnarchive) && (
+        <div className={`flex items-center gap-1 transition-opacity ${isMobile ? 'opacity-60' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
+          {openInNewTab && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openInNewTab(threadPath(tid)); }}
+              className="p-1.5 rounded-md transition-colors hover:bg-foreground/10"
+              style={{ color: 'var(--color-text-tertiary)' }}
+              title={t('nav.openInNewTab')}
+              aria-label={t('nav.openInNewTab')}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </button>
+          )}
           {/* Edit/Rename icon */}
           {onRename && (
             <button

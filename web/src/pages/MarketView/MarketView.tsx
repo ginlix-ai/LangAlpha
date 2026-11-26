@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useEffectEvent, useCallback, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { NavigationType, useNavigate, useNavigationType, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Info } from 'lucide-react';
@@ -55,6 +55,8 @@ import type { ChatCommentSends } from '../ChatAgent/components/artifactComments/
 import type { ArtifactCommentRef } from '../ChatAgent/components/artifactComments/artifactCommentReply';
 import { layerAskContext } from './utils/layerAsk';
 import { draftKeys } from '@/lib/composerDrafts';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
+import { usePageTabTitle } from '@/components/PageTabs/usePageTabTitle';
 
 // Stable identity for the pre-data render, so the reconcile effect's
 // `workspaces` dependency doesn't change on every render before the fetch
@@ -110,6 +112,9 @@ function MarketViewInner() {
   // for a fresh chat. Seeded here, the effect below re-applies the same values
   // and React bails, so the link's conversation survives the landing.
   const [openingRoute] = useState(() => readMarketViewRoute(searchParams));
+  const navigationType = useNavigationType();
+  // The symbol the address last named, which the page has already followed.
+  const urlSymbol = useRef(openingRoute.symbol ? displaySpelling(openingRoute.symbol) : null);
   // Every way in (link, saved pref, search, sidebar, chip) lands on the display
   // spelling, so a `600519.SS` link, its header, pref and chart keys all read
   // `600519.SH` from the first render.
@@ -117,6 +122,7 @@ function MarketViewInner() {
     () => displaySpelling(openingRoute.symbol || loadPref('symbol', 'GOOGL')) || 'GOOGL',
   );
   const [selectedStockDisplay, setSelectedStockDisplay] = useState<SymbolDisplayOverride | null>(null);
+  usePageTabTitle(selectedStock);
   const wsHasData = wsPrices.has(selectedStock);
   const streamsLive = wsStatus === 'connected' && wsHasData;
 
@@ -348,13 +354,25 @@ function MarketViewInner() {
   // it earns its keep for a link followed while the page is already mounted.
   useEffect(() => {
     const route = readMarketViewRoute(searchParams);
-    if (route.symbol) {
-      const symbol = displaySpelling(route.symbol);
-      if (symbol && symbol !== selectedStock) {
-        setSelectedStock(symbol);
-        setSelectedStockDisplay(null);
-        setChartMeta(null);
-      }
+    // The ticker stays in the address, so the page at an address is one
+    // ticker: a page tab, a reload or a copied link comes back to it. A new
+    // symbol in the address is followed when a link, a tab or Back brought it;
+    // otherwise the address is made to name the ticker on screen, replacing its
+    // entry. That write is told from a link by the replace: while it is on its
+    // way the address still names the ticker the page left, and followed then
+    // it would switch the page back.
+    const symbol = route.symbol ? displaySpelling(route.symbol) : null;
+    let follow = false;
+    if (symbol && symbol !== urlSymbol.current) {
+      urlSymbol.current = symbol;
+      follow = navigationType !== NavigationType.Replace && symbol !== selectedStock;
+    }
+    if (follow && symbol) {
+      setSelectedStock(symbol);
+      setSelectedStockDisplay(null);
+      setChartMeta(null);
+    } else if (symbol !== selectedStock) {
+      editSearchParams((params) => params.set('symbol', selectedStock), { replace: true });
     }
     // Land on the timeframe the expanded card was drawn for, so its layers
     // (keyed by symbol:timeframe) show immediately. Validate against the chart's
@@ -377,14 +395,15 @@ function MarketViewInner() {
     // route lands on, as one the Market chat names does.
     const commentChart = route.commentId ? chartIdFor(route.symbol, route.timeframe) : null;
     if (route.commentId && commentChart) requestFocus({ kind: 'chart', path: commentChart, commentId: route.commentId });
-    // `thread` stays for MarketChatPanel, which consumes it itself.
-    const consumed = MARKET_VIEW_ROUTE_PARAMS.filter((key) => key !== 'thread' && searchParams.has(key));
+    // `thread` stays for MarketChatPanel, which consumes it itself, and
+    // `symbol` stays as the page's own address.
+    const consumed = MARKET_VIEW_ROUTE_PARAMS.filter((key) => key !== 'thread' && key !== 'symbol' && searchParams.has(key));
     if (consumed.length > 0) {
       editSearchParams((params) => {
         for (const key of consumed) params.delete(key);
       }, { replace: true });
     }
-  }, [searchParams, selectedStock, editSearchParams, requestFocus]);
+  }, [searchParams, selectedStock, editSearchParams, requestFocus, navigationType]);
 
   const handleStockSearch = useCallback((symbol: string, searchResult?: StockSearchHit | null) => {
     setSelectedStock(displaySpelling(symbol));
@@ -427,6 +446,17 @@ function MarketViewInner() {
     source: { wsStatus, wsHasData, wsDataLevel, chartFreshness },
     detail: 'full',
   });
+  // The reveal leads the chart's toolbar, the page's top row; memoized as
+  // `legend.toolbarLead` is, so the chart's memo holds.
+  const toolbarLead = useMemo(
+    () => (
+      <div className="flex items-center gap-2 min-w-0">
+        <SidebarReveal titlebar />
+        {legend.toolbarLead}
+      </div>
+    ),
+    [legend.toolbarLead],
+  );
   const toggleOverview = useCallback(() => setShowOverview((v) => !v), []);
 
 
@@ -806,7 +836,7 @@ function MarketViewInner() {
                   wsStatus={wsStatus}
                   marketStatus={marketStatus}
                   comments={chartComments}
-                  toolbarLead={legend.toolbarLead}
+                  toolbarLead={toolbarLead}
                   toolbarLeadKey={legend.toolbarLeadKey}
                   measureToolbarLead={legend.measureToolbarLead}
                   toolbarTrail={toolbarTrail}

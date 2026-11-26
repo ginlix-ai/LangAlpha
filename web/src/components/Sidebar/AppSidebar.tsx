@@ -1,13 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ArrowRight, LayoutGrid, PanelLeftClose, PanelLeftOpen, Plus, Search, SquarePen } from 'lucide-react';
-import logoLight from '../../assets/img/logo.svg';
-import logoDark from '../../assets/img/logo-dark.svg';
-import { useTheme } from '../../contexts/ThemeContext';
+import { LayoutGrid, Plus, Search } from 'lucide-react';
 import { useNavActive } from '../nav/useNavActive';
-import { useNavItems } from '../nav/useNavItems';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useDesktopNavItems } from '../nav/useNavItems';
 import { cn } from '@/lib/utils';
 import NavigationPanel from '@/pages/ChatAgent/components/NavigationPanel';
 import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
@@ -23,6 +19,7 @@ import { useSidebarAgents } from '@/pages/ChatAgent/components/sidebarAgentsBrid
 import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { GettingStartedGate } from '@/pages/Onboarding';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './sidebarWidth';
+import type { SidebarPeek } from './useSidebarPeek';
 import './Sidebar.css';
 
 /** The pages whose own composer keeps a draft, which their item points at
@@ -32,77 +29,42 @@ const PAGE_DRAFTS: Record<string, string> = {
   '/market': draftKeys.market,
 };
 
-interface NavigationLike {
-  canGoBack: boolean;
-  canGoForward: boolean;
-  addEventListener: (type: string, fn: () => void) => void;
-  removeEventListener: (type: string, fn: () => void) => void;
-}
-
-/** Back/forward for the desktop titlebar row; hidden elsewhere by CSS. */
-function HistoryButtons() {
-  const { t } = useTranslation();
-  const navigate = useNavigate();
-  // Without the Navigation API the stack depth is unknowable, so both stay live.
-  const [can, setCan] = useState({ back: true, forward: true });
-  useEffect(() => {
-    if (!document.documentElement.classList.contains('desktop-mac')) return;
-    const nav = (window as unknown as { navigation?: NavigationLike }).navigation;
-    if (!nav) return;
-    const sync = () =>
-      setCan((prev) =>
-        prev.back === nav.canGoBack && prev.forward === nav.canGoForward
-          ? prev
-          : { back: nav.canGoBack, forward: nav.canGoForward },
-      );
-    sync();
-    nav.addEventListener('currententrychange', sync);
-    return () => nav.removeEventListener('currententrychange', sync);
-  }, []);
-  return (
-    <div className="sidebar-history">
-      <button type="button" className="sidebar-collapse-btn" disabled={!can.back} onClick={() => navigate(-1)} aria-label={t('sidebar.back', 'Back')} title={t('sidebar.back', 'Back')}>
-        <ArrowLeft className="h-4 w-4" />
-      </button>
-      <button type="button" className="sidebar-collapse-btn" disabled={!can.forward} onClick={() => navigate(1)} aria-label={t('sidebar.forward', 'Forward')} title={t('sidebar.forward', 'Forward')}>
-        <ArrowRight className="h-4 w-4" />
-      </button>
-    </div>
-  );
-}
-
 interface AppSidebarProps {
-  collapsed: boolean;
-  onToggleCollapse: () => void;
+  /** Out of the layout, Arc-style; the shell owns it and the content column. */
+  hidden: boolean;
   /** Current expanded-panel width (px). */
   width: number;
   /** Live width update during a resize drag; commit=true persists (drag end / reset). */
   onWidthChange: (width: number, commit?: boolean) => void;
+  /** Hidden, the panel peeks in over the page from the top bar's toggle. */
+  peek: SidebarPeek;
+  panelRef: React.Ref<HTMLElement>;
 }
 
 /**
- * App-shell sidebar combining the old icon rail and the chat-only overlay
- * thread panel into one Codex-style panel: primary nav up top, the
- * workspace/thread tree below, account row at the bottom. Collapses back to
- * the icon rail (state owned by AuthenticatedShell, which also drives
- * --sidebar-width so the content column follows).
+ * App-shell sidebar: primary nav up top, the workspace/thread tree below,
+ * account row at the bottom. Hides out of the layout entirely (state owned by
+ * AuthenticatedShell, which also drives --sidebar-width so the content column
+ * follows) and peeks back in over the page from the top bar's toggle.
  */
-function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSidebarProps) {
+function AppSidebar({ hidden, width, onWidthChange, peek, panelRef }: AppSidebarProps) {
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { theme } = useTheme();
   const isActive = useNavActive();
-  const navItems = useNavItems();
-  const logo = theme === 'light' ? logoDark : logoLight;
+  const navItems = useDesktopNavItems();
 
   const widthRef = useRef(width);
   widthRef.current = width;
 
-  // Armed for the duration of a resize drag; unmount mid-drag (rail collapse,
+  // Armed for the duration of a resize drag; unmount mid-drag (hiding,
   // route swap) would otherwise strand the app-wide sidebar-resizing body
   // class (col-resize cursor + no text selection everywhere).
   const dragCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => () => dragCleanupRef.current?.(), []);
+  // Hiding mid-drag takes the handle away before its pointerup.
+  useEffect(() => {
+    if (hidden) dragCleanupRef.current?.();
+  }, [hidden]);
 
   // Edge-drag resize. Pointer capture keeps move/up events routed to the handle
   // even when the cursor outruns it; a body class pins the col-resize cursor,
@@ -172,123 +134,26 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
     onNewThread: openWorkspaceHome,
   });
 
-  // New chat opens the workspace gallery — picking (or creating) the workspace
-  // is part of starting a conversation. The tree's per-workspace ✎ skips the
-  // chooser and goes straight to that workspace's home.
-  const handleNewChat = useCallback(() => {
-    navigate('/chat');
-  }, [navigate]);
-
   const openGallery = useCallback(() => navigate('/chat'), [navigate]);
   const palette = useCommandPalette();
 
   // Same create flow as the gallery, without leaving the current page first.
   const openCreateWorkspace = useOpenCreateWorkspace();
 
-  // One persistent <aside> so the width transition runs across mode flips;
-  // the keyed fragments force each mode's content to cleanly remount (React
-  // would otherwise morph rail nodes into panel nodes in place), which lets
-  // the sidebar-content-in mount animation choreograph the swap.
-  if (collapsed) {
-    return (
-      <aside className="sidebar" data-chrome>
-        <React.Fragment key="rail">
-        <div className="sidebar-window-drag" aria-hidden="true" />
-        <button
-          type="button"
-          className="sidebar-logo"
-          onClick={() => navigate('/dashboard')}
-          aria-label={t('sidebar.dashboard')}
-        >
-          <img src={logo} alt="" style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
-        </button>
-        <button
-          className="sidebar-rail-toggle"
-          onClick={onToggleCollapse}
-          aria-label={t('sidebar.expand')}
-          title={t('sidebar.expand')}
-        >
-          <PanelLeftOpen className="h-4 w-4" />
-        </button>
-        <nav className="sidebar-nav">
-          <TooltipProvider delayDuration={300}>
-            {palette && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    className="sidebar-nav-item tap-target"
-                    onClick={() => palette.open()}
-                    onPointerEnter={palette.preload}
-                    aria-label={t('palette.search')}
-                    aria-keyshortcuts={paletteKeyShortcuts()}
-                  >
-                    <Search className="sidebar-nav-icon" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={8}>
-                  {t('palette.search')} <span className="sidebar-shortcut">{paletteShortcut()}</span>
-                </TooltipContent>
-              </Tooltip>
-            )}
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const label = t(item.labelKey);
-              const active = isActive(item);
-              return (
-                <Tooltip key={item.key}>
-                  <TooltipTrigger asChild>
-                    <button
-                      className={cn('sidebar-nav-item tap-target', active && 'active')}
-                      onClick={() => navigate(item.key)}
-                      aria-label={label}
-                      aria-current={active ? 'page' : undefined}
-                    >
-                      <Icon className="sidebar-nav-icon" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={8}>
-                    {label}
-                  </TooltipContent>
-                </Tooltip>
-              );
-            })}
-          </TooltipProvider>
-        </nav>
-        <div className="sidebar-bottom">
-          <GettingStartedGate variant="rail" onExpand={onToggleCollapse} />
-          <AccountMenu />
-        </div>
-        </React.Fragment>
-      </aside>
-    );
-  }
-
   return (
-    <aside className="sidebar sidebar--panel" data-chrome>
-      <React.Fragment key="panel">
+    <aside
+      ref={panelRef}
+      className={cn('sidebar sidebar--panel', hidden && 'sidebar--hidden')}
+      data-chrome
+      data-peek={peek.open ? '' : undefined}
+      inert={hidden && !peek.open}
+      style={{ '--sidebar-panel-width': `${width}px` } as React.CSSProperties}
+      onPointerEnter={peek.panelHover?.onPointerEnter}
+      onPointerLeave={peek.panelHover?.onPointerLeave}
+    >
       <div className="sidebar-window-drag" aria-hidden="true" />
-      {/* The brand row doubles as titlebar: the buttons inside it declare
-          no-drag for themselves, so only the gaps move the window. */}
-      <div className="sidebar-panel-header" data-chrome="drag">
-        <button
-          type="button"
-          className="sidebar-brand"
-          onClick={() => navigate('/dashboard')}
-          aria-label={t('sidebar.dashboard')}
-        >
-          <img src={logo} alt="" style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
-          <span className="sidebar-wordmark title-font">LangAlpha</span>
-        </button>
-        <button
-          className="sidebar-collapse-btn"
-          onClick={onToggleCollapse}
-          aria-label={t('sidebar.collapse')}
-          title={t('sidebar.collapse')}
-        >
-          <PanelLeftClose className="h-4 w-4" />
-        </button>
-        <HistoryButtons />
-      </div>
+      {/* The panel's share of the top bar, under the bar's corner. */}
+      <div className="sidebar-panel-header" data-chrome="drag" />
 
       <nav className="sidebar-panel-nav">
         {palette && (
@@ -303,17 +168,16 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
             <kbd className="sidebar-shortcut" aria-hidden>{paletteShortcut()}</kbd>
           </button>
         )}
-        <button className="sidebar-panel-item" onClick={handleNewChat}>
-          <SquarePen className="sidebar-panel-item-icon" />
-          <span>{t('sidebar.newChat')}</span>
-        </button>
-        {navItems.filter((item) => item.key !== '/chat').map((item) => {
+        {/* New chat opens the workspace gallery: picking (or creating) the
+            workspace is part of starting a conversation. The tree's
+            per-workspace ✎ skips the chooser for that workspace's home. */}
+        {navItems.map((item) => {
           const Icon = item.icon;
           const active = isActive(item);
           return (
             <button
-              key={item.key}
-              className={`sidebar-panel-item ${active ? 'active' : ''}`}
+              key={item.labelKey}
+              className={cn('sidebar-panel-item', active && 'active')}
               onClick={() => navigate(item.key)}
               aria-current={active ? 'page' : undefined}
             >
@@ -358,23 +222,24 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
         <NavigationPanel {...navTreeProps} />
       </div>
 
-      <GettingStartedGate variant="row" />
+      <GettingStartedGate />
 
       <div className="sidebar-panel-bottom">
-        <AccountMenu variant="row" />
+        <AccountMenu />
       </div>
 
       {/* Edge drag = resize (double-click resets to the default width). */}
-      <div
-        className="sidebar-resize-handle"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={t('sidebar.resize')}
-        title={t('sidebar.resize')}
-        onPointerDown={handleResizeStart}
-        onDoubleClick={handleResizeReset}
-      />
-      </React.Fragment>
+      {!hidden && (
+        <div
+          className="sidebar-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t('sidebar.resize')}
+          title={t('sidebar.resize')}
+          onPointerDown={handleResizeStart}
+          onDoubleClick={handleResizeReset}
+        />
+      )}
     </aside>
   );
 }

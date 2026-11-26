@@ -17,7 +17,11 @@
 }
 
 /* ---------- Rail ---------- */
-.plugins-rail > .page-rail-label:first-child { margin-top: 6px; }
+/* The first label shares its row with the hidden sidebar's toggle, which
+   renders nothing while the sidebar is shown, and drops under it where the
+   two do not fit (the desktop app's back and forward take more room). */
+.plugins-rail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 4px; }
+.plugins-rail-head > .page-rail-label { flex: 1 0 auto; margin: 0 8px; }
 
 .page-rail-link .surface-dot { margin-left: auto; }
 .plugins-rail-count {
@@ -238,6 +242,7 @@
   }
   .plugins-rail::-webkit-scrollbar { display: none; }
   .plugins-rail-plugins { display: none; }
+  .plugins-rail-head { display: none; }
   .plugins-rail .page-rail-link { gap: 6px; padding: 0 12px; }
   .plugins-rail-count,
   .page-rail-link .surface-dot { margin-left: 0; }

@@ -10,6 +10,8 @@ import { useLocale } from '@/hooks/useLocale';
 import { formatTimestamp } from '@/lib/format';
 import { tickerImpactRows, type NewsSentiment } from '../Dashboard/utils/tickerImpact';
 import './NewsDetailPage.css';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
+import { usePageTabTitle } from '@/components/PageTabs/usePageTabTitle';
 
 interface ArticleSource {
   name?: string;
@@ -54,8 +56,26 @@ function NewsDetailPage() {
     <div className="h-full flex flex-col">
       <div className="chrome-drag-strip" aria-hidden="true" />
       <div ref={portRef} className="flex-1 min-h-0 overflow-y-auto">
-        <NewsArticleView />
+        {/* Keyed so one story's title never names the next one's tab. */}
+        <NewsArticleView key={id} />
       </div>
+    </div>
+  );
+}
+
+/**
+ * The article's column in every state, loading and failed too, so the hidden
+ * sidebar's toggle (SidebarReveal) is there before the article is. The row
+ * collapses while it holds nothing.
+ */
+function ArticleColumn({ back, children }: { back?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
+      <div className="flex items-center gap-3 self-start empty:hidden">
+        <SidebarReveal />
+        {back}
+      </div>
+      {children}
     </div>
   );
 }
@@ -67,6 +87,8 @@ function NewsArticleView() {
   const [article, setArticle] = useState<NewsArticle | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // The tab is named for the story, as a browser's is for its page.
+  usePageTabTitle(article?.title);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,45 +105,51 @@ function NewsArticleView() {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 p-8" style={{ color: 'var(--color-text-secondary)' }}>
-        <span aria-hidden="true" className="shrink-0">
-          <Loader size={24} className="text-current" />
-        </span>
-        <p>Loading article...</p>
-      </div>
+      <ArticleColumn>
+        <div className="flex flex-col items-center justify-center gap-4 p-8" style={{ color: 'var(--color-text-secondary)' }}>
+          <span aria-hidden="true" className="shrink-0">
+            <Loader size={24} className="text-current" />
+          </span>
+          <p>Loading article...</p>
+        </div>
+      </ArticleColumn>
     );
   }
 
   if (error || !article) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 p-8" style={{ color: 'var(--color-text-secondary)' }}>
-        <p>Article not found.</p>
-        <button
-          onClick={handleBack}
-          className="flex items-center gap-2 px-4 py-2 rounded-md cursor-pointer transition-colors"
-          style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border-default)' }}
-        >
-          <ArrowLeft className="w-4 h-4" />
-          Back to Dashboard
-        </button>
-      </div>
+      <ArticleColumn>
+        <div className="flex flex-col items-center justify-center gap-4 p-8" style={{ color: 'var(--color-text-secondary)' }}>
+          <p>Article not found.</p>
+          <button
+            onClick={handleBack}
+            className="flex items-center gap-2 px-4 py-2 rounded-md cursor-pointer transition-colors"
+            style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border-default)' }}
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back to Dashboard
+          </button>
+        </div>
+      </ArticleColumn>
     );
   }
 
   const { rows, scored } = tickerImpactRows(article.sentiments, article.tickers);
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
-      {/* Back button */}
-      <button
-        onClick={handleBack}
-        {...doorSlot('outline')}
-        className="news-page-back flex items-center gap-2 self-start rounded-md border border-(--color-border-default) bg-(--color-bg-card) px-3 py-1.5 cursor-pointer transition-colors"
-        style={{ color: 'var(--color-text-primary)' }}
-      >
-        <ArrowLeft className="w-4 h-4" />
-        <span className="text-sm">Back</span>
-      </button>
+    <ArticleColumn
+      back={
+        <button
+          onClick={handleBack}
+          {...doorSlot('outline')}
+          className="news-page-back flex items-center gap-2 rounded-md border border-(--color-border-default) bg-(--color-bg-card) px-3 py-1.5 cursor-pointer transition-colors"
+          style={{ color: 'var(--color-text-primary)' }}
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span className="text-sm">Back</span>
+        </button>
+      }
+    >
 
       {/* Title & metadata */}
       <div className="flex flex-col gap-3">
@@ -251,7 +279,7 @@ function NewsArticleView() {
           </a>
         </div>
       )}
-    </div>
+    </ArticleColumn>
   );
 }
 

@@ -6,6 +6,7 @@ import type { Automation } from '@/types/automation';
 import { automationCensus } from '../utils/status';
 import type { TemplateId } from '../utils/templates';
 import { NewAutomationMenu } from './NewAutomationMenu';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 
 export type AutomationsView = 'feed' | 'manage';
 
@@ -46,7 +47,10 @@ export default function AutomationsHeader({ automations, loading = false, view, 
   return (
     <header className="automations-header">
       <div className="min-w-0">
-        <h1 className="title-font automations-title">{t('automation:automations')}</h1>
+        <div className="flex items-center gap-3">
+          <SidebarReveal />
+          <h1 className="title-font automations-title">{t('automation:automations')}</h1>
+        </div>
         {loading ? (
           <p className="automation-mono automations-census"><SkeletonBar className="w-28" /></p>
         ) : census.length > 0 ? (

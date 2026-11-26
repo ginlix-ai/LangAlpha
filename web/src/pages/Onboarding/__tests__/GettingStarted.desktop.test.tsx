@@ -51,7 +51,7 @@ afterAll(() => {
 function pickChatApps() {
   render(
     <MemoryRouter initialEntries={['/settings']}>
-      <GettingStartedLauncher variant="row" />
+      <GettingStartedLauncher />
     </MemoryRouter>
   );
   fireEvent.click(screen.getByRole('button', { name: /Connect a chat app/ }));

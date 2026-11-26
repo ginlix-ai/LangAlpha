@@ -1,10 +1,5 @@
 /* Dashboard Header Search Styles */
 
-.dashboard-search-wrapper {
-  position: relative;
-  flex: 1;
-}
-
 .dashboard-search-form {
   position: relative;
   width: 100%;
@@ -26,11 +21,6 @@
   background: transparent;
 }
 
-.dashboard-search-input:focus {
-  border-color: var(--color-accent-primary);
-}
-
-.dashboard-search-input::placeholder,
 .dashboard-search-placeholder {
   color: var(--color-text-tertiary);
   font-size: var(--cs-text-menu, 1em);
@@ -47,80 +37,4 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.dashboard-search-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  width: 100%;
-  min-width: 320px;
-  max-height: 400px;
-  overflow-y: auto;
-  background-color: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-elevated);
-  border-radius: 8px;
-  box-shadow: var(--shadow-card);
-  z-index: 1000;
-}
-
-.dashboard-search-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 10px 14px;
-  border: none;
-  background: none;
-  color: var(--color-text-primary);
-  font-size: 0.875rem;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--motion-quick) var(--ease-out);
-}
-
-.dashboard-search-dropdown-item:hover {
-  background-color: var(--color-bg-input);
-}
-
-.dashboard-search-dropdown-symbol {
-  font-weight: 600;
-  color: var(--color-text-primary);
-  min-width: 60px;
-}
-
-.dashboard-search-dropdown-name {
-  color: var(--color-text-secondary);
-  font-size: var(--cs-text-menu, 1em);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dashboard-search-dropdown-name-secondary {
-  margin-left: 6px;
-  font-size: 0.85em;
-  color: var(--color-text-tertiary);
-}
-
-.dashboard-search-dropdown-loading,
-.dashboard-search-dropdown-empty {
-  padding: 14px;
-  color: var(--color-text-muted);
-  cursor: default;
-}
-
-.dashboard-search-dropdown-loading:hover,
-.dashboard-search-dropdown-empty:hover {
-  background-color: transparent;
-}
-
-/* Terminal sets the results as a menu's rows, the loading and empty lines
-   included. */
-:root:not([data-card-style]) .dashboard-search-dropdown-item {
-  padding-block: 8px;
-}
-
-@media (max-width: 767px) {
-  .dashboard-search-dropdown { min-width: 0; width: 100%; max-width: calc(100vw - 32px); }
 }

@@ -41,13 +41,8 @@ const CONSOLE_ITEMS = [
   { href: INTEGRATIONS_URL, icon: Plug, labelKey: 'sidebar.integrations' },
 ];
 
-interface AccountMenuProps {
-  /** 'rail' = avatar-only trigger (collapsed sidebar); 'row' = full-width
-   *  avatar + name row for the expanded panel's bottom slot. */
-  variant?: 'rail' | 'row';
-}
-
-const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
+/** The sidebar's bottom row: the avatar and name, opening the account menu. */
+const AccountMenu: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { logout } = useAuth();
@@ -111,60 +106,20 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
     <>
       <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
         <DropdownMenuTrigger asChild>
-          {variant === 'row' ? (
-            // No aria-label here, unlike the collapsed trigger: this row spells
-            // the account out, so a fixed label would replace what is on screen
-            // with something less (WCAG 2.5.3). The plan reads out for the same
-            // reason -- it is a tier, and the rail is where it is stated.
-            <button
-              type="button"
-              className="sidebar-account-row"
-              data-active={isTriggerActive ? 'true' : undefined}
-            >
-              {/* Decorative in this variant. Dropping the fixed `aria-label`
-                  exposed every descendant, and the initials are a picture of the
-                  name spelled out beside them: without this the row announces
-                  "JD John Doe Pro". */}
-              <span className="sidebar-account-row-avatar" aria-hidden="true">
-                {avatarUrl && !avatarError ? (
-                  <img
-                    src={avatarUrl}
-                    alt=""
-                    className="sidebar-account-avatar-img"
-                    onError={() => setAvatarError(true)}
-                  />
-                ) : initials ? (
-                  <span className="sidebar-account-initials">{initials}</span>
-                ) : (
-                  <User className="sidebar-account-icon" />
-                )}
-              </span>
-              {organizationName ? (
-                <span className="sidebar-account-row-text">
-                  <span className="sidebar-account-row-name">
-                    {displayName || email || t('account.menuLabel', 'Account menu')}
-                  </span>
-                  <span className="sidebar-account-row-org">{organizationName}</span>
-                </span>
-              ) : (
-                <span className="sidebar-account-row-name">
-                  {displayName || email || t('account.menuLabel', 'Account menu')}
-                </span>
-              )}
-              {planDisplayName && (
-                <span className="sidebar-account-row-plan">
-                  {planDisplayName}
-                </span>
-              )}
-            </button>
-          ) : (
-            <button
-              type="button"
-              aria-label={t('account.menuLabel', 'Account menu')}
-              title={t('account.menuLabel', 'Account menu')}
-              className="sidebar-account-trigger"
-              data-active={isTriggerActive ? 'true' : undefined}
-            >
+          {/* No aria-label here: this row spells the account out, so a fixed
+              label would replace what is on screen with something less (WCAG
+              2.5.3). The plan reads out for the same reason: it is a tier,
+              and this row is where it is stated. */}
+          <button
+            type="button"
+            className="sidebar-account-row"
+            data-active={isTriggerActive ? 'true' : undefined}
+          >
+            {/* Decorative. With no fixed `aria-label`, every descendant is
+                exposed, and the initials are a picture of the
+                name spelled out beside them: without this the row announces
+                "JD John Doe Pro". */}
+            <span className="sidebar-account-row-avatar" aria-hidden="true">
               {avatarUrl && !avatarError ? (
                 <img
                   src={avatarUrl}
@@ -177,83 +132,40 @@ const AccountMenu: React.FC<AccountMenuProps> = ({ variant = 'rail' }) => {
               ) : (
                 <User className="sidebar-account-icon" />
               )}
-            </button>
-          )}
+            </span>
+            {organizationName ? (
+              <span className="sidebar-account-row-text">
+                <span className="sidebar-account-row-name">
+                  {displayName || email || t('account.menuLabel', 'Account menu')}
+                </span>
+                <span className="sidebar-account-row-org">{organizationName}</span>
+              </span>
+            ) : (
+              <span className="sidebar-account-row-name">
+                {displayName || email || t('account.menuLabel', 'Account menu')}
+              </span>
+            )}
+            {planDisplayName && (
+              <span className="sidebar-account-row-plan">
+                {planDisplayName}
+              </span>
+            )}
+          </button>
         </DropdownMenuTrigger>
 
         <DropdownMenuContent
-          side={variant === 'row' ? 'top' : 'right'}
-          align={variant === 'row' ? 'start' : 'end'}
-          sideOffset={variant === 'row' ? 8 : 12}
-          // Expanded, the panel is an extension of the row it came from, so it
-          // takes that row's width rather than a number of its own: the row is
-          // inset 10px inside the sidebar, so any fixed width lines up on the
-          // left (align="start") and misses on the right. Collapsed, the
-          // trigger is a 32px avatar and has no width worth inheriting.
-          className={variant === 'row' ? 'w-(--radix-dropdown-menu-trigger-width)' : 'w-64'}
+          side="top"
+          align="start"
+          sideOffset={8}
+          // The panel is an extension of the row it came from, so it takes that
+          // row's width rather than a number of its own: the row is inset 10px
+          // inside the sidebar, so any fixed width lines up on the left
+          // (align="start") and misses on the right.
+          className="w-(--radix-dropdown-menu-trigger-width)"
         >
-          {/* The expanded trigger is a full row already carrying this avatar and
-              this name, so repeating them here stacks the same identity twice.
-              Collapsed, the trigger is a bare avatar and this block is the only
-              place the account is named at all. The email is what neither
-              trigger shows, so the row variant keeps that line and nothing else. */}
-          {variant === 'rail' && (displayName || email) && (
-            <>
-              <div className="flex items-center gap-2.5 px-2.5 py-1.5">
-                <div
-                  className="h-9 w-9 rounded-lg flex items-center justify-center overflow-hidden shrink-0"
-                  style={{ backgroundColor: 'var(--color-accent-soft)' }}
-                >
-                  {avatarUrl && !avatarError ? (
-                    <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
-                  ) : initials ? (
-                    <span
-                      className="text-xs font-semibold"
-                      style={{ color: 'var(--color-accent-light)' }}
-                    >
-                      {initials}
-                    </span>
-                  ) : (
-                    <User className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  {displayName && (
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span
-                        className="text-sm font-semibold truncate"
-                        style={{ color: 'var(--color-text-primary)' }}
-                      >
-                        {displayName}
-                      </span>
-                      {planDisplayName && (
-                        <span
-                          className="text-[0.625rem] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0"
-                          style={{
-                            backgroundColor: 'var(--color-accent-soft)',
-                            color: 'var(--color-accent-light)',
-                          }}
-                        >
-                          {planDisplayName}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {email && (
-                    <div
-                      className="text-xs truncate"
-                      style={{ color: 'var(--color-text-secondary)' }}
-                    >
-                      {email}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <DropdownMenuSeparator />
-            </>
-          )}
-
-          {variant === 'row' && email && (
+          {/* The row already carries the avatar and the name, so the menu
+              repeats neither. The email is what the row does not show. */}
+          {email && (
             <div
               className="px-2.5 pt-1 pb-1.5 text-xs truncate"
               style={{ color: 'var(--color-text-tertiary)' }}

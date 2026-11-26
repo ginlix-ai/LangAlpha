@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils';
 import type { Computer, Thread } from '@/types/api';
 
 import { threadGalleryQuery } from '../../utils/threadGalleryQuery';
+import { threadPath } from '../../utils/chatRoutes';
 import { Kicker } from './Kicker';
 import { MachineSummary } from './MachineSummary';
 import type { WorkspaceRecord } from './types';
@@ -102,9 +103,9 @@ export function ChiefOfStaffCard({
   const showAllThreads = !isPending && (!showStarters || (isError && !data));
 
   const route = { workspaceId: homeId, workspaceName: text.name, workspaceStatus: workspace?.status ?? null };
-  const newThread = (draftMessage?: string) =>
-    navigate('/chat/t/__default__', { state: draftMessage ? { ...route, draftMessage } : route });
-  const openThread = (threadId: string) => navigate(`/chat/t/${threadId}`, { state: route });
+  // A starter question opens a chat with the question in its composer.
+  const askStarter = (draftMessage: string) => navigate(threadPath('__default__'), { state: { ...route, draftMessage } });
+  const openThread = (threadId: string) => navigate(threadPath(threadId), { state: route });
   const openThreads = () => onOpenThreads(homeId, text.name, workspace?.status);
 
   // The right half's rows: ruled apart, each a quiet hover that reaches a
@@ -156,7 +157,9 @@ export function ChiefOfStaffCard({
               type="button"
               data-testid="chief-of-staff-new-thread"
               disabled={!homeId}
-              onClick={() => newThread()}
+              // Home's own page, composer first, as a workspace card's click
+              // and the sidebar's ✎ open theirs, rather than a bare chat.
+              onClick={openThreads}
               {...buttonSlot()}
               className="flex h-8 items-center gap-1.5 rounded-lg px-3.5 text-sm font-medium press hover:opacity-90 disabled:cursor-progress"
               style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
@@ -215,7 +218,7 @@ export function ChiefOfStaffCard({
                     <button
                       type="button"
                       data-testid="chief-of-staff-starter"
-                      onClick={() => newThread(t(key))}
+                      onClick={() => askStarter(t(key))}
                       className={cn('group', row)}
                       style={rowStyle}
                     >

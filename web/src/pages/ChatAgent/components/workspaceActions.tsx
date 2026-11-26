@@ -15,6 +15,8 @@ import { forgetDeletedWorkspace, invalidateNewWorkspace, invalidateWorkspaceMemb
 import { useComputers } from '../hooks/useComputers';
 import { liveComputers, takesWorkspaces } from '../utils/computerStatus';
 import { providerKeepsFilesOnRemove } from './providerUi';
+import { OpenInNewTabItem } from './OpenInNewTabItem';
+import { workspacePath } from '../utils/chatRoutes';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
 import type { OwnMachineFolder } from './DeleteConfirmModal';
 import { DeleteConfirmModal, DuplicateWorkspaceDialog } from './lazyDialogs';
@@ -87,6 +89,7 @@ export function WorkspaceMenuItems<W extends MenuWorkspace>({
 
   return (
     <>
+      <OpenInNewTabItem path={workspacePath(workspace.workspace_id)} Item={Item} Separator={Separator} />
       {onTogglePin && (
         <Item onSelect={() => onTogglePin(workspace)}>
           <Pin className="h-4 w-4" />

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { SwapCell } from '@/components/ui/crossfade';
+import { usePageTabTitle } from '@/components/PageTabs/usePageTabTitle';
 import { useLastShape } from '@/lib/lastShape';
 import { useParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -46,6 +47,7 @@ import { WorkspaceCard, WorkspaceCardSkeleton } from './workspaceGallery/Workspa
 import type { WorkspaceRecord } from './workspaceGallery/types';
 import './workspaceGallery/WorkspaceCard.css';
 import { PaletteSearchButton } from '@/components/nav/PaletteSearchButton';
+import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
 
 /** Placeholder cards while the list is read, before this device has seen it:
  *  two rows at a laptop's width. After that, as many as it last held. */
@@ -66,6 +68,7 @@ interface WorkspaceGalleryProps {
 
 function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalleryProps) {
   const { t } = useTranslation();
+  usePageTabTitle(t('workspace.workspaces'));
   const label = useWorkspaceLabel();
   const queryClient = useQueryClient();
   const now = useNow();
@@ -259,6 +262,13 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
     return (
       <div className="h-full flex flex-col">
         <div className="chrome-drag-strip" aria-hidden="true" />
+        {/* The header's first row, where the hidden sidebar's toggle sits,
+            since this view replaces the header that holds it. */}
+        <div className={`shrink-0 ${GALLERY_FRAME}`}>
+          <div className={`flex items-center empty:hidden ${GALLERY_COLUMN}`} style={{ paddingTop: 'calc(var(--page-top) - 4px)', minHeight: 36 }}>
+            <SidebarReveal />
+          </div>
+        </div>
         <div className="flex-1 min-h-0 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
             <p className="text-sm" style={{ color: 'var(--color-loss)' }}>
@@ -352,9 +362,12 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
             style={{ paddingTop: 'calc(var(--page-top) - 4px)' }}
           >
             <div className="flex w-full items-center justify-between gap-4" style={{ minHeight: 36 }}>
-              <h1 className="title-font text-[length:var(--cs-text-title,1.5rem)] leading-8 font-semibold tracking-[var(--cs-title-track,-0.01em)]" style={{ color: 'var(--color-text-primary)' }}>
-                {t('workspace.workspaces')}
-              </h1>
+              <div className="flex items-center gap-3 min-w-0">
+                <SidebarReveal />
+                <h1 className="title-font text-[length:var(--cs-text-title,1.5rem)] leading-8 font-semibold tracking-[var(--cs-title-track,-0.01em)]" style={{ color: 'var(--color-text-primary)' }}>
+                  {t('workspace.workspaces')}
+                </h1>
+              </div>
               <GalleryActions onNewWorkspace={() => setIsModalOpen(true)} />
             </div>
           </header>
