@@ -8,11 +8,11 @@ import { BrowserViewer } from '../BrowserViewer';
 let view: BrowserViewSession;
 let stopWatching: (() => void) | null = null;
 
-async function watched(answer: () => Promise<BrowserViewAnswer>, granted = false) {
+async function watched(answer: () => Promise<BrowserViewAnswer>, granted = false, computerName: string | null = null) {
   view = new BrowserViewSession();
   const ask = vi.fn(answer);
-  render(<BrowserViewer view={view} />);
-  await act(async () => { stopWatching = view.watch({ ask, control: async () => granted, navigate: async () => null, local: false }); });
+  render(<BrowserViewer view={view} computerName={computerName} />);
+  await act(async () => { stopWatching = view.watch({ ask, control: async () => granted, fit: async () => ({ size: null, kept: false }), close: async () => null, navigate: async () => null, local: false, computer: null }); });
   return ask;
 }
 
@@ -23,19 +23,46 @@ afterEach(() => {
 
 describe('the browser view with no page to show', () => {
   it.each([
-    ['idle', "The browser isn't open", 'Open browser'],
-    ['stopped', 'This computer is stopped', 'Start and open'],
-    ['outdated', "This computer doesn't have the browser", null],
-    ['unavailable', 'No browser on this computer', null],
-  ] as const)('says why when the browser is %s, and opens it on request', async (state, title, action) => {
-    const ask = await watched(async () => ({ state }));
-    expect(screen.getByText(title)).toBeTruthy();
-    if (!action) {
-      expect(screen.queryByRole('button')).toBeNull();
-      return;
-    }
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: action })); });
+    ['idle', 'Not open', 'Opens the browser and takes control from the agent. Shift+Esc hands it back.'],
+    [
+      'stopped',
+      'Computer stopped',
+      'Starts this computer, opens its browser and takes control from the agent. Shift+Esc hands it back.',
+    ],
+  ] as const)('offers a start page when the browser is %s, which opens it for where the person goes', async (state, status, note) => {
+    const ask = await watched(async () => ({ state }), false, 'Cloud small');
+    // Where the browser is, on which computer, above what going somewhere does.
+    expect(screen.getByText('Cloud small')).toBeInTheDocument();
+    expect(screen.getByText(status)).toBeInTheDocument();
+    expect(screen.getByText(note)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+    const field = screen.getByRole('textbox', { name: 'Search or enter an address' });
+    fireEvent.change(field, { target: { value: 'example.com' } });
+    await act(async () => { fireEvent.keyDown(field, { key: 'Enter' }); });
     expect(ask).toHaveBeenLastCalledWith('start');
+  });
+
+  it('stays while its visit starts the computer, with what was typed on its way', async () => {
+    let asks = 0;
+    await watched(() => (asks++ === 0 ? Promise.resolve({ state: 'stopped' as const }) : new Promise(() => {})));
+    const field = screen.getByRole('textbox', { name: 'Search or enter an address' });
+    fireEvent.change(field, { target: { value: 'apple earnings' } });
+    await act(async () => { fireEvent.keyDown(field, { key: 'Enter' }); });
+    expect(view.getSnapshot()).toMatchObject({ phase: 'starting', visiting: 'apple earnings' });
+    const going = screen.getByRole('textbox', { name: 'Search or enter an address' });
+    expect(going).toHaveValue('apple earnings');
+    expect(going).toHaveAttribute('readonly');
+    expect(screen.getByText('Computer stopped')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['outdated', "This computer doesn't have the browser"],
+    ['unavailable', 'No browser on this computer'],
+  ] as const)('says why when the browser is %s', async (state, title) => {
+    await watched(async () => ({ state }));
+    expect(screen.getByText(title)).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
   });
 
   it('offers to connect again when asking failed, without starting anything', async () => {
@@ -76,15 +103,16 @@ describe('the browser view on a blank page', () => {
     }
   };
 
-  it('says no page is open instead of showing a white frame', async () => {
+  it('offers a start page instead of showing a white frame', async () => {
     await onPage('about:blank');
-    expect(screen.getByText('No page open')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Search or enter an address' })).toBeInTheDocument();
+    expect(screen.getByText('Open')).toBeInTheDocument();
     expect(screen.getByRole('img', { hidden: true })).toHaveStyle({ visibility: 'hidden' });
   });
 
   it('shows the page once the browser is on one', async () => {
     await onPage('https://example.com/');
-    expect(screen.queryByText('No page open')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Search or enter an address' })).toBeNull();
     expect(screen.getByRole('img', { hidden: true })).not.toHaveStyle({ visibility: 'hidden' });
   });
 
@@ -118,6 +146,15 @@ describe('the browser view on a blank page', () => {
     expect(view.getSnapshot().control).toBe('none');
     expect(input).not.toHaveBeenCalled();
     expect(document.activeElement).toHaveClass('browser-viewer-stage');
+  });
+
+  it('hands the page back on Shift+Esc from the start page field too, as its note says', async () => {
+    await onPage('about:blank', true);
+    await act(async () => { view.takeControl(); });
+    const field = screen.getByRole('textbox', { name: 'Search or enter an address' });
+    field.focus();
+    fireEvent.keyDown(field, { key: 'Escape', code: 'Escape', shiftKey: true });
+    expect(view.getSnapshot().control).toBe('none');
   });
 
   it('lets go of the keys still down on the page when typing moves elsewhere, and keeps the hold', async () => {
