@@ -40,9 +40,74 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 let autoUpdater = null
 let checking = false
+// The timed check in flight. electron-updater hands a check made meanwhile the
+// same answer, so a check after a channel pick waits it out to ask the new one.
+let background = null
 let timer = null
 
 const notifyOnly = config.updateMode === 'notify'
+
+// ---------------------------------------------------------------------------
+// Channels, in the open-source edition. Its feed carries two: stable releases
+// (`latest*.yml`) and nightly builds of main (`nightly*.yml`). An install follows
+// the channel its running version was published on until the person picks the
+// other under Update Channel in the menu. The hosted edition's feed has stable
+// releases only.
+//
+// Never a downgrade, whichever way the person moves: a newer build has already
+// migrated the bundled stack's database, and an older backend cannot run on it.
+// Moving from nightly to stable keeps the nightly until a stable release newer
+// than it is out.
+// ---------------------------------------------------------------------------
+
+/** The channels a person picks between, each with the name its manifests carry. */
+const CHANNELS = { stable: 'latest', nightly: 'nightly' }
+
+// On a Mac, electron-updater hands a downloaded update to Squirrel.Mac when
+// `autoInstallOnAppQuit` is on at that moment (MacUpdater), and from then on it
+// installs at the next quit whatever the flag says. The version handed over, so
+// a channel pick can say it still installs rather than claim to hold it back.
+let staged = null
+
+// A channel picked while a manual check was out, and the window to answer in.
+// That check asked the channel the person left, so its answer is dropped and
+// the picked one is asked once it settles.
+let recheck = null
+
+/**
+ * The channel a version was published on, as desktop-nightly.yml names its
+ * builds. Null for another prerelease (`0.4.0-rc.1`), which electron-builder
+ * publishes under manifests of its own (`rc*.yml`) and names in the build's
+ * `app-update.yml`.
+ */
+function versionChannel(version = app.getVersion()) {
+  if (/-nightly(\.|$)/.test(version)) return 'nightly'
+  return version.includes('-') ? null : 'stable'
+}
+
+/** Whether this install can move between channels: the open-source edition, with a feed. */
+function canPickChannel() {
+  return !config.isSaas && isConfigured()
+}
+
+/**
+ * The channel this install follows: the person's pick, else its running
+ * version's. Null for a release candidate nobody has moved, which keeps
+ * following its own manifests.
+ */
+function currentChannel() {
+  const picked = store.get('updateChannel')
+  return Object.hasOwn(CHANNELS, picked) ? picked : versionChannel()
+}
+
+function applyChannel(updaterInstance) {
+  if (config.isSaas) return
+  const channel = currentChannel()
+  if (channel) updaterInstance.channel = CHANNELS[channel]
+  // The setter turns downgrades on, and a downgrade is the one move a bundled
+  // stack's data cannot survive.
+  updaterInstance.allowDowngrade = false
+}
 
 /** The packaged feed descriptor, absent in a dev run and in an unpublished build. */
 function bakedFeedPath() {
@@ -79,6 +144,7 @@ function load() {
   autoUpdater.autoInstallOnAppQuit = !notifyOnly
   autoUpdater.logger = { info: log, warn: log, error: log, debug: () => {} }
   if (config.updateFeed) autoUpdater.setFeedURL(config.updateFeed)
+  applyChannel(autoUpdater)
   return autoUpdater
 }
 
@@ -175,6 +241,13 @@ function init(getWindow, { beforeInstall = () => null } = {}) {
     })
   } else {
     updaterInstance.on('update-downloaded', (info) => {
+      // A channel pick holds back an update downloaded before it. A download
+      // already under way when the person picked finishes after the pick, so
+      // one from the channel they left is held back too, unoffered.
+      const left = canPickChannel() && versionChannel(info.version) !== currentChannel()
+      updaterInstance.autoInstallOnAppQuit = !left
+      if (left) return
+      if (process.platform === 'darwin') staged = info.version
       const win = getWindow()
       if (!win || win.isDestroyed()) return
       dialog.showMessageBox(win, {
@@ -195,7 +268,13 @@ function init(getWindow, { beforeInstall = () => null } = {}) {
   // they ask.
   updaterInstance.on('error', (err) => console.error(`[updater] ${err.message}`))
 
-  const check = () => updaterInstance.checkForUpdates().catch((err) => console.error(`[updater] ${err.message}`))
+  const check = () => {
+    const run = updaterInstance.checkForUpdates()
+      .catch((err) => console.error(`[updater] ${err.message}`))
+      .finally(() => { if (background === run) background = null })
+    background = run
+    return run
+  }
   check()
   clearInterval(timer)
   timer = setInterval(check, CHECK_INTERVAL_MS)
@@ -228,7 +307,9 @@ async function checkManually(win) {
       })
     }
 
+    if (background) await background
     const result = await updaterInstance.checkForUpdates()
+    if (recheck) return
     // `isUpdateAvailable` rather than comparing versions ourselves: `updateInfo`
     // describes the newest build in the feed whether or not it is newer than
     // this one, so a string compare calls a rollback an update and offers to
@@ -237,10 +318,17 @@ async function checkManually(win) {
     // check acts on.
     const version = result?.updateInfo?.version
     if (!result?.isUpdateAvailable || !version) {
+      // A nightly on the stable channel is ahead of every stable release until
+      // the next one passes it, and "the latest version" would read as if the
+      // pick had not taken.
+      const ahead = currentChannel() === 'stable' && versionChannel() === 'nightly'
       dialog.showMessageBox(win, {
         type: 'info',
         title: 'Updates',
-        message: `LangAlpha ${app.getVersion()} is the latest version.`,
+        message: ahead
+          ? `LangAlpha ${app.getVersion()} is newer than the latest stable release.`
+          : `LangAlpha ${app.getVersion()} is the latest version.`,
+        ...(ahead ? { detail: 'It moves to the next stable release once one newer than it is out. An older version cannot run on the data this one has upgraded.' } : {}),
       })
     } else if (notifyOnly) {
       // Announced first, recorded second, for the reason the background handler
@@ -258,6 +346,7 @@ async function checkManually(win) {
       })
     }
   } catch (err) {
+    if (recheck) return
     dialog.showMessageBox(win, {
       type: 'warning',
       title: 'Updates',
@@ -266,7 +355,47 @@ async function checkManually(win) {
     })
   } finally {
     checking = false
+    if (recheck) {
+      const next = recheck
+      recheck = null
+      void checkManually(next.win)
+    }
   }
 }
 
-module.exports = { init, stop, checkManually, isConfigured, restartToInstall }
+/**
+ * Update Channel in the menu. Saved before the check, so a check that fails
+ * still leaves the pick for the next timed one, and checked at once so the
+ * person sees what the new channel offers.
+ */
+function pickChannel(name, win) {
+  if (!Object.hasOwn(CHANNELS, name) || name === currentChannel()) return
+  store.set('updateChannel', name)
+  const updaterInstance = load()
+  if (updaterInstance) {
+    applyChannel(updaterInstance)
+    // An update the other channel already downloaded would still install on
+    // quit, so the pick would not take. The next download, from this channel,
+    // turns installing on quit back on.
+    updaterInstance.autoInstallOnAppQuit = false
+  }
+  if (staged) {
+    const label = name === 'nightly' ? 'Nightly' : 'Stable'
+    return dialog.showMessageBox(win, {
+      type: 'info',
+      title: 'Update Channel',
+      message: `LangAlpha ${staged} installs when you quit.`,
+      detail: `It downloaded before you picked ${label}. Updates after it come from ${label}.`,
+    })
+  }
+  if (checking) {
+    recheck = { win }
+    return
+  }
+  return checkManually(win)
+}
+
+module.exports = {
+  init, stop, checkManually, isConfigured, restartToInstall,
+  canPickChannel, currentChannel, pickChannel, versionChannel,
+}

@@ -1,0 +1,318 @@
+name: Desktop Nightly
+
+# Each night, the open-source desktop app built from the newest commit on main
+# whose tests passed, published to the update feed's `nightly` channel and to the
+# one GitHub prerelease `desktop-oss-nightly`, whose tag and installers move with
+# each build. An installed nightly reads only that channel's manifests, and the
+# app's Update Channel menu moves an install between it and stable.
+#
+# A nightly is `<stable patch + 1>-nightly.<UTC yyyymmddHHMM>`: above the stable
+# release it follows, below the next one, so a nightly install never needs a
+# stable update and a stable one never takes a nightly unasked.
+#
+# It runs unattended, so it uses the `desktop-nightly` environment, which allows
+# main alone and needs no approval: the build's secrets and the feed's address
+# (desktop-build.yml), the feed's R2 key (desktop-release.yml), and optionally
+# HOSTED_DOWNLOAD_PAGE, as `desktop-release` holds them.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild when the newest tested commit is already the nightly"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A night that overruns into the next one finishes first.
+concurrency:
+  group: desktop-nightly
+  cancel-in-progress: false
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    # For the feed's address only, which says whether a nightly was ever
+    # published when the tag that should say so is missing.
+    environment: desktop-nightly
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+      version: ${{ steps.pick.outputs.version }}
+      build: ${{ steps.pick.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: desktop/scripts
+
+      - name: Pick the commit and name the build
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          FEED: ${{ vars.DESKTOP_UPDATE_FEED }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          # The newest commit on main whose tests passed, rather than main's head:
+          # a red or still-running head then costs a night's delay, never a
+          # broken build in the hands of everyone on the channel.
+          sha=$(gh run list --repo "$REPO" --workflow test.yml --branch main --event push \
+            --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+          if [ -z "$sha" ]; then
+            echo "::error::no commit on main has passed test.yml"
+            exit 1
+          fi
+          # A lookup that fails stops the run rather than reading as no tag.
+          refs () { bash desktop/scripts/nightly-refs.sh "$@"; }
+          # Is $sha at or past this commit? A version above it promises so: a
+          # nightly's backend must never be older than the stable release or the
+          # nightly it outranks, whose migrations an install may already have run.
+          # A rerun of an older commit's tests can make it the newest success.
+          at_or_past () {
+            local status
+            status=$(gh api "repos/$REPO/compare/$1...$sha" --jq '.status' 2>/dev/null) || status=''
+            [ "$status" = ahead ] || [ "$status" = identical ]
+          }
+          skip () {
+            echo "::notice::$1; nothing to build"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          stable=$(refs stable)
+          if [ -n "$stable" ]; then
+            base=$(refs commit "desktop-oss-v$stable")
+            if [ -z "$base" ] || ! at_or_past "$base"; then
+              skip "main's newest tested commit ${sha:0:10} is not at or past stable $stable"
+            fi
+          fi
+          current=$(refs nightly)
+          if [ -n "$current" ]; then
+            at_or_past "$current" || skip "main's newest tested commit ${sha:0:10} is behind the nightly at ${current:0:10}"
+            # Force rebuilds the same commit, never an older one.
+            if [ "$current" = "$sha" ] && [ "$FORCE" != true ]; then
+              skip "the nightly is already at ${sha:0:10}"
+            fi
+          else
+            # The first nightly must carry the app's channel picker, whose saved
+            # pick is `updateChannel`: a build from before it reads the stable
+            # manifests and never hears of the next nightly.
+            if ! gh api -H 'Accept: application/vnd.github.raw' "repos/$REPO/contents/desktop/src/updater.js?ref=$sha" \
+                >"$RUNNER_TEMP/updater.js" 2>"$RUNNER_TEMP/first.err"; then
+              grep -q 'HTTP 404' "$RUNNER_TEMP/first.err" \
+                || { cat "$RUNNER_TEMP/first.err"; echo "::error::could not read whether ${sha:0:10} has the nightly channel"; exit 1; }
+              skip "main's newest tested commit ${sha:0:10} predates the nightly channel"
+            fi
+            grep -q "'updateChannel'" "$RUNNER_TEMP/updater.js" \
+              || skip "main's newest tested commit ${sha:0:10} predates the nightly channel"
+          fi
+          # Publish cannot tag a commit whose workflow files differ from the
+          # default branch's (it checks again there, before it deletes
+          # anything), so such a commit is skipped here rather than built.
+          workflows () {
+            gh api "repos/$REPO/contents/.github/workflows$1" --jq 'map(.name + " " + .sha) | sort | join(" ")'
+          }
+          if ! at_sha=$(workflows "?ref=$sha") || ! on_main=$(workflows ''); then
+            echo "::error::could not compare ${sha:0:10}'s workflows with main's"
+            exit 1
+          fi
+          [ "$at_sha" = "$on_main" ] || skip "main changed a workflow after its newest tested commit ${sha:0:10}"
+          IFS=. read -r major minor patch <<< "${stable:-0.0.0}"
+          version="$major.$minor.$((patch + 1))-nightly.$(date -u +%Y%m%d%H%M)"
+          echo "::notice::building $version from ${sha:0:10}"
+          {
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "build=true"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: pick
+    if: needs.pick.outputs.build == 'true'
+    uses: ./.github/workflows/desktop-build.yml
+    with:
+      version: ${{ needs.pick.outputs.version }}
+      ref: ${{ needs.pick.outputs.sha }}
+      environment: desktop-nightly
+
+  publish:
+    needs: [pick, build]
+    runs-on: ubuntu-latest
+    # The feed's write key, read by nothing else in this workflow.
+    environment: desktop-nightly
+    # Shared with desktop-release.yml, so a release and a nightly never
+    # interleave their manifests or prune what the other is publishing.
+    concurrency:
+      group: desktop-oss-feed
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      CHANNEL: ${{ needs.build.outputs.channel }}
+      SHA: ${{ needs.pick.outputs.sha }}
+      FEED: ${{ vars.DESKTOP_UPDATE_FEED }}
+      TAG: desktop-oss-nightly
+    steps:
+      # This workflow's own commit, for the scripts that publish; the builds are
+      # of the picked one.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Again here, holding the feed: a stable release published while this
+      # built is not the base its version was named on, and may sit above it.
+      # The next night builds on the new one.
+      - name: Check the stable release is still the base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          stable=$(bash desktop/scripts/nightly-refs.sh stable)
+          IFS=. read -r major minor patch <<< "${stable:-0.0.0}"
+          case "$VERSION" in
+            "$major.$minor.$((patch + 1))-nightly."*) echo "  on stable ${stable:-none}" ;;
+            *) echo "::error::stable $stable was released while $VERSION built; the next nightly builds on it"; exit 1 ;;
+          esac
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Write the release notes
+        env:
+          SIGNED_MAC: ${{ secrets.MAC_CSC_LINK != '' }}
+          SIGNED_WIN: ${{ secrets.WIN_CSC_LINK != '' }}
+          HOSTED_DOWNLOAD_PAGE: ${{ vars.HOSTED_DOWNLOAD_PAGE }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p index
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) -exec cp {} index/ \;
+          node desktop/scripts/make-release-index.mjs index "$VERSION"
+          node desktop/scripts/release-notes.mjs index "$TAG" nightly > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-python@v5
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        with:
+          python-version: '3.13'
+
+      # A step of its own, so the package it installs never runs beside the feed's
+      # write key.
+      - name: Gather the feed
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        run: |
+          python -m pip install --quiet --only-binary=:all: pyyaml==6.0.3
+          python desktop/scripts/feed-gather.py
+
+      # One prerelease whose tag and installers move each night, rather than a
+      # release a night: the releases page stays a list of versions. Replaced
+      # rather than edited: creating a release at a commit is how the stable
+      # workflow makes its tag, and a tag moved by the checkout's token can be
+      # refused when the commits it brings in change a workflow. `gh release
+      # create` uploads to a draft and publishes once every installer is up, so
+      # the tag never points at a commit whose installers are not there.
+      #
+      # Before the feed, because the tag is what the next nightly and a stable
+      # release check their commit against: it may run ahead of the feed's
+      # manifests, never behind them. A run that fails after the delete leaves no
+      # tag and a feed still on the last nightly, which stops both until a rerun
+      # of this job makes the release.
+      - name: Replace the nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          assets=()
+          while IFS= read -r f; do assets+=("$f"); done < <(
+            find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \)
+          )
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::no installers matched"
+            exit 1
+          fi
+          refs () { bash desktop/scripts/nightly-refs.sh "$@"; }
+          # Never back: a rerun of an older night's job would otherwise move the
+          # tag behind a nightly people already downloaded. The same commit is a
+          # retry, and no tag at all is the state a failed replace leaves.
+          current=$(refs commit "$TAG")
+          if [ -n "$current" ] && [ "$current" != "$SHA" ]; then
+            status=$(gh api "repos/$REPO/compare/$current...$SHA" --jq '.status' 2>/dev/null) || status=''
+            if [ "$status" != ahead ]; then
+              echo "::error::the nightly is at $current, and $SHA is not past it (${status:-unknown}); run a newer night instead"
+              exit 1
+            fi
+          fi
+          # GitHub refuses this token a tag on a commit whose workflow files
+          # differ from the default branch's, and would refuse it only after the
+          # delete below. Checked first, so a commit that main has since changed
+          # a workflow past leaves the current nightly standing.
+          workflows () {
+            gh api "repos/$REPO/contents/.github/workflows$1" --jq 'map(.name + " " + .sha) | sort | join(" ")'
+          }
+          if ! at_sha=$(workflows "?ref=$SHA") || ! on_main=$(workflows ''); then
+            echo "::error::could not compare ${SHA:0:10}'s workflows with the default branch's"
+            exit 1
+          fi
+          if [ "$at_sha" != "$on_main" ]; then
+            echo "::error::${SHA:0:10}'s workflows differ from the default branch's, so this token cannot tag it; the next night whose newest tested commit has main's workflows publishes"
+            exit 1
+          fi
+          # Only a release gh reports as not found counts as none: a lookup that
+          # failed otherwise would go on to delete the tag under a live release.
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>"$RUNNER_TEMP/view.err"; then
+            gh release delete "$TAG" --repo "$REPO" --yes
+          elif ! grep -q 'release not found' "$RUNNER_TEMP/view.err"; then
+            cat "$RUNNER_TEMP/view.err"
+            echo "::error::could not tell whether $TAG has a release; the current nightly stays"
+            exit 1
+          fi
+          # Apart from the release, since `--cleanup-tag` deletes the tag only
+          # after the release, and a tag a failed delete left behind keeps its
+          # commit through the create below, which never moves an existing tag.
+          left=$(refs commit "$TAG")
+          if [ -n "$left" ]; then
+            gh api -X DELETE "repos/$REPO/git/refs/tags/$TAG"
+          fi
+          gh release create "$TAG" "${assets[@]}" --repo "$REPO" --target "$SHA" \
+            --prerelease --latest=false --title "Desktop nightly $VERSION (self-hosted)" --notes-file notes.md
+          at=$(refs commit "$TAG")
+          if [ "$at" != "$SHA" ]; then
+            echo "::error::$TAG names ${at:-nothing}, not $SHA; the feed stays on the last nightly"
+            exit 1
+          fi
+
+      # An installed nightly hears of the build from here.
+      - name: Publish the update feed
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: bash desktop/scripts/feed-publish.sh
+
+      - name: Check the feed's manifests from outside
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        run: bash desktop/scripts/feed-check.sh
+
+      # Two weeks of nightlies, a gigabyte or two each. After the feed check, so
+      # nothing goes before the build that replaces it is being served.
+      - name: Prune old nightlies from the feed
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          KEEP: 14
+        run: bash desktop/scripts/feed-prune.sh

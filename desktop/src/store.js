@@ -74,6 +74,12 @@ const DEFAULTS = {
    */
   updateNotifiedVersion: null,
   /**
+   * Open-source edition: the update channel the person picked, 'stable' or
+   * 'nightly'. Unset follows the channel the running version came from, so a
+   * nightly install stays on nightlies without being asked (updater.js).
+   */
+  updateChannel: null,
+  /**
    * The user's desktop settings (notifications, the menu bar icon and what sits
    * beside it, the panel's sections and tiles, open at login, the global
    * shortcut), edited from the app's Settings. Its shape and validation live in

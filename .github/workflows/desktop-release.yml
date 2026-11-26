@@ -1,26 +1,18 @@
 name: Desktop Release
 
-# Builds the open-source edition of the desktop app, publishes its update feed and
-# attaches its installers to a GitHub release. That release is how a self-hoster
-# gets a build, and the feed is how an installed copy learns of the next one.
-#
-# On macOS and Linux it carries its own stack: Python and the backend, the web
-# app, Postgres and Valkey, built by desktop/scripts/bundle-backend.mjs, so it works
-# with no server to run. The first launch offers that or the address of a stack the
-# person already runs. Windows builds carry no stack and only ask for that address.
-# DESKTOP_BUNDLE_BACKEND=0 on the build step gives the thin build everywhere.
+# Ships a versioned release of the open-source edition of the desktop app: builds
+# it (desktop-build.yml), publishes its update feed and attaches its installers to
+# a GitHub release. That release is how a self-hoster gets a build, and the feed
+# is how an installed copy learns of the next one. Nightly builds of main ship
+# from desktop-nightly.yml into the same feed, on a channel of their own.
 #
 # Everything a release needs beyond the source comes from the `desktop-release`
 # environment, so it reaches only the jobs that name it, and only on the branches
-# and with the approvals that environment allows:
-#   secrets  MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD   the Developer ID that signs macOS
-#            APPLE_API_KEY_P8, APPLE_API_KEY_ID,  an App Store Connect key that
-#            APPLE_API_ISSUER, APPLE_TEAM_ID      notarizes it
-#            WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD   a Windows certificate, if any
-#            R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET
+# and with the approvals that environment allows: the build's secrets and the
+# feed's address (listed in desktop-build.yml), and
+#   secrets  R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET
 #                                                 an S3 key that writes the feed
-#   vars     DESKTOP_UPDATE_FEED                  the URL that bucket is served at
-#            HOSTED_DOWNLOAD_PAGE                 optional, linked from the notes
+#   vars     HOSTED_DOWNLOAD_PAGE                 optional, linked from the notes
 # Each part works without the others. With no certificate the builds are unsigned
 # and the notes say how to open them; with no feed they never update themselves
 # and the notes say to watch the releases page. A fork sets whichever it has.
@@ -49,267 +41,55 @@ permissions:
   contents: read
 
 jobs:
-  # Ahead of the matrix, so a bad combination costs one runner-second rather than
-  # four builds that only fail at the upload.
-  resolve:
+  # Ahead of the builds, so a release that could never be tagged costs one
+  # runner-second rather than four builds.
+  check:
     runs-on: ubuntu-latest
-    outputs:
-      # The trimmed version: every later job reads it from here, never from the input.
-      version: ${{ steps.version.outputs.version }}
-      channel: ${{ steps.version.outputs.channel }}
     steps:
-      - name: Check the version and name its update channel
-        id: version
+      - name: Check a release can be tagged
         env:
           VERSION: ${{ inputs.version }}
           PUBLISH: ${{ inputs.publish }}
         run: |
-          # Trimmed rather than tested as `!= ''`: a dispatch field holding a
-          # single space passes the expression form.
-          version=$(printf '%s' "$VERSION" | tr -d '[:space:]')
-          if [ "$PUBLISH" = true ] && [ -z "$version" ]; then
+          if [ "$PUBLISH" = true ] && [ -z "$(printf '%s' "$VERSION" | tr -d '[:space:]')" ]; then
             echo "::error::publish needs a version. The tag is desktop-oss-v<version>, so an empty one creates the tag 'desktop-oss-v'."
             exit 1
           fi
-          # It becomes a feed object name, a URL path segment and a git tag.
-          if [ -n "$version" ] && ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
-            echo "::error::'$version' is not a version like 0.4.0 or 0.4.0-rc.1"
-            exit 1
-          fi
-          # electron-builder names each update manifest after the channel it
-          # reads off the version's prerelease tag: 0.4.0 writes latest-mac.yml,
-          # 0.4.0-rc.1 writes rc-mac.yml. Everything below that collects or
-          # uploads a manifest asks for this name. Parameter expansion, not
-          # `expr`, which exits 1 on an empty match under `bash -e`.
-          channel=latest
-          case "$version" in *-*) pre=${version#*-}; channel=${pre%%.*} ;; esac
-          # A prerelease named `latest` would land on the stable channel.
-          if [ "$channel" = latest ] && [ "$version" != "${version%%-*}" ]; then
-            echo "::error::'$version' would publish to the stable channel; name its prerelease otherwise, like 0.4.0-rc.1"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          # The nightly channel is desktop-nightly.yml's: a release on it would
+          # replace the nightly's manifests without moving the tag the nightly's
+          # commit order is checked against.
+          version=$(printf '%s' "$VERSION" | tr -d '[:space:]')
+          case "$version" in
+            *-*) pre=${version#*-}
+              if [ "$PUBLISH" = true ] && [ "${pre%%.*}" = nightly ]; then
+                echo "::error::'$version' would publish to the nightly channel, which only desktop-nightly.yml publishes to; name its prerelease otherwise, like 0.4.0-rc.1"
+                exit 1
+              fi ;;
+          esac
 
   build:
-    needs: resolve
-    # The signing and notarization secrets and the feed's address. Every build
-    # needs the address, so it is on every platform's job.
-    environment: desktop-release
-    strategy:
-      fail-fast: false
-      matrix:
-        # A bundled build holds native code for one architecture and is built on a
-        # runner of that architecture, so each Mac gets a runner of its own.
-        # ubuntu-22.04 rather than latest: Valkey is compiled here, and it then runs
-        # on any glibc at least as new as the one it was built against.
-        os: [macos-15, macos-15-intel, windows-latest, ubuntu-22.04]
-    runs-on: ${{ matrix.os }}
-    # Valkey, the web build and a tree of over a gigabyte to compress and sign.
-    timeout-minutes: 120
-    # Declared once for the whole job. It selects what gets built and, through
-    # electron-builder.yml's per-edition `directories.output`, where the
-    # artifacts land, so the steps below read it rather than spelling the edition
-    # again beside a path that has to agree with it.
-    env:
-      DESKTOP_EDITION: oss
-    defaults:
-      run:
-        shell: bash
-        working-directory: desktop
-
-    steps:
-      # `contents: read` bounds what the token can do; this stops it being
-      # written into .git/config at all, where anything this job installs and
-      # runs could read it. Nothing here pushes.
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      # A commit, not the v6 tag: that tag still points at a release without
-      # pnpm 12 support.
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          # Reads the pin from `packageManager`, so CI runs the pnpm the lockfile
-          # was written by without a second copy of the version to keep in sync.
-          package_json_file: desktop/package.json
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: desktop/pnpm-lock.yaml
-
-      - run: pnpm install --frozen-lockfile
-
-      # Pinned, because it decides which Python build comes out: uv knows a fixed
-      # table of them per release. bundle-backend.mjs refuses any other on CI.
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        if: runner.os != 'Windows'
-        with:
-          version: "0.12.24"
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      # What the bundler downloads, never what it compiles. fetchPinned hashes each
-      # file against its pin on every run, so a cache hit that is anything else is
-      # discarded and downloaded again.
-      - uses: actions/cache@v4
-        if: runner.os != 'Windows'
-        with:
-          path: desktop/dist/bundle-cache
-          key: desktop-bundle-${{ matrix.os }}-${{ hashFiles('desktop/scripts/bundle-backend.mjs') }}
-
-      - name: Stamp version
-        if: needs.resolve.outputs.version != ''
-        # Through `env`, never interpolated into the script body: an expression
-        # is substituted into the text before bash parses it, so a dispatch
-        # input would be read as shell in a step that carries signing secrets.
-        env:
-          VERSION: ${{ needs.resolve.outputs.version }}
-        run: pnpm version "$VERSION" --no-git-tag-version --allow-same-version
-
-      # Remote control's helper, which scripts/build.mjs puts inside the Mac app
-      # and electron-builder signs with it. DESKTOP_REQUIRE_HELPER below makes
-      # its absence fail the build rather than ship the app without it.
-      - name: Build the remote control helper
-        if: runner.os == 'macOS'
-        working-directory: helper
-        run: |
-          rustup toolchain install
-          scripts/build-macos.sh
-
-      # notarytool takes the App Store Connect key as a file: @electron/notarize
-      # passes APPLE_API_KEY straight to `notarytool --key`, whose contract is a
-      # path. Under RUNNER_TEMP, outside the tree electron-builder packages, so no
-      # `files` glob can sweep it into the app. With no key the build falls
-      # through to Apple ID sign-in, or to none, which scripts/build.mjs reports.
-      - name: Write the App Store Connect key
-        if: runner.os == 'macOS'
-        env:
-          KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-        run: |
-          if [ -z "$KEY_P8" ]; then
-            echo "no APPLE_API_KEY_P8; notarization falls back to Apple ID sign-in, or none"
-            exit 0
-          fi
-          key="$RUNNER_TEMP/asc-api-key.p8"
-          printf '%s' "$KEY_P8" > "$key"
-          chmod 600 "$key"
-          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
-
-      # hdiutil cannot detach the disk image it has just written while Spotlight
-      # is indexing it ("Resource busy"), and an image of over a gigabyte keeps
-      # it busy long enough to fail a build now and then.
-      - name: Keep Spotlight off the disk images
-        if: runner.os == 'macOS'
-        run: sudo mdutil -a -i off
-
-      - name: Build
-        env:
-          DESKTOP_REQUIRE_HELPER: ${{ runner.os == 'macOS' && '1' || '' }}
-          # Empty without a feed, and then the build carries no updater address.
-          # Left out of an unsigned Mac build too: macOS applies an update only to
-          # a signed app, so that build would download updates it cannot install
-          # and could never be updated into a signed one.
-          DESKTOP_UPDATE_FEED: ${{ (runner.os != 'macOS' || secrets.MAC_CSC_LINK != '') && vars.DESKTOP_UPDATE_FEED || '' }}
-          # electron-builder picks these up automatically. Absent, it produces an
-          # unsigned build and says so.
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          # Apple ID sign-in is checked first, so setting both retires the API
-          # key (APPLE_API_KEY is the path the step above exported). Leave the
-          # Apple ID secrets unset while the key is the credential in use.
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm run dist
-
-      # The packaged app started the way a first launch starts it: the bundled
-      # database, cache and server, then the setup status and the web app asked
-      # for (src/stack/smoke.js). It is the one check that runs what the package
-      # carries, so a binary that will not load stops the release here. The
-      # script finds the app for the platform and skips a package with no stack:
-      # Windows, or a thin build.
-      - name: Launch the packaged app
-        run: scripts/smoke-packaged.sh "$RUNNER_TEMP/smoke"
-
-      # A bundled installer is hundreds of megabytes, and this is where it shows.
-      - name: Report installer sizes
-        run: |
-          {
-            echo "### Installers on ${{ matrix.os }}"
-            find "dist/$DESKTOP_EDITION" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) \
-              -exec du -h {} \;
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # Asked of Gatekeeper itself, the way a downloaded copy is judged. A signed
-      # build it would refuse, say one whose notarization did not take, fails
-      # here: shipping it would refuse to open for everyone, with the same
-      # message an unsigned app gets. An unsigned build only reports.
-      - name: Check what Gatekeeper makes of it
-        if: runner.os == 'macOS'
-        env:
-          SIGNED: ${{ secrets.MAC_CSC_LINK != '' }}
-        run: |
-          out="dist/$DESKTOP_EDITION"
-          app=$(find "$out" -maxdepth 2 -name "*.app" -print -quit)
-          dmg=$(find "$out" -maxdepth 1 -name "*.dmg" -print -quit)
-          codesign -dv "$app" 2>&1 | head -5 || true
-          if [ "$SIGNED" != true ]; then
-            echo "::warning::unsigned build; macOS will ask people to allow it in Privacy & Security"
-            exit 0
-          fi
-          spctl -a -vv -t exec "$app"
-          xcrun stapler validate "$app"
-          spctl -a -vv -t open --context context:primary-signature "$dmg"
-
-      # "This build cannot update itself" is not something to learn from a user.
-      - name: Report the update manifest
-        continue-on-error: true
-        env:
-          CHANNEL: ${{ needs.resolve.outputs.channel }}
-        run: |
-          ls "dist/$DESKTOP_EDITION/$CHANNEL"*.yml >/dev/null 2>&1 \
-            && echo "::notice::update manifests: $(cd "dist/$DESKTOP_EDITION" && ls "$CHANNEL"*.yml | tr '\n' ' ')" \
-            || echo "::warning::no update manifest; builds from this run cannot update themselves"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: langalpha-desktop-${{ env.DESKTOP_EDITION }}-${{ matrix.os }}
-          retention-days: 14
-          if-no-files-found: error
-          # The .blockmap files are not cosmetic: electron-updater reads them to
-          # fetch only the changed blocks of an archive. Missing, it downloads the
-          # whole thing on every release.
-          path: |
-            desktop/dist/${{ env.DESKTOP_EDITION }}/*.dmg
-            desktop/dist/${{ env.DESKTOP_EDITION }}/*.zip
-            desktop/dist/${{ env.DESKTOP_EDITION }}/*.exe
-            desktop/dist/${{ env.DESKTOP_EDITION }}/*.AppImage
-            desktop/dist/${{ env.DESKTOP_EDITION }}/*.deb
-            desktop/dist/${{ env.DESKTOP_EDITION }}/${{ needs.resolve.outputs.channel }}*.yml
-            desktop/dist/${{ env.DESKTOP_EDITION }}/*.blockmap
+    needs: check
+    uses: ./.github/workflows/desktop-build.yml
+    with:
+      version: ${{ inputs.version }}
+      environment: desktop-release
 
   release:
-    needs: [resolve, build]
+    needs: build
     if: inputs.publish
     runs-on: ubuntu-latest
     # The feed's write key, read by nothing else in this workflow.
     environment: desktop-release
-    # One publish at a time, so two runs cannot interleave their manifests.
+    # One publish at a time, nightly included, so two runs cannot interleave
+    # their manifests or prune what the other is publishing.
     concurrency:
-      group: desktop-release-publish
+      group: desktop-oss-feed
       cancel-in-progress: false
     permissions:
       contents: write
     env:
-      VERSION: ${{ needs.resolve.outputs.version }}
-      CHANNEL: ${{ needs.resolve.outputs.channel }}
+      VERSION: ${{ needs.build.outputs.version }}
+      CHANNEL: ${{ needs.build.outputs.channel }}
       FEED: ${{ vars.DESKTOP_UPDATE_FEED }}
     steps:
       # For desktop/scripts/make-release-index.mjs, which names the platform of
@@ -318,12 +98,32 @@ jobs:
         with:
           persist-credentials: false
 
+      # A stable version outranks every nightly below it, so an install on the
+      # nightly channel that picked Stable takes this build. It must then carry
+      # everything the nightly did: an older backend cannot run on a database the
+      # nightly has migrated. Checked here, holding the feed, because a nightly
+      # can publish while this run waits for approval or builds.
+      - name: Check the release is at or past the nightly
+        if: needs.build.outputs.channel == 'latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Empty only when there never was a nightly; a lookup that fails, or a
+          # nightly tag gone while the feed still serves a nightly, stops here.
+          nightly=$(bash desktop/scripts/nightly-refs.sh nightly)
+          [ -n "$nightly" ] || exit 0
+          status=$(gh api "repos/$REPO/compare/$nightly...$SHA" --jq '.status' 2>/dev/null) || status=''
+          case "$status" in
+            ahead|identical) echo "  at or past the nightly at ${nightly:0:10}" ;;
+            *) echo "::error::$SHA is not at or past the nightly at $nightly ($status). Release from a commit that includes it."; exit 1 ;;
+          esac
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      # Composed from what this run actually had: fixed text promising unsigned
-      # builds would keep saying so on the first signed one.
       - name: Write the release notes
         env:
           SIGNED_MAC: ${{ secrets.MAC_CSC_LINK != '' }}
@@ -334,37 +134,7 @@ jobs:
           mkdir -p index
           find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) -exec cp {} index/ \;
           node desktop/scripts/make-release-index.mjs index "$VERSION"
-          node - > notes.md <<'JS'
-          const { artifacts, version } = require('./index/latest.json')
-          const base = `https://github.com/${process.env.REPO}/releases/download/desktop-oss-v${version}`
-          const LABEL = {
-            'mac-arm64': 'macOS (Apple Silicon)', 'mac-x64': 'macOS (Intel)',
-            'win-x64': 'Windows (x64)', 'win-arm64': 'Windows (ARM64)',
-            'linux-x64': 'Linux (AppImage)', 'linux-deb': 'Linux (.deb)',
-          }
-          const out = ['The LangAlpha desktop app for running LangAlpha yourself. On macOS and Linux it can run everything on your own computer, with no server to set up: on first launch it offers that or the address of a LangAlpha you already run. On Windows it asks for that address.', '']
-          if (process.env.HOSTED_DOWNLOAD_PAGE) {
-            out.push(`Prefer not to run anything yourself? The hosted app is at [${process.env.HOSTED_DOWNLOAD_PAGE.replace(/^https?:\/\//, '')}](${process.env.HOSTED_DOWNLOAD_PAGE}).`, '')
-          }
-          out.push('| Platform | Download |', '|---|---|')
-          for (const [k, file] of Object.entries(artifacts)) out.push(`| ${LABEL[k] || k} | [${file}](${base}/${file}) |`)
-          if (process.env.SIGNED_MAC !== 'true') {
-            out.push('', 'macOS builds are unsigned. Open the app once, then go to **System Settings > Privacy & Security** and click **Open Anyway**.')
-          }
-          if (process.env.SIGNED_WIN !== 'true') {
-            out.push('', 'Windows builds are unsigned, so SmartScreen warns on first run. Click **More info**, then **Run anyway**.')
-          }
-          // An unsigned Mac build is built without the feed (see Build), since
-          // macOS only applies an update signed by the same developer.
-          if (!process.env.FEED) {
-            out.push('', 'These builds do not update themselves. Watch this page for new versions.')
-          } else if (process.env.SIGNED_MAC !== 'true') {
-            out.push('', 'On Windows and Linux, installed copies update themselves. The macOS builds do not, so on a Mac watch this page for new versions.')
-          } else {
-            out.push('', 'Installed copies update themselves, so this page is a record rather than something to watch.')
-          }
-          console.log(out.join('\n'))
-          JS
+          node desktop/scripts/release-notes.mjs index "desktop-oss-v${VERSION}" stable > notes.md
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
       # Opened before the feed, as a draft no one else can see, so a release this
@@ -410,7 +180,7 @@ jobs:
               fi
             elif grep -q 'HTTP 404' "$RUNNER_TEMP/tagref.err" \
               && [ "$(gh release view "$tag" --repo "$REPO" --json isDraft --jq '.isDraft' 2>/dev/null)" = true ]; then
-              # A draft has no tag ref: GitHub creates it on publish. That is the
+              # A draft has no tag ref until this run tags it below. That is the
               # state a run that failed after `create` leaves behind, and reruns
               # of it are what --clobber below is for. The draft records the
               # commit it was cut from, which answers the same question. Only
@@ -499,55 +269,31 @@ jobs:
         env:
           OVERWRITE: ${{ inputs.overwrite }}
         run: |
-          mkdir -p feed
-          find artifacts -type f ! -name '*.yml' -exec cp {} feed/ \;
-          # Each Mac builds on a runner of its own, so each writes a latest-mac.yml
-          # naming only its own archives, and copied side by side one would replace
-          # the other: every Mac of that architecture would be offered the other's
-          # build. Same-named manifests are merged into the one a single build of
-          # both architectures writes, x64 first, since the top-level `path` is
-          # what an updater that predates per-architecture entries reads.
           python -m pip install --quiet --only-binary=:all: pyyaml==6.0.3
-          python - <<'PY'
-          import glob, os, sys, urllib.error, urllib.request, yaml
-          def order(v):
-              main, _, pre = v.partition("-")
-              ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")) if pre else ()
-              return (tuple(int(x) for x in main.split(".")), 0 if pre else 1, ids)
-          channel = os.environ["CHANNEL"]
-          groups = {}
-          for p in sorted(glob.glob(f"artifacts/**/{channel}*.yml", recursive=True)):
-              groups.setdefault(os.path.basename(p), []).append(p)
-          if not groups:
-              sys.exit(f"::error::the builds carry no {channel} manifest, so they could never update themselves")
-          for name, paths in groups.items():
-              docs = [yaml.safe_load(open(p)) for p in paths]
-              if len({d["version"] for d in docs}) != 1:
-                  sys.exit(f"::error::the {name} manifests name different versions")
-              merged = docs[0]
-              if len(docs) > 1:
-                  files = {f["url"]: f for d in docs for f in d["files"]}.values()
-                  files = sorted(files, key=lambda f: (not f["url"].endswith(".zip"), "arm64" in f["url"]))
-                  merged["files"], merged["path"], merged["sha512"] = files, files[0]["url"], files[0]["sha512"]
-                  merged["releaseDate"] = max(d["releaseDate"] for d in docs)
-              # A manifest already in the feed that names a newer version means
-              # this run is older than one that published after it started.
-              # Only a missing manifest counts as none; anything else stops here.
-              try:
-                  # A user agent of its own: the edge refuses Python's default one.
-                  req = urllib.request.Request(f"{os.environ['FEED']}/{name}", headers={"User-Agent": "langalpha-desktop-release"})
-                  with urllib.request.urlopen(req, timeout=60) as r:
-                      live = yaml.safe_load(r.read())["version"]
-              except urllib.error.HTTPError as e:
-                  if e.code != 404:
-                      raise
-                  live = None
-              if live and order(live) > order(merged["version"]) and os.environ.get("OVERWRITE") != "true":
-                  sys.exit(f"::error::the feed's {name} already names {live}, newer than {merged['version']}")
-              with open(f"feed/{name}", "w") as out:
-                  yaml.safe_dump(merged, out, sort_keys=False)
-              print(f"  {name}: {', '.join(f['url'] for f in merged['files'])}")
-          PY
+          python desktop/scripts/feed-gather.py
+
+      # The tag ahead of the manifests, though the release stays a draft until
+      # the feed is through: the newest stable tag is what desktop-nightly.yml
+      # names its builds above and checks its commit against, so a release that
+      # stops after reaching the feed must already count. The draft step above
+      # has refused a tag on another commit.
+      - name: Tag the release
+        if: vars.DESKTOP_UPDATE_FEED != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          tag="desktop-oss-v${VERSION}"
+          at=$(bash desktop/scripts/nightly-refs.sh commit "$tag")
+          if [ -z "$at" ]; then
+            gh api "repos/$REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$SHA" --jq '.ref'
+          elif [ "$at" != "$SHA" ]; then
+            # A tag left with no release is not one the draft step checks, and
+            # creating the draft on it does not move it.
+            echo "::error::$tag is on $at, not $SHA. Move the tag deliberately or pick a new version."
+            exit 1
+          fi
 
       # Before the release is published, because the manifest is what tells an installed app a
       # build exists: published ahead of the archives it names, every app would
@@ -563,70 +309,7 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           OVERWRITE: ${{ inputs.overwrite }}
-        run: |
-          probe () {
-            local url="$1" want="$2" hdrs code cache
-            hdrs=$(curl -sSLI --max-time 60 "$url" 2>/dev/null | tr -d '\r' || true)
-            code=$(printf '%s\n' "$hdrs" | awk 'toupper($1) ~ /^HTTP/ {c=$2} END {print c+0}')
-            cache=$(printf '%s\n' "$hdrs" | awk -F': ' 'tolower($1)=="cache-control" {v=$2} END {print tolower(v)}')
-            [ "$code" = 200 ] || { echo "::error::$url answered $code"; return 1; }
-            case "$cache" in
-              *"$want"*) echo "  ok   ${url##*/}  ($cache)" ;;
-              *) echo "::error::$url is cached as '${cache:-nothing}', expected $want"; return 1 ;;
-            esac
-          }
-          for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
-            [ -n "${!v}" ] || { echo "::error::a feed is configured but $v is not set"; exit 1; }
-          done
-          payload=()
-          while IFS= read -r f; do payload+=("$f"); done < <(
-            sed -nE 's/^[[:space:]]*-?[[:space:]]*url:[[:space:]]*//p' feed/"$CHANNEL"*.yml \
-              | tr -d '\r' | sed -E "s/^['\"]//; s/['\"]\$//" | sort -u
-          )
-          [ "${#payload[@]}" -gt 0 ] || { echo "::error::the $CHANNEL manifest names no files"; exit 1; }
-
-          # Archives are served immutable for a year, so the same name with other
-          # bytes would leave every cached copy disagreeing with the manifest's
-          # checksum. The same bytes again, a rerun of this job, are skipped, which
-          # is also how a run that stopped between the archives and the manifests
-          # is finished: rerun it. Only a 404 counts as absent: an object this run
-          # cannot read, or one with no checksum of ours, is never replaced
-          # without overwrite.
-          put () {
-            local file="feed/$1" sum head remote
-            sum=$(sha256sum "$file" | cut -d' ' -f1)
-            if head=$(aws s3api head-object --bucket "$R2_BUCKET" --key "$1" --endpoint-url "$R2_ENDPOINT" \
-                --output json 2>"$RUNNER_TEMP/head.err"); then
-              remote=$(printf '%s' "$head" | jq -r '.Metadata.sha256 // empty')
-              if [ "$remote" = "$sum" ]; then echo "  same  $1"; return 0; fi
-              if [ "$OVERWRITE" != true ]; then
-                local why=${remote:+with other bytes}
-                echo "::error::$1 is already in the feed ${why:-with no checksum to compare}. Bump the version, or run with overwrite if no one can have fetched it."
-                return 1
-              fi
-            elif ! grep -q '(404)' "$RUNNER_TEMP/head.err"; then
-              cat "$RUNNER_TEMP/head.err"
-              echo "::error::could not tell whether $1 is already in the feed"
-              return 1
-            fi
-            aws s3 cp "$file" "s3://$R2_BUCKET/$1" --endpoint-url "$R2_ENDPOINT" --metadata "sha256=$sum" --only-show-errors
-            echo "  put   $1"
-          }
-
-          for f in "${payload[@]}"; do
-            [ -f "feed/$f" ] || { echo "::error::the $CHANNEL manifest names $f, which this run did not build"; exit 1; }
-            put "$f"
-            if [ -f "feed/$f.blockmap" ]; then put "$f.blockmap"; fi
-          done
-          # One archive through the edge before any manifest names it: the bytes
-          # landed behind the public address, and are cached as immutable.
-          probe "$FEED/${payload[0]}" immutable
-          # Last: this is the moment the release reaches installed apps.
-          for m in feed/"$CHANNEL"*.yml; do
-            name=$(basename "$m")
-            aws s3 cp "$m" "s3://$R2_BUCKET/$name" --endpoint-url "$R2_ENDPOINT" --only-show-errors
-            echo "  put   $name"
-          done
+        run: bash desktop/scripts/feed-publish.sh
 
       # `--clobber` deletes each asset before uploading its replacement, so a
       # failure midway would leave the public page serving a mix of old, new and
@@ -651,21 +334,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: gh release edit "desktop-oss-v${VERSION}" --repo "$REPO" --notes-file notes.md --draft=false --latest=false
 
-      # The manifests reached the way an installed app reaches them. The cache
-      # header is half the check: a manifest served as immutable is read from
-      # cache forever, and every copy goes on reporting itself up to date.
+      # The manifests reached the way an installed app reaches them.
       - name: Check the feed's manifests from outside
         if: vars.DESKTOP_UPDATE_FEED != ''
-        run: |
-          fail=0
-          for m in feed/"$CHANNEL"*.yml; do
-            url="$FEED/$(basename "$m")"
-            hdrs=$(curl -sSLI --max-time 60 "$url" 2>/dev/null | tr -d '\r' || true)
-            code=$(printf '%s\n' "$hdrs" | awk 'toupper($1) ~ /^HTTP/ {c=$2} END {print c+0}')
-            cache=$(printf '%s\n' "$hdrs" | awk -F': ' 'tolower($1)=="cache-control" {v=$2} END {print tolower(v)}')
-            case "$code $cache" in
-              "200 "*no-store*) echo "  ok   ${url##*/}  ($cache)" ;;
-              *) echo "::error::$url answered $code, cached as '${cache:-nothing}'"; fail=1 ;;
-            esac
-          done
-          exit $fail
+        run: bash desktop/scripts/feed-check.sh
