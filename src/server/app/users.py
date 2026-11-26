@@ -820,10 +820,12 @@ async def update_preferences(
 @router.delete("/users/me/preferences", status_code=200)
 @handle_api_exceptions("delete preferences", logger)
 async def delete_preferences(user_id: CurrentUserId):
-    """Delete all user preferences and reset onboarding_completed to false.
-    A feature the server granted (``granted_override_keys``) stays granted: the
-    user never set it, and a grant lost here could not be given back. The
-    account setup stamp stays for the same reason (``delete_user_preferences``)."""
+    """Clear the user's investing answers and agent settings, and reset
+    onboarding_completed to false. Model settings stay: the reset belongs to
+    the investing profile, not to the models turns run on. A feature the server
+    granted (``granted_override_keys``) stays granted: the user never set it,
+    and a grant lost here could not be given back. The account setup stamp
+    stays for the same reason (``delete_user_preferences``)."""
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
