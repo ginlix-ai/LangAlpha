@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { SwapCell } from '@/components/ui/crossfade';
+import { usePageTabTitle } from '@/components/PageTabs/usePageTabTitle';
 import { useLastShape } from '@/lib/lastShape';
 import { useParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -66,6 +67,7 @@ interface WorkspaceGalleryProps {
 
 function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalleryProps) {
   const { t } = useTranslation();
+  usePageTabTitle(t('workspace.workspaces'));
   const label = useWorkspaceLabel();
   const queryClient = useQueryClient();
   const now = useNow();

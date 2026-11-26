@@ -1,5 +1,4 @@
-import { createContext, useContext, useEffect } from 'react';
-import { useLocation } from 'react-router';
+import { createContext, useContext } from 'react';
 
 /** The experiment that turns the top bar into a strip of open pages. */
 export const PAGE_TABS_FEATURE = 'page_tabs';
@@ -44,17 +43,4 @@ export function usePageTabs(): PageTabsState | null {
 /** Null while the experiment is off. */
 export function usePageTabActions(): PageTabActions | null {
   return useContext(PageTabActionsContext);
-}
-
-/**
- * Names the tab this page is in, where the page knows better than its route
- * (a chat names its thread). A no-op while tabs are off.
- */
-export function usePageTabTitle(title: string | null | undefined) {
-  const publish = usePageTabActions()?.publishTitle;
-  const location = useLocation();
-  const path = `${location.pathname}${location.search}`;
-  useEffect(() => {
-    if (publish && title) publish(title, path);
-  }, [publish, title, path]);
 }

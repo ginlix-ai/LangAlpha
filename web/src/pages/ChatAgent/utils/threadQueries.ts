@@ -2,7 +2,7 @@
  * Thread queries read from more than one surface, each defined once so every
  * reader of a key fetches it the same way and agrees on how fresh it is.
  */
-import { queryOptions } from '@tanstack/react-query';
+import { queryOptions, useQuery } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { isLastingRefusal } from '@/api/errors';
 import type { ThreadsResponse } from '@/types/api';
@@ -19,6 +19,16 @@ export function threadDetailQuery(threadId: string) {
     queryFn: () => getThread(threadId),
     retry: false,
   });
+}
+
+/**
+ * The record of the thread a view shows. `__default__` stands for a thread not
+ * yet created, which has none to read, so it reads as no record.
+ */
+export function useLiveThread(threadId: string | null | undefined) {
+  const liveId = threadId && threadId !== '__default__' ? threadId : null;
+  const { data } = useQuery({ ...threadDetailQuery(liveId ?? ''), enabled: !!liveId });
+  return liveId ? data : undefined;
 }
 
 /**

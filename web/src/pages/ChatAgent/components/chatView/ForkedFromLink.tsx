@@ -11,7 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import { GitBranch } from 'lucide-react';
 import { apiErrorStatus } from '@/api/errors';
 import { cn } from '@/lib/utils';
-import { threadDetailQuery } from '../../utils/threadQueries';
+import { threadDetailQuery, useLiveThread } from '../../utils/threadQueries';
 
 const QUIET = 'flex min-w-0 shrink items-center gap-1 text-xs whitespace-nowrap text-(--color-text-tertiary)';
 
@@ -22,8 +22,7 @@ export function ForkedFromLink({ threadId, onOpen }: {
   onOpen: (sourceThreadId: string, state: { workspaceId: string }) => void;
 }): React.ReactElement | null {
   const { t } = useTranslation();
-  const liveId = threadId && threadId !== '__default__' ? threadId : null;
-  const { data: thread } = useQuery({ ...threadDetailQuery(liveId ?? ''), enabled: !!liveId });
+  const thread = useLiveThread(threadId);
   const fork = thread?.metadata?.fork;
   const sourceId = fork && !fork.borrow ? fork.thread_id || null : null;
   const { data: source, error } = useQuery({ ...threadDetailQuery(sourceId ?? ''), enabled: !!sourceId });

@@ -1,4 +1,5 @@
 import { useSharedEntry, useWorkspaceCapabilities } from '@/hooks/useSharedWorkspaces';
+import { usePageTabTitle } from '@/components/PageTabs/usePageTabTitle';
 import { useThreadPrivacy } from './chatView/useThreadPrivacy';
 import { useUser } from '@/hooks/useUser';
 import { threadStanding } from '@/lib/sharedThreads';
@@ -113,6 +114,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const locationState = location.state as Record<string, unknown> | null;
   const label = useWorkspaceLabel();
   const workspaceName = (label(wsData) || locationState?.workspaceName || '') as string;
+  usePageTabTitle(workspaceName);
   // Home runs the full agent with a folder of its own, so its files show. It
   // still has no machine controls of its own.
   const isHome = isHomeWorkspace(wsData);
