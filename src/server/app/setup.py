@@ -67,6 +67,7 @@ from src.server.utils.request_client import RequestClientMiddleware
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.utils.api import caller_of
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
+from src.config.env import RenamedSettingError
 from src.server.services.preview_base import (
     PreviewProxyConfigurationError,
     check_preview_proxy_config,
@@ -607,6 +608,10 @@ async def lifespan(app: FastAPI):
     except PreviewProxyConfigurationError:
         # The same kind of gate: private computers with nowhere to serve
         # their previews would hand out only dead links.
+        raise
+    except RenamedSettingError:
+        # A config file still naming a renamed setting would load with that
+        # value missing.
         raise
     except Exception as e:
         logger.warning(f"Failed to initialize PTC Agent: {e}")

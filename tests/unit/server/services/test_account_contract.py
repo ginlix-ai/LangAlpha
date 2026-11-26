@@ -350,8 +350,8 @@ def _deployment(cache, auth, *, door, contract=ACCOUNT_CONTRACT):
     stack.enter_context(patch("src.server.services.membership.ACCOUNT_CONTRACT", contract))
     stack.enter_context(patch(f"{LIMITS}.HOST_MODE", "platform"))
     stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
-    stack.enter_context(patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://auth.test"))
-    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://auth.test"))
+    stack.enter_context(patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://auth.test"))
+    stack.enter_context(patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://auth.test"))
     stack.enter_context(patch("src.server.services.platform_client.get_http_client", AsyncMock(return_value=auth)))
     stack.enter_context(
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache)

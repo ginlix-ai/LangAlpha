@@ -25,7 +25,7 @@ from src.config.models import (
 
 # Re-export env-var constants for backward compatibility
 from src.config.env import (  # noqa: F401
-    AUTH_SERVICE_URL,
+    PLATFORM_SERVICE_URL,
     AUTOMATION_WEBHOOK_SECRET,
     AUTOMATION_WEBHOOK_URL,
     LANGALPHA_DATA_ENABLED,

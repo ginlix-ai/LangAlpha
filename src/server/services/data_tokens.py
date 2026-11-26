@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from src.config.env import AUTH_SERVICE_URL, LANGALPHA_DATA_URL, PUBLIC_API_BASE_URL
+from src.config.env import PLATFORM_SERVICE_URL, LANGALPHA_DATA_URL, PUBLIC_API_BASE_URL
 from src.server.auth import computer_token_core
 from src.server.database import computer_data_tokens as db
 from src.server.database.shared_workspaces import is_holder
@@ -74,7 +74,7 @@ class Minted:
 
 def configured() -> bool:
     return bool(
-        AUTH_SERVICE_URL
+        PLATFORM_SERVICE_URL
         and LANGALPHA_DATA_URL
         and os.getenv("INTERNAL_SERVICE_TOKEN", "")
     )
@@ -252,7 +252,7 @@ def _payload(minted: Minted) -> dict[str, Any]:
 
 
 def _url(path: str = "") -> str:
-    return f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/data-tokens/computer{path}"
+    return f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/data-tokens/computer{path}"
 
 
 def _expires_at(body: dict[str, Any]) -> datetime:

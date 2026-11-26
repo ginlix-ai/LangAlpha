@@ -6,7 +6,7 @@ these tokens: only a route that opts in through
 ``src.server.dependencies.principal`` does, until routes declare the scopes
 they need.
 
-With ``AUTH_SERVICE_URL`` set, every token also passes the platform's consent
+With ``PLATFORM_SERVICE_URL`` set, every token also passes the platform's consent
 check, which pins a consent (``sid``) to the first subject it saw and knows
 when the user disconnected the app. The issuer's own tokens stay valid until
 they expire, so this check is what ends an app's access promptly.
@@ -21,10 +21,10 @@ import jwt
 from fastapi import HTTPException
 
 from src.config.env import (
-    AUTH_SERVICE_URL,
     OAUTH_RESOURCE_AUDIENCES,
     OAUTH_RESOURCE_ISSUER,
     OAUTH_RESOURCE_JWKS_URL,
+    PLATFORM_SERVICE_URL,
 )
 from src.server.auth.jwt_bearer import _SigningKeys, auth_unavailable
 from src.server.services.platform_client import get_http_client, service_headers
@@ -65,7 +65,7 @@ def oauth_resource_enabled() -> bool:
 
 
 def consent_check_enabled() -> bool:
-    return bool(AUTH_SERVICE_URL)
+    return bool(PLATFORM_SERVICE_URL)
 
 
 async def warm_oauth_resource_keys() -> None:
@@ -221,7 +221,7 @@ async def _ask_platform(
     sub: str, sid: str, client_id: str | None, audience: str
 ) -> dict:
     """Fails closed: without an answer the app is refused, never let through."""
-    url = f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/connect/verify"
+    url = f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/connect/verify"
     body = {"sub": sub, "sid": sid, "client_id": client_id, "aud": audience}
     try:
         client = await get_http_client()

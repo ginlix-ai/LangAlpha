@@ -7,6 +7,40 @@ No YAML dependency — pure os.getenv.
 
 import os
 
+#: Settings a release renamed, each former name to the name read now. A former
+#: name is never read, and set to anything but empty, whitespace included, it
+#: fails the boot (empty too, for a name in BLANK_IS_A_VALUE).
+RENAMED_SETTINGS: dict[str, str] = {
+    "GINLIX_DATA_URL": "LANGALPHA_DATA_URL",
+    "GINLIX_DATA_WS_URL": "LANGALPHA_DATA_WS_URL",
+    "GINLIX_DATA_SEC_ENABLED": "LANGALPHA_DATA_SEC_ENABLED",
+    "AUTH_SERVICE_URL": "PLATFORM_SERVICE_URL",
+}
+
+#: Former names whose blank was a value, not unset: a blank GINLIX_DATA_SEC_ENABLED
+#: turned SEC reads off, where unset LANGALPHA_DATA_SEC_ENABLED turns them on.
+BLANK_IS_A_VALUE: frozenset[str] = frozenset({"GINLIX_DATA_SEC_ENABLED"})
+
+
+class RenamedSettingError(RuntimeError):
+    """A setting named by a former name: a boot error, never caught as optional config."""
+
+
+def _refuse_renamed(renamed: dict[str, str], blank_is_a_value: frozenset[str] = BLANK_IS_A_VALUE) -> None:
+    """Fail the boot on a setting still under its former name, naming the new one."""
+    for former, name in renamed.items():
+        value = os.getenv(former)
+        if value is None or (value == "" and former not in blank_is_a_value):
+            continue
+        if os.getenv(name, "").strip():
+            raise RenamedSettingError(f"{former} was renamed to {name}, which is also set: remove the {former} line.")
+        raise RenamedSettingError(
+            f"{former} was renamed to {name}: rename the line in your env file, the value stays the same."
+        )
+
+
+_refuse_renamed(RENAMED_SETTINGS)
+
 # Deployment mode: "oss" (self-hosted, no auth) or "platform" (Supabase auth + quota service)
 HOST_MODE: str = os.getenv("HOST_MODE", "oss")
 
@@ -14,8 +48,9 @@ HOST_MODE: str = os.getenv("HOST_MODE", "oss")
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 LOCAL_DEV_USER_ID: str = os.getenv("AUTH_USER_ID", "local-dev-user")
 
-# Quota / auth enforcement service URL
-AUTH_SERVICE_URL: str = os.getenv("AUTH_SERVICE_URL", "")
+# The platform service this deployment validates turns against: sign-in tokens,
+# quota, billing leases and data tokens. Unset runs standalone.
+PLATFORM_SERVICE_URL: str = os.getenv("PLATFORM_SERVICE_URL", "")
 
 # Access tokens outside apps get from an OAuth issuer. Off unless all three
 # are set; see src/server/auth/oauth_resource.py for what accepts them.
@@ -43,30 +78,6 @@ DB_SSLMODE: str = os.getenv("DB_SSLMODE", "prefer")
 # Only enforced in platform mode; OSS deployments are ungated.
 SEARCH_PROVIDER_MIN_TIER: int = int(os.getenv("SEARCH_PROVIDER_MIN_TIER", "1"))
 
-
-def _refuse_renamed(renamed: dict[str, str]) -> None:
-    """Fail the boot on a setting still under its former name.
-
-    A former name is never read. Beside its current name with the same value it
-    is left alone, so one env file serves a release on either side of the
-    rename. Removed in the release after the rename.
-    """
-    for former, name in renamed.items():
-        if former not in os.environ or os.environ[former] == os.environ.get(name):
-            continue
-        if name in os.environ:
-            raise RuntimeError(
-                f"{former} and {name} hold different values. {name} is the one read: "
-                f"give {former} the same value or remove it."
-            )
-        raise RuntimeError(f"{former} is renamed {name}. Set {name} to its value; {former} is not read.")
-
-
-_refuse_renamed({
-    "GINLIX_DATA_URL": "LANGALPHA_DATA_URL",
-    "GINLIX_DATA_WS_URL": "LANGALPHA_DATA_WS_URL",
-    "GINLIX_DATA_SEC_ENABLED": "LANGALPHA_DATA_SEC_ENABLED",
-})
 
 # LangAlpha Data, the hosted market-data service behind LangAlpha.ai. It runs only
 # as a hosted service; a stack without LANGALPHA_DATA_URL gets prices,

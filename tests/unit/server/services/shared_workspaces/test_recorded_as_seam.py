@@ -76,9 +76,9 @@ def _platform(stack: ExitStack, seen: _Seen) -> None:
 
     stack.enter_context(patch.dict(os.environ, {"INTERNAL_SERVICE_TOKEN": "svc"}))
     stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
-    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://auth.test"))
+    stack.enter_context(patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://auth.test"))
     stack.enter_context(patch("src.server.services.platform_client.get_http_client", new=AsyncMock(return_value=_HTTP())))
-    stack.enter_context(patch("src.server.services.credit_gate_port.AUTH_SERVICE_URL", "http://auth.test"))
+    stack.enter_context(patch("src.server.services.credit_gate_port.PLATFORM_SERVICE_URL", "http://auth.test"))
     stack.enter_context(patch("src.config.settings.HOST_MODE", "platform"))
     stack.enter_context(patch("src.server.services.shared_workspaces.turn.choose_recorded_as", new=_flipped))
     stack.enter_context(patch(

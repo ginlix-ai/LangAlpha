@@ -49,7 +49,7 @@ def configured():
         patch.object(oauth_resource, "OAUTH_RESOURCE_ISSUER", ISSUER),
         patch.object(oauth_resource, "OAUTH_RESOURCE_JWKS_URL", JWKS_URL),
         patch.object(oauth_resource, "OAUTH_RESOURCE_AUDIENCES", (AUDIENCE, OTHER_AUDIENCE)),
-        patch.object(oauth_resource, "AUTH_SERVICE_URL", ""),
+        patch.object(oauth_resource, "PLATFORM_SERVICE_URL", ""),
         patch.object(oauth_resource, "_signing_keys", keys),
     ):
         yield keys
@@ -77,7 +77,7 @@ def platform(configured):
     client = MagicMock()
     client.post = AsyncMock(return_value=httpx.Response(200, json=ACTIVE))
     with (
-        patch.object(oauth_resource, "AUTH_SERVICE_URL", PLATFORM),
+        patch.object(oauth_resource, "PLATFORM_SERVICE_URL", PLATFORM),
         patch.object(oauth_resource, "get_cache_client", return_value=cache),
         patch.object(oauth_resource, "get_http_client", AsyncMock(return_value=client)),
         patch.object(oauth_resource, "service_headers", return_value=SERVICE_HEADERS),

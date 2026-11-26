@@ -708,7 +708,7 @@ async def test_get_user_access_tier_has_access(client):
 
 @pytest.mark.asyncio
 async def test_get_user_access_tier_no_access(client):
-    """When AUTH_SERVICE_URL is unset, access_tier defaults to -1."""
+    """When PLATFORM_SERVICE_URL is unset, access_tier defaults to -1."""
     result = {"user": _user(), "preferences": _prefs()}
     with (
         patch(
@@ -1122,12 +1122,12 @@ def _assert_paused_only(cache):
 
 @pytest.mark.asyncio
 async def test_access_tier_no_service_url():
-    """Returns -1 immediately when AUTH_SERVICE_URL is unset."""
+    """Returns -1 immediately when PLATFORM_SERVICE_URL is unset."""
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", ""),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", ""),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", ""),
     ):
         from src.server.services.membership import access_tier
 
@@ -1138,13 +1138,13 @@ async def test_access_tier_no_service_url():
 
 @pytest.mark.asyncio
 async def test_fetch_platform_membership_oss_mode_short_circuits():
-    """HOST_MODE=oss skips the platform call even if AUTH_SERVICE_URL is set."""
+    """HOST_MODE=oss skips the platform call even if PLATFORM_SERVICE_URL is set."""
     mock_client = AsyncMock()
     with (
         patch(f"{LIMITS}.HOST_MODE", "oss"),
         patch("src.server.services.platform_client.HOST_MODE", "oss"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
     ):
         from src.server.services.membership import read_membership
@@ -1168,8 +1168,8 @@ async def test_access_tier_returns_tier():
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch(
             "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
@@ -1200,8 +1200,8 @@ async def test_access_tier_cache_hit():
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch(
             "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
@@ -1229,8 +1229,8 @@ async def test_fetch_platform_membership_caches_tier_and_plan_display_name_toget
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
         patch("os.getenv", return_value="token"),
@@ -1258,8 +1258,8 @@ async def test_access_tier_platform_error():
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch(
             "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
@@ -1285,8 +1285,8 @@ async def test_access_tier_network_error():
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch(
             "src.server.services.platform_client.get_http_client",
             return_value=mock_client,
@@ -1315,8 +1315,8 @@ def _platform(mock_client, cache, *, door=False):
     )
     stack.enter_context(patch(f"{LIMITS}.HOST_MODE", "platform"))
     stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
-    stack.enter_context(patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"))
-    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"))
     stack.enter_context(patch("src.server.services.platform_client.get_http_client", return_value=mock_client))
     stack.enter_context(
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache)
@@ -1498,8 +1498,8 @@ async def test_access_tier_missing_field():
     with (
         patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch(
             "src.server.services.platform_client.get_http_client",
             return_value=mock_client,

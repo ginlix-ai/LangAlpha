@@ -38,6 +38,21 @@ class ConfigContext(str, Enum):
 # =============================================================================
 
 
+def _env_value(name: str, unresolved: str) -> str:
+    """*name*'s value, else *unresolved*; refused for a setting a release renamed,
+    which is never set (setting it fails the boot), so it would expand to nothing."""
+    try:
+        from src.config.env import RENAMED_SETTINGS, RenamedSettingError
+    except ImportError:
+        return os.getenv(name, unresolved)
+    if name in RENAMED_SETTINGS:
+        raise RenamedSettingError(
+            f"A config file names ${{{name}}}, which was renamed to {RENAMED_SETTINGS[name]}: "
+            f"write ${{{RENAMED_SETTINGS[name]}}} instead."
+        )
+    return os.getenv(name, unresolved)
+
+
 def substitute_env_vars(value: str) -> str:
     """Replace environment variables in string values.
 
@@ -52,7 +67,7 @@ def substitute_env_vars(value: str) -> str:
     pattern = r"\$\{([^}]+)\}"
     result = re.sub(
         pattern,
-        lambda m: os.getenv(m.group(1), m.group(0)),
+        lambda m: _env_value(m.group(1), m.group(0)),
         value,
     )
 
@@ -60,7 +75,7 @@ def substitute_env_vars(value: str) -> str:
     if result.startswith("$") and not result.startswith("${"):
         env_var = result[1:]
         if env_var.isidentifier():
-            return os.getenv(env_var, env_var)
+            return _env_value(env_var, env_var)
 
     return result
 

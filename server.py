@@ -92,6 +92,10 @@ if __name__ == "__main__":
     # did the lookups before.
     os.environ.setdefault("UV_THREADPOOL_SIZE", str(min(32, (os.process_cpu_count() or 1) + 4)))
 
+    # A setting still under a renamed name fails here, in the supervisor, not in
+    # each worker it would start again and again.
+    import src.config.env  # noqa: F401
+
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")
         uvicorn.run(

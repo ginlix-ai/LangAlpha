@@ -5,7 +5,7 @@ deployment-agnostic: it talks to a duck-typed port. This module is the
 platform-mode implementation — leases against the quota service's
 ``/api/auth/billing/leases`` endpoints, heartbeats into this service's own
 run ledgers — and the factory that decides whether a run gets a gate at
-all. With platform gating inactive (OSS mode or no ``AUTH_SERVICE_URL``)
+all. With platform gating inactive (OSS mode or no ``PLATFORM_SERVICE_URL``)
 the factory returns None and the gate never engages.
 """
 
@@ -24,7 +24,7 @@ from ptc_agent.agent.middleware.credit_gate import (
 )
 
 from src.config.env import USD_TO_CREDITS_RATE
-from src.config.settings import AUTH_SERVICE_URL
+from src.config.settings import PLATFORM_SERVICE_URL
 from src.llms.pricing_utils import chunk_multiplier
 from src.server.database.runs import credit_ledger
 from src.server.services.shared_workspaces.holder import refuse_holder
@@ -229,7 +229,7 @@ class PlatformCreditGatePort:
     """Lease + heartbeat operations for one deployment. Stateless."""
 
     def _url(self, path: str) -> str:
-        return f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/billing/leases/{path}"
+        return f"{PLATFORM_SERVICE_URL.rstrip('/')}/api/auth/billing/leases/{path}"
 
     async def account_refusal(self, user_id: str) -> Optional[BaseException]:
         """The refusal of a suspended account, read through the account's

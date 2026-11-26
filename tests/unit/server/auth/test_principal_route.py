@@ -48,7 +48,7 @@ async def client():
         patch.object(oauth_resource, "OAUTH_RESOURCE_ISSUER", ISSUER),
         patch.object(oauth_resource, "OAUTH_RESOURCE_JWKS_URL", JWKS_URL),
         patch.object(oauth_resource, "OAUTH_RESOURCE_AUDIENCES", (AUDIENCE,)),
-        patch.object(oauth_resource, "AUTH_SERVICE_URL", ""),
+        patch.object(oauth_resource, "PLATFORM_SERVICE_URL", ""),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
