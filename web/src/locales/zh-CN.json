@@ -1816,7 +1816,12 @@
       "stepDone": "已完成",
       "stepRunning": "进行中",
       "stepPending": "未开始"
-    }
+    },
+    "dockMinimize": "收起输入框",
+    "dockRestore": "发消息",
+    "dockWorking": "运行中",
+    "dockPillHint": "点击展开，拖动可移动",
+    "dockWaiting": "等你回复"
   },
   "context": {
     "quote": {

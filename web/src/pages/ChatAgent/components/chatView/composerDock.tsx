@@ -8,6 +8,7 @@ import { useWorkspaceFolders } from '../../contexts/WorkspaceContext';
 import { defaultsTo } from '../artifactComments/destinations';
 import { useCommentDestinations } from '../artifactComments/useCommentDestinations';
 import type { CommentUi } from '../viewers/html/comments/useCommentUi';
+import { DockFloat } from './dockFloat';
 import { ComposerDockContext, dockFileKey, type ComposerDock } from './useComposerDock';
 import './composerDock.css';
 
@@ -93,10 +94,9 @@ function DockFoot({ dock }: { dock: ComposerDock }): React.ReactElement {
  * composer, if the comments on the file the frame is on come to the chat's
  * thread by default: what the composer sends goes to that thread, and a file
  * whose comments go elsewhere (bound to another thread, or sent to their
- * maker's or a new one by the owner's setting) is not its business. Below
- * the file rather than over it, so nothing in the file hides behind the
- * composer, and the comment layer, which keeps its popover and card in the
- * file's box, keeps them above it.
+ * maker's or a new one by the owner's setting) is not its business. On a
+ * phone it sits below the file, which has no height to give (DockFoot); on a
+ * wide screen it floats over the file and folds away to uncover it (DockFloat).
  */
 export function ComposerDockSlot({ workspaceId, path, tabId, ui, active }: {
   workspaceId: string;
@@ -118,5 +118,5 @@ export function ComposerDockSlot({ workspaceId, path, tabId, ui, active }: {
     ? defaultsTo(fallback, dock.threadId)
     : dock.knownFiles.has(dockFileKey(workspaceId, docPath));
   if (!dock.open || !active || !ours) return null;
-  return <DockFoot dock={dock} />;
+  return dock.float ? <DockFloat dock={dock} float={dock.float} /> : <DockFoot dock={dock} />;
 }
