@@ -480,6 +480,11 @@ class PTCAgent:
             workspace_id=workspace_id_for_memory,
             thread_id=thread_id,
             timezone=turn_context.tool_timezone if turn_context else None,
+            no_bash=tuple(
+                name
+                for name, defn in turn_roster(self.config.subagents).definitions.items()
+                if "bash" not in defn.tools
+            ),
         )
         # Past threads the file tools read in process, on a machine no file
         # mount ever serves; where one may, its links show them instead.

@@ -33,6 +33,7 @@ from ptc_agent.core.sandbox.drive_mount import DRIVE_NOT_HERE, DriveDisk
 from ptc_agent.core.sandbox.files import FileOverCap
 from ptc_agent.core.sandbox.livefs_mount import CallContext
 from ptc_agent.core.sandbox.path_locks import path_write_lock
+from src.server.database.drive.policy import checkout_refusal
 from src.server.database.drive.records import (
     Actor,
     Content,
@@ -122,10 +123,20 @@ class DriveRefused(RouteRefused):
         self.code = code
 
 
-def refusal(error: DriveError, shown: str) -> str:
+def refusal(error: DriveError, shown: str, ctx: CallContext | None = None) -> str:
     """What the agent is told of a save or read the Drive refused, ``shown``
-    being the path as the agent spelled it."""
+    being the path as the agent spelled it; ``ctx`` is the call's, for the
+    zone a date in it is in and whether the caller can run ``la``."""
+    ctx = ctx or CallContext()
     code = error.code
+    if code == "checkout_required":
+        return checkout_refusal(
+            shown,
+            error.details.get("path") or shown,
+            error.details.get("last_change"),
+            ctx.timezone,
+            bash=ctx.can_run_la,
+        )
     if code == "changed":
         return (
             f"{shown} changed in the Drive since you last read it, so it was "
@@ -488,7 +499,7 @@ class DriveRoute:
             )
         except DriveError as e:
             logger.info("Drive save refused", code=e.code)
-            raise DriveRefused(refusal(e, self._shown(path)), e.code) from None
+            raise DriveRefused(refusal(e, self._shown(path), ctx), e.code) from None
 
     async def awrite_text(self, file_path: str, content: str) -> WriteTextResult:
         folder, inner = self._file_target(file_path)
