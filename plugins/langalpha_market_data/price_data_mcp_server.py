@@ -377,7 +377,7 @@ async def _fetch_chain_bars(
     if isinstance(ginlix_result, dict):
         status = ginlix_result.get("status")
         err = error_from_upstream(
-            ginlix_result.get("error", "ginlix-data request failed"),
+            ginlix_result.get("error", "LangAlpha Data request failed"),
             status=status,
             symbol=display,
             interval=canonical,
@@ -392,7 +392,7 @@ async def _fetch_chain_bars(
         # Already-normalized display rows, descending → flip to ascending.
         tier = {
             "data": list(reversed(ginlix_result.bars)),
-            "source": "ginlix-data",
+            "source": "langalpha-data",
             "symbol": display,
             "interval": canonical,
             "currency": currency,
@@ -716,7 +716,7 @@ async def get_short_data(
     if not await _ginlix.ensure():
         return make_error(
             "client_unavailable",
-            "Short data requires ginlix-data (not configured).",
+            "Short data needs LangAlpha Data, which is not configured on this deployment.",
             symbol=display,
         )
 
@@ -745,7 +745,7 @@ async def get_short_data(
         extra["errors"] = errors
     return make_response(
         data,
-        source="ginlix-data",
+        source="langalpha-data",
         symbol=display,
         timezone=timezone,
         **extra,

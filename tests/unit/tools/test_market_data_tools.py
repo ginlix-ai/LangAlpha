@@ -352,7 +352,7 @@ class TestFetchDailyPrices:
 
         def missed(what, result):
             async def read(*_, **__):
-                record(Fallback("AAPL", what, "ginlix-data", "ConnectError", None))
+                record(Fallback("AAPL", what, "langalpha-data", "ConnectError", None))
                 return result
             return read
 
@@ -1406,7 +1406,7 @@ def _sector_provider(bars_by_symbol):
     provider = AsyncMock()
 
     async def daily(symbol, **kwargs):
-        return bars_by_symbol.get(symbol, []), "ginlix-data", None
+        return bars_by_symbol.get(symbol, []), "langalpha-data", None
 
     provider.get_daily_with_source = AsyncMock(side_effect=daily)
     return provider
@@ -1462,7 +1462,7 @@ class TestFetchSectorPerformance:
     async def test_failed_reads_beside_empty_ones_are_still_a_failure(self):
         async def daily(symbol, **kwargs):
             if symbol == "XLK":
-                return [], "ginlix-data", None
+                return [], "langalpha-data", None
             raise RuntimeError("upstream 503")
 
         provider = AsyncMock()
@@ -1479,7 +1479,7 @@ class TestFetchSectorPerformance:
         async def daily(symbol, **kwargs):
             if symbol == "XLE":
                 raise RuntimeError("upstream 503")
-            return bars.get(symbol, []), "ginlix-data", None
+            return bars.get(symbol, []), "langalpha-data", None
 
         provider = AsyncMock()
         provider.get_daily_with_source = AsyncMock(side_effect=daily)
@@ -1846,14 +1846,14 @@ class TestFetchMarketOverview:
         provider = _make_fake_market_provider(daily_bars=bars)
         provider.get_snapshots = AsyncMock(return_value=[{
             "symbol": "GSPC", "price": 6120.5, "previous_close": last_close,
-            "source": "ginlix-data", "tier": "realtime",
+            "source": "langalpha-data", "tier": "realtime",
         }])
         with patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
              patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider):
             _, artifact = await fetch_market_overview(region="us", indices=["^GSPC"])
         entry = artifact["indices"]["indices"]["^GSPC"]
         assert entry["ohlcv"][-1]["close"] == 6120.5
-        assert entry["source"] == "ginlix-data"
+        assert entry["source"] == "langalpha-data"
 
     @pytest.mark.asyncio
     async def test_snapshot_error_returns_error_artifact(self):
@@ -1945,7 +1945,7 @@ class TestFetchIndexDaySnapshot:
             "date": "2025-01-31", "open": 6100.0, "high": 6130.0, "low": 6090.0, "close": 6120.5,
             "volume": None, "change": 20.5, "changePercent": 0.34, "symbol": "^GSPC", "forming": True,
         }
-        snap = {"symbol": "GSPC", "price": 6120.5, "source": "ginlix-data", "tier": "delayed_15m"}
+        snap = {"symbol": "GSPC", "price": 6120.5, "source": "langalpha-data", "tier": "delayed_15m"}
         with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider), \
                 patch(f"{_MKT_MOD}._forming_bar", return_value=row), \
                 _frozen_clock(_ET.localize(datetime(2025, 1, 31, hour, 0))):
@@ -3523,7 +3523,7 @@ async def test_an_overview_with_nothing_behind_it_is_unavailable(symbol, bars):
 
     market = MagicMock()
     market.get_snapshots = AsyncMock(return_value=[])
-    market.get_daily_with_source = AsyncMock(return_value=(bars, "ginlix-data", None))
+    market.get_daily_with_source = AsyncMock(return_value=(bars, "langalpha-data", None))
     provider = _make_fake_financial_provider(
         financial=_make_fake_financial_source(profile_data=[])
     )
@@ -3566,11 +3566,11 @@ async def test_an_index_level_says_when_it_printed_and_whether_it_is_the_close(n
     snap = {
         "symbol": "GSPC", "price": 7568.92, "change": 27.52, "change_percent": 0.36,
         "as_of": int(_ET.localize(datetime(*printed_et)).timestamp() * 1000),
-        "tier": "delayed_15m", "source": "ginlix-data",
+        "tier": "delayed_15m", "source": "langalpha-data",
     }
     market = MagicMock()
     market.get_snapshots = AsyncMock(return_value=[snap])
-    market.get_daily_with_source = AsyncMock(return_value=([], "ginlix-data", None))
+    market.get_daily_with_source = AsyncMock(return_value=([], "langalpha-data", None))
     ref = resolve_ref("^GSPC", AssetClass.INDEX)
     with patch("src.tools.market_data.index_overview.get_market_data_provider", AsyncMock(return_value=market)), \
          patch("src.data_client.freshness._now", side_effect=lambda now: now or _ET.localize(datetime(*now_et))):

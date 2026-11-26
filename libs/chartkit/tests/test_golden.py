@@ -147,7 +147,7 @@ def _report_text() -> str:
                                 if (h, m) >= (9, 30)])
     df = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": 100.0}, index=regular)
     answer = {"symbol": "NVDA", "interval": "1min", "currency": "USD", "timezone": "America/New_York",
-              "source": "ginlix-data",
+              "source": "langalpha-data",
               "data": [{"date": str(t), "open": 99, "high": 101, "low": 98, "close": 100.5, "volume": 5}
                        for t in pd.date_range("2026-10-29 04:00", "2026-10-30 19:59", freq="min")]}
     bars = ChartBars("NVDA", "1min", "America/New_York", bar_rows(df, regular, "America/New_York"),

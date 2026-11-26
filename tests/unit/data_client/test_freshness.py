@@ -65,7 +65,7 @@ class TestClosedSessionCompleteness:
             for source, tier in (("fmp", "realtime"), ("yfinance", "delayed_15m")):
                 f = measure_bars("AAPL", "1min", last, now=now, source=source, tier=tier)
                 assert (f.label, f.closed, f.lag_s) == ("live", True, 0), (source, now)
-            extended = measure_bars("AAPL", "1min", last, now=now, source="ginlix-data")
+            extended = measure_bars("AAPL", "1min", last, now=now, source="langalpha-data")
             assert extended.label == "stale", now
         # The regular session still expects today's bars.
         later = measure_bars(

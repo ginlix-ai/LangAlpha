@@ -60,9 +60,9 @@ async def test_a_fallback_that_answers_is_recorded_by_name():
 
 @pytest.mark.asyncio
 async def test_the_covering_sources_empty_answer_outranks_a_later_failure():
-    chain = _chain(("ginlix-data", _Source(rows=[])), ("fmp", _Source(error=ConnectionError("down"))))
+    chain = _chain(("langalpha-data", _Source(rows=[])), ("fmp", _Source(error=ConnectionError("down"))))
     with recording() as taken:
-        assert await chain.get_daily_with_source("AAPL") == ([], "ginlix-data", False)
+        assert await chain.get_daily_with_source("AAPL") == ([], "langalpha-data", False)
     # The failed source might have had the bars, so the empty answer names it.
     assert taken == [Fallback("AAPL", "daily bars", "fmp", "ConnectionError", None)]
 
@@ -76,18 +76,18 @@ def _status_error(status: int) -> httpx.HTTPStatusError:
 
 @pytest.mark.asyncio
 async def test_a_raised_chain_failure_names_the_source_not_the_request_url():
-    chain = _chain(("ginlix-data", _Source(error=_status_error(503))), ("fmp", _Source(rows=[])))
+    chain = _chain(("langalpha-data", _Source(error=_status_error(503))), ("fmp", _Source(rows=[])))
     with pytest.raises(SourceFailed) as failed:
         await chain.get_daily_with_source("600519.SH")
-    assert str(failed.value) == "ginlix-data request failed (HTTPStatusError 503)"
+    assert str(failed.value) == "langalpha-data request failed (HTTPStatusError 503)"
     assert failed.value.status_code == 503
     assert isinstance(failed.value.__cause__, httpx.HTTPStatusError)
 
 
 @pytest.mark.asyncio
 async def test_a_raised_snapshot_failure_names_the_source_not_the_request_url():
-    chain = _chain(("ginlix-data", _Source(error=_status_error(502))))
-    with pytest.raises(SourceFailed, match=r"^ginlix-data request failed \(HTTPStatusError 502\)$"):
+    chain = _chain(("langalpha-data", _Source(error=_status_error(502))))
+    with pytest.raises(SourceFailed, match=r"^langalpha-data request failed \(HTTPStatusError 502\)$"):
         await chain.get_snapshots(["600519.SH"])
 
 
@@ -143,7 +143,7 @@ async def test_a_cn_option_chain_outage_is_not_read_as_no_contracts():
     routed = RoutedMarketIntelSource(
         default=_UsIntel(),
         by_market={"cn": MarketRoute(GinlixDataCnIntelSource(_Client()), name="tushare")},
-        default_name="ginlix-data",
+        default_name="langalpha-data",
     )
     with recording() as taken, pytest.raises(SourceFailed, match=r"^tushare request failed \(ConnectError\)$"):
         await routed.get_options_chain("510300.SH")
@@ -165,7 +165,7 @@ async def test_a_cn_option_bars_outage_is_not_read_as_no_bars():
         by_market={"cn": MarketRoute(
             GinlixDataCnIntelSource(_Client()), claims_option=lambda t: True, name="tushare",
         )},
-        default_name="ginlix-data",
+        default_name="langalpha-data",
     )
     with recording() as taken, pytest.raises(SourceFailed):
         await routed.get_options_ohlcv("10001234.SH", interval="1day")

@@ -39,7 +39,7 @@ class TestFetchShortDataErrorSanitization:
         result = await client.fetch_short_data("AAPL", data_type="both")
 
         assert result["symbol"] == "AAPL"
-        assert result["source"] == "ginlix-data"
+        assert result["source"] == "langalpha-data"
         # Only the action + exception type, no URL.
         assert result["short_interest_error"] == "Short interest fetch failed (ConnectError)"
         assert result["short_volume_error"] == "Short volume fetch failed (ConnectError)"
@@ -212,7 +212,7 @@ class TestFetchStockDataStatus:
             await client.close()
 
         if reported:
-            assert result == {"error": f"ginlix-data error ({status}): nope", "status": status}
+            assert result == {"error": f"LangAlpha Data error ({status}): nope", "status": status}
         else:
             assert result is None
 

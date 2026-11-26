@@ -47,7 +47,7 @@ from market_protocol.routing.ruleset import (
 PROVIDER_ENV: dict[str, Optional[str]] = {
     "fmp": "FMP_API_KEY",
     "tushare": None,
-    "ginlix-data": None,
+    "langalpha-data": None,
     "yfinance": None,
 }
 

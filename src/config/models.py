@@ -7,7 +7,18 @@ These models define the schema for config.yaml (infrastructure settings).
 from datetime import date
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator, model_validator
+
+#: Provider names a release renamed, each to its current name. Refused, never read,
+#: so a config or ruleset naming one fails the boot.
+RENAMED_PROVIDERS: dict[str, str] = {"ginlix-data": "langalpha-data"}
+
+
+def current_provider_name(name: str | None) -> str | None:
+    """*name*, refused when a release renamed it."""
+    if name in RENAMED_PROVIDERS:
+        raise ValueError(f"provider {name!r} was renamed to {RENAMED_PROVIDERS[name]!r}: use the new name")
+    return name
 
 
 class BackgroundExecutionConfig(BaseModel):
@@ -221,6 +232,8 @@ class MarketDataProviderConfig(BaseModel):
     daily_markets: Optional[List[str]] = None
     snapshot_markets: Optional[List[str]] = None
 
+    _current_name = field_validator("name")(current_provider_name)
+
 
 class MarketDataConfig(BaseModel):
     """Market data provider chain configuration."""
@@ -245,6 +258,8 @@ class NewsPollFeedConfig(BaseModel):
 
     provider: str | None = Field(default=None)
     limit: int = Field(default=50, ge=1, le=100)
+
+    _current_provider = field_validator("provider")(current_provider_name)
 
 
 class NewsPollConfig(BaseModel):

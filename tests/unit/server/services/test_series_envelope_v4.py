@@ -107,13 +107,13 @@ class TestEnvelopeV4:
         env = _build_envelope(
             [_bar(_MS)], "open", complete=False, stored_ttl=60,
             data_date="2026-07-03",
-            instrument_key="AAPL.XNAS", schema="ohlcv-1h", publisher="ginlix-data",
+            instrument_key="AAPL.XNAS", schema="ohlcv-1h", publisher="langalpha-data",
         )
         assert env["v"] == ENVELOPE_VERSION
         h = env["header"]
         assert h["instrument_key"] == "AAPL.XNAS"
         assert h["schema"] == "ohlcv-1h"
-        assert h["publisher"] == "ginlix-data"
+        assert h["publisher"] == "langalpha-data"
         assert h["price_treatment"] == "split_adjusted"
         assert h["ts_unit"] == "ms"
         assert h["latest_trading_date"] == "2026-07-03"
@@ -239,7 +239,7 @@ class _Provider:
     fetch records the requested publisher and can be told to fail."""
 
     def __init__(self):
-        self.source_names = ["ginlix-data", "fmp", "yfinance"]
+        self.source_names = ["langalpha-data", "fmp", "yfinance"]
         self.chain_source = "fmp"
         self.from_calls: list[str] = []
         self.fail_pinned = False

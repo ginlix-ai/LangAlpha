@@ -81,14 +81,14 @@ def test_yfinance_hk_epochs_pass_through(yf_hk_1h):
 def test_ginlix_data_normalizes_to_series():
     """ginlix-data bars are epoch-ms already; normalize_series wraps them with
     a declared header (publisher, treatment, tier) and ascending records."""
-    normalize = series_normalizer("ginlix-data")
+    normalize = series_normalizer("langalpha-data")
     ref = to_canonical("AAPL")
     rows = [
         {"time": 1_782_000_000_000, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10},
         {"time": 1_782_003_600_000, "open": 1.5, "high": 2.5, "low": 1.0, "close": 2.0, "volume": 20},
     ]
     series = normalize(rows, ref=ref, schema="ohlcv-1h")
-    _assert_full_header(series, instrument_key="AAPL.XNAS", schema="ohlcv-1h", publisher="ginlix-data")
+    _assert_full_header(series, instrument_key="AAPL.XNAS", schema="ohlcv-1h", publisher="langalpha-data")
 
 
 def test_ws_forming_bar_golden():

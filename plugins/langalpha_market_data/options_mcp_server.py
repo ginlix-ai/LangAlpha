@@ -130,7 +130,7 @@ def _underlying_context(
 def _ginlix_error(result: dict, **context: Any) -> dict:
     """Contract error envelope from a ginlix-data client error dict."""
     return error_from_upstream(
-        result.get("error", "ginlix-data request failed"), **context
+        result.get("error", "LangAlpha Data request failed"), **context
     )
 
 
@@ -202,7 +202,7 @@ async def get_options_chain(
     if not await _ginlix.ensure():
         return make_error(
             "client_unavailable",
-            "Options data requires ginlix-data (not configured).",
+            "Options data needs LangAlpha Data, which is not configured on this deployment.",
             symbol=display,
         )
 
@@ -220,7 +220,7 @@ async def get_options_chain(
 
     return make_response(
         result.get("results", []),
-        source="ginlix-data",
+        source="langalpha-data",
         symbol=display,
         currency=currency,
         timezone=timezone,
@@ -290,7 +290,7 @@ async def get_options_prices(
     if not await _ginlix.ensure():
         return make_error(
             "client_unavailable",
-            "Options data requires ginlix-data (not configured).",
+            "Options data needs LangAlpha Data, which is not configured on this deployment.",
             symbol=opt,
         )
 
@@ -303,7 +303,7 @@ async def get_options_prices(
     data = list(reversed(result.bars))  # normalize_bars is descending → ascending
     return make_response(
         data,
-        source="ginlix-data",
+        source="langalpha-data",
         symbol=opt,
         interval=canonical,
         currency=currency,
@@ -347,7 +347,7 @@ async def get_options_snapshot(
     if not await _ginlix.ensure():
         return make_error(
             "client_unavailable",
-            "Options data requires ginlix-data (not configured).",
+            "Options data needs LangAlpha Data, which is not configured on this deployment.",
             tickers=options_tickers,
         )
 
@@ -367,7 +367,7 @@ async def get_options_snapshot(
     now = datetime.now(_tz.utc)
     return make_response(
         [snapshot_row(row, now) for row in result.get("data", [])],
-        source="ginlix-data",
+        source="langalpha-data",
         currency=currency,
         timezone=timezone,
     )

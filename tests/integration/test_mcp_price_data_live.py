@@ -133,7 +133,7 @@ class TestGetShortDataLive:
         mod = await _init_ginlix()
         result = await mod.get_short_data("AAPL")
         assert "error" not in result, result.get("error")
-        assert result["source"] == "ginlix-data"
+        assert result["source"] == "langalpha-data"
         assert result["data_type"] == "both"
         # Sections live under the standard `data` payload (a dict of lists).
         data = result["data"]

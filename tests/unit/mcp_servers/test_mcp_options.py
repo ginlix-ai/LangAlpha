@@ -75,7 +75,7 @@ class TestGetOptionsChain:
 
         assert_ok_envelope(
             result, symbol="AAPL", currency="USD",
-            timezone="America/New_York", count=1, source="ginlix-data",
+            timezone="America/New_York", count=1, source="langalpha-data",
         )
         assert result["underlying_ticker"] == "AAPL"
         assert result["data"][0]["ticker"] == _OPT
@@ -94,7 +94,7 @@ class TestGetOptionsChain:
     async def test_not_found_from_status_code(self):
         import plugins.langalpha_market_data.options_mcp_server as mod
 
-        fetch = AsyncMock(return_value={"error": "ginlix-data error (404): unknown ticker"})
+        fetch = AsyncMock(return_value={"error": "LangAlpha Data error (404): unknown ticker"})
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_chain", new=fetch):
             result = await mod.get_options_chain("AAPL")
 
@@ -164,7 +164,7 @@ class TestGetOptionsPrices:
 
         assert_ok_envelope(
             result, symbol=_OPT, interval="1day", currency="USD",
-            timezone="America/New_York", count=2, source="ginlix-data",
+            timezone="America/New_York", count=2, source="langalpha-data",
         )
         # currency is derived from the AAPL underlying.
         # Descending client rows → ascending, oldest-first.
@@ -197,7 +197,7 @@ class TestGetOptionsPrices:
     async def test_error_dict_maps_to_rate_limited(self):
         import plugins.langalpha_market_data.options_mcp_server as mod
 
-        fetch = AsyncMock(return_value={"error": "ginlix-data error (429): slow down"})
+        fetch = AsyncMock(return_value={"error": "LangAlpha Data error (429): slow down"})
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_prices", new=fetch):
             result = await mod.get_options_prices(_OPT, "2025-01-01", "2025-01-31")
 
@@ -229,13 +229,13 @@ class TestGetOptionsSnapshot:
     async def test_success_single_underlying(self):
         import plugins.langalpha_market_data.options_mcp_server as mod
 
-        canned = {"count": 1, "data": [_SNAP], "source": "ginlix-data"}
+        canned = {"count": 1, "data": [_SNAP], "source": "langalpha-data"}
         fetch = AsyncMock(return_value=canned)
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_snapshot", new=fetch):
             result = await mod.get_options_snapshot(_OPT)
 
         assert_ok_envelope(
-            result, source="ginlix-data", currency="USD",
+            result, source="langalpha-data", currency="USD",
             timezone="America/New_York", count=1,
         )
         assert result["data"][0]["ticker"] == _OPT
@@ -252,7 +252,7 @@ class TestGetOptionsSnapshot:
                         "timeframe": "DELAYED", "last_updated": 1792767243597000000},
             "greeks": {"delta": 0.98}, "implied_volatility": 2.8, "open_interest": 33,
         }
-        canned = {"count": 1, "data": [stale], "source": "ginlix-data"}
+        canned = {"count": 1, "data": [stale], "source": "langalpha-data"}
         fetch = AsyncMock(return_value=canned)
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_snapshot", new=fetch):
             result = await mod.get_options_snapshot(_OPT)
@@ -267,12 +267,12 @@ class TestGetOptionsSnapshot:
     async def test_currency_omitted_when_underlying_unresolvable(self):
         import plugins.langalpha_market_data.options_mcp_server as mod
 
-        canned = {"count": 0, "data": [], "source": "ginlix-data"}
+        canned = {"count": 0, "data": [], "source": "langalpha-data"}
         fetch = AsyncMock(return_value=canned)
         with _ensure(mod, True), patch.object(mod._ginlix, "fetch_options_snapshot", new=fetch):
             result = await mod.get_options_snapshot("JUNK1,JUNK2")
 
-        assert_ok_envelope(result, source="ginlix-data")
+        assert_ok_envelope(result, source="langalpha-data")
         assert "currency" not in result
         assert "timezone" not in result
 

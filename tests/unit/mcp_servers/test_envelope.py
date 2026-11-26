@@ -35,15 +35,15 @@ class TestErrorFromUpstream:
         assert env["symbol"] == "AAPL"
 
     def test_status_parsed_from_embedded_detail(self):
-        assert error_from_upstream("ginlix-data error (404): nope")["error"] == "not_found"
-        assert error_from_upstream("ginlix-data error (429): slow")["error"] == "rate_limited"
+        assert error_from_upstream("LangAlpha Data error (404): nope")["error"] == "not_found"
+        assert error_from_upstream("LangAlpha Data error (429): slow")["error"] == "rate_limited"
 
     def test_explicit_status_wins_over_embedded(self):
         env = error_from_upstream("weird (404) text", status=429)
         assert env["error"] == "rate_limited"
 
     def test_not_configured_maps_to_client_unavailable(self):
-        env = error_from_upstream("Options data requires ginlix-data (not configured).")
+        env = error_from_upstream("Options data needs LangAlpha Data, which is not configured on this deployment.")
         assert env["error"] == "client_unavailable"
 
     def test_explicit_status_wins_over_not_configured(self):

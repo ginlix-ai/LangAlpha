@@ -271,6 +271,12 @@ async def lifespan(app: FastAPI):
             "Set a unique BYOK_ENCRYPTION_KEY (openssl rand -hex 32)."
         )
 
+    # A routing ruleset under a renamed provider fails the boot here, before
+    # the pools open, rather than at the first uncached market-data read.
+    from src.data_client.registry import read_routing_ruleset
+
+    read_routing_ruleset()
+
     # Initialize and open conversation database pool
     from src.server.database.pool import get_or_create_pool
 
@@ -718,7 +724,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start {name}: {e}")
 
-    # Start MarketDataFeed (shared upstream WS to ginlix-data)
+    # Start MarketDataFeed (shared upstream WS to LangAlpha Data)
     try:
         from src.server.services.market_data_feed import (
             DEFAULT_WS_FEEDS,
@@ -1706,13 +1712,13 @@ from src.server.app.mcp_servers import router as mcp_servers_router
 from src.server.app.search import router as search_router
 from src.server.app.web_dist import serve_web_dist
 
-# Conditionally import ginlix-data WS proxy (only when LANGALPHA_DATA_WS_URL is set)
+# The LangAlpha Data WS proxy, only when LANGALPHA_DATA_URL is set
 from src.config.settings import LANGALPHA_DATA_ENABLED
 
 if LANGALPHA_DATA_ENABLED:
     from src.server.app.market_data_ws import router as market_data_ws_router
 
-    logger.info("ginlix-data WS proxy enabled")
+    logger.info("LangAlpha Data WS proxy enabled")
 else:
     # Register a minimal status endpoint so the frontend preflight check
     # gets a clean 200 instead of a noisy 404.
@@ -1724,7 +1730,7 @@ else:
     async def market_data_ws_status_disabled():
         return {"enabled": False}
 
-    logger.info("ginlix-data WS proxy disabled (LANGALPHA_DATA_URL not set)")
+    logger.info("LangAlpha Data WS proxy disabled (LANGALPHA_DATA_URL not set)")
 
 # The setup step exists only where the owner sets the server up in the app.
 from src.server.services.setup_settings import self_hosted

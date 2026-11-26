@@ -113,7 +113,7 @@ class TestGetStockData:
                 "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
             )
 
-        assert_ok_envelope(result, source="ginlix-data")
+        assert_ok_envelope(result, source="langalpha-data")
         assert result["data"][0]["date"] == "2025-01-02"
         assert result["data"][-1]["date"] == "2025-01-03"
         client.get_stock_price.assert_not_awaited()
@@ -145,7 +145,7 @@ class TestGetStockData:
                 "AAPL", interval="1day", start_date="2026-10-17", end_date="2026-10-18",
             )
 
-        assert_ok_envelope(result, source="ginlix-data", count=0)
+        assert_ok_envelope(result, source="langalpha-data", count=0)
 
     @pytest.mark.asyncio
     async def test_an_index_spelling_asks_each_vendor_for_its_index_and_a_bare_ticker_for_the_listing(self):
@@ -291,7 +291,7 @@ class TestGetStockData:
     async def test_ginlix_404_maps_to_not_found(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        err = {"error": "ginlix-data error (404): symbol not found"}
+        err = {"error": "LangAlpha Data error (404): symbol not found"}
         with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=err)):
             result = await mod.get_stock_data(
                 "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-02",
@@ -305,7 +305,7 @@ class TestGetStockData:
         does not decide it."""
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        err = {"error": "ginlix-data error (401): verifier not configured (500)", "status": 401}
+        err = {"error": "LangAlpha Data error (401): verifier not configured (500)", "status": 401}
         client = _fmp_client()
         with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=err)), \
              patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -321,7 +321,7 @@ class TestGetStockData:
         """Otherwise the agent reads a missing FMP key, or no trading, as the cause."""
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        err = {"error": "ginlix-data error (403): not entitled", "status": 403}
+        err = {"error": "LangAlpha Data error (403): not entitled", "status": 403}
         fmp_patch = (
             patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key"))
             if fmp_rows is None
@@ -536,7 +536,7 @@ class TestDateBounds:
         with patch.object(mod._ginlix, "fetch_stock_data", new=fetch):
             result = await mod.get_stock_data("AAPL")
 
-        assert_ok_envelope(result, source="ginlix-data", count=1)
+        assert_ok_envelope(result, source="langalpha-data", count=1)
         fetch.assert_awaited_once_with(
             "AAPL", "1day", (utc_today - timedelta(days=500)).isoformat(), today.isoformat()
         )
@@ -676,7 +676,7 @@ class TestGetShortData:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         canned = {
-            "symbol": "AAPL", "source": "ginlix-data",
+            "symbol": "AAPL", "source": "langalpha-data",
             "short_interest": [_SHORT_INTEREST_ROW],
             "short_volume": [_SHORT_VOLUME_ROW],
         }
@@ -685,7 +685,7 @@ class TestGetShortData:
             result = await mod.get_short_data("AAPL")
 
         assert_ok_envelope(
-            result, symbol="AAPL", source="ginlix-data",
+            result, symbol="AAPL", source="langalpha-data",
             timezone="America/New_York", count=2,
         )
         assert result["data_type"] == "both"
@@ -698,7 +698,7 @@ class TestGetShortData:
         # COMP is Compass Inc. here, never the Nasdaq Composite: short data is a stock's.
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        fetch = AsyncMock(return_value={"symbol": "COMP", "source": "ginlix-data", "short_interest": []})
+        fetch = AsyncMock(return_value={"symbol": "COMP", "source": "langalpha-data", "short_interest": []})
         with patch.object(mod._ginlix, "ensure", new=AsyncMock(return_value=True)), \
              patch.object(mod._ginlix, "fetch_short_data", new=fetch):
             result = await mod.get_short_data("COMP", data_type="short_interest")
@@ -710,7 +710,7 @@ class TestGetShortData:
     async def test_short_interest_only_forwarded(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        canned = {"symbol": "AAPL", "source": "ginlix-data", "short_interest": [_SHORT_INTEREST_ROW]}
+        canned = {"symbol": "AAPL", "source": "langalpha-data", "short_interest": [_SHORT_INTEREST_ROW]}
         fetch = AsyncMock(return_value=canned)
         with patch.object(mod._ginlix, "ensure", new=AsyncMock(return_value=True)), \
              patch.object(mod._ginlix, "fetch_short_data", new=fetch):
@@ -725,7 +725,7 @@ class TestGetShortData:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         canned = {
-            "symbol": "AAPL", "source": "ginlix-data",
+            "symbol": "AAPL", "source": "langalpha-data",
             "short_interest": [_SHORT_INTEREST_ROW],
             "short_volume_error": "boom",
         }
@@ -742,7 +742,7 @@ class TestGetShortData:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         canned = {
-            "symbol": "AAPL", "source": "ginlix-data",
+            "symbol": "AAPL", "source": "langalpha-data",
             "short_interest_error": "x", "short_volume_error": "y",
         }
         with patch.object(mod._ginlix, "ensure", new=AsyncMock(return_value=True)), \
@@ -797,7 +797,7 @@ class TestTruncatedTier:
                 "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
             )
 
-        assert_ok_envelope(result, source="ginlix-data")
+        assert_ok_envelope(result, source="langalpha-data")
         assert result.get("truncated", False) is truncated
 
 

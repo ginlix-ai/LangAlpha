@@ -14,7 +14,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .base import (
     FinancialDataSource,
@@ -23,6 +23,9 @@ from .base import (
     NewsDataSource,
 )
 from .financial_data_provider import FinancialDataProvider
+
+if TYPE_CHECKING:
+    from market_protocol.routing import Ruleset
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +129,7 @@ async def _build_tushare_news_source() -> NewsDataSource:
 # ---------------------------------------------------------------------------
 
 _SOURCE_REGISTRY: dict[str, tuple[Any, Any]] = {
-    "ginlix-data": (_ginlix_data_available, _build_ginlix_data_source),
+    "langalpha-data": (_ginlix_data_available, _build_ginlix_data_source),
     "tushare": (_ginlix_data_available, _build_tushare_source),
     "fmp": (_fmp_available, _build_fmp_source),
     "yfinance": (_yfinance_available, _build_yfinance_source),
@@ -160,7 +163,7 @@ def _any_article(_: str) -> bool:
 
 
 _NEWS_SOURCE_REGISTRY: dict[str, NewsSourceSpec] = {
-    "ginlix-data": NewsSourceSpec(_ginlix_data_available, _build_ginlix_data_news_source),
+    "langalpha-data": NewsSourceSpec(_ginlix_data_available, _build_ginlix_data_news_source),
     "fmp": NewsSourceSpec(_fmp_available, _build_fmp_news_source),
     "yfinance": NewsSourceSpec(_yfinance_available, _build_yfinance_news_source),
     "tickertick": NewsSourceSpec(
@@ -216,6 +219,39 @@ def default_ruleset_path() -> Path:
     return Path(override) if override else Path.cwd() / "data_routing.yaml"
 
 
+def refuse_renamed_providers(ruleset: Ruleset, path: Path) -> None:
+    """Fail on a ruleset that names a provider a release renamed.
+
+    Its verdicts under that name would match no configured provider, so the
+    cells would route as if it were never measured.
+    """
+    from src.config.models import RENAMED_PROVIDERS
+
+    named = {p.name for cell in ruleset.cells for p in cell.providers} | set(ruleset.providers)
+    if renamed := sorted(named & RENAMED_PROVIDERS.keys()):
+        raise ValueError(
+            f"{path} names {', '.join(renamed)}, renamed "
+            f"{', '.join(RENAMED_PROVIDERS[n] for n in renamed)}. Replace the name in "
+            "the file; its verdicts still hold under the new name."
+        )
+
+
+def read_routing_ruleset() -> tuple[Path, Ruleset | None]:
+    """This deployment's ruleset file and the ruleset in it, or None when it has
+    none; refused when it names a provider a release renamed.
+
+    The lifespan reads it once at boot, so that refusal stops the boot rather
+    than the first market-data read.
+    """
+    from market_protocol.routing import load_ruleset
+
+    path = default_ruleset_path()
+    ruleset = load_ruleset(path)
+    if ruleset is not None:
+        refuse_renamed_providers(ruleset, path)
+    return path, ruleset
+
+
 def _load_routing_table():
     """The generated routing ruleset, or ``None`` when this deployment has none.
 
@@ -223,10 +259,9 @@ def _load_routing_table():
     against a deployment's own tokens), but which routing is live should be
     readable from the log, so the fallback says so once per process.
     """
-    from market_protocol.routing import RoutingTable, load_ruleset
+    from market_protocol.routing import RoutingTable
 
-    path = default_ruleset_path()
-    ruleset = load_ruleset(path)
+    path, ruleset = read_routing_ruleset()
     if ruleset is None:
         logger.info(
             "market_data.routing.no_ruleset | path=%s using the static market_data "
@@ -443,7 +478,7 @@ async def get_financial_data_provider() -> FinancialDataProvider:
             client = await get_ginlix_data_client()
             intel = GinlixMarketIntelSource(client)
             logger.debug(
-                "financial_data.source.registered | name=ginlix-data (MarketIntelSource)"
+                "financial_data.source.registered | name=langalpha-data (MarketIntelSource)"
             )
 
         if _ginlix_data_available():
@@ -478,10 +513,10 @@ async def get_financial_data_provider() -> FinancialDataProvider:
                 by_market={"cn": MarketRoute(
                     GinlixDataCnIntelSource(client), claims_option=is_cn_option, name="tushare",
                 )},
-                default_name="ginlix-data",
+                default_name="langalpha-data",
             )
             logger.debug(
-                "financial_data.source.registered | name=ginlix-data (cn routing)"
+                "financial_data.source.registered | name=langalpha-data (cn routing)"
             )
 
         _financial_data_provider = FinancialDataProvider(

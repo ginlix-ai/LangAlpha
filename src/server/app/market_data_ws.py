@@ -56,7 +56,7 @@ _WS_INTERVAL_TO_CACHE: dict[str, str] = {
 }
 
 _WS_CACHE_TTL = 30  # seconds — longer TTL survives brief WS hiccups
-_WS_SOURCE = "ginlix-data"  # must match config.yaml provider name
+_WS_SOURCE = "langalpha-data"  # must match config.yaml provider name
 
 # ---------------------------------------------------------------------------
 # Throttled tick buffer — avoids flooding Redis with one write per tick
