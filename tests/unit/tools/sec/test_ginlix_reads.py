@@ -33,6 +33,13 @@ def test_a_filing_list_cut_short_reads_as_none():
     assert c.filings("1", ["10-K"]) is None
 
 
+def test_a_company_resolved_through_a_former_ticker_names_it():
+    body = {**COMPANY, "tickers": ["OLD-B"], "former_ticker": {"ticker": "OLD-B", "last_seen": 1, "tickers": ["NEW"]}}
+    c = client_answering(lambda request: httpx.Response(200, json=body))
+    assert (c.company("old.b").former_ticker, c.company("old.b").tickers) == ("OLD-B", ("NEW",))
+    assert client_answering(lambda request: httpx.Response(200, json=COMPANY)).company("ACME").former_ticker is None
+
+
 def test_any_other_failure_raises():
     c = client_answering(lambda request: httpx.Response(500))
     with pytest.raises(httpx.HTTPStatusError):
@@ -215,8 +222,8 @@ def edgar_company(monkeypatch, cik=7, name="From EDGAR", ticker="edg", rows=()):
     import edgar as edgartools
 
     table = SimpleNamespace(data=SimpleNamespace(to_pylist=lambda: list(rows)))
-    found = SimpleNamespace(cik=cik, name=name, not_found=False, get_ticker=lambda: ticker,
-                            get_filings=lambda **kw: table)
+    found = SimpleNamespace(cik=cik, name=name, not_found=False, get_ticker=lambda: ticker, tickers=[ticker],
+                            data=SimpleNamespace(entity_type="operating"), get_filings=lambda **kw: table)
     monkeypatch.setattr(edgartools, "Company", lambda symbol: found)
     return found
 
@@ -357,8 +364,10 @@ async def test_the_filers_calendar_reaches_the_recent_reports_and_one_of_another
 
 
 @pytest.mark.asyncio
-async def test_a_filing_reads_the_same_from_ginlix_data_as_from_edgar(monkeypatch):
-    """The tool's whole output over one filing table, once as ginlix-data serves it and once as edgartools does."""
+@pytest.mark.parametrize("delisted", [False, True])
+async def test_a_filing_reads_the_same_from_ginlix_data_as_from_edgar(monkeypatch, delisted):
+    """The tool's whole output over one filing table, once as ginlix-data serves it and once as edgartools does;
+    delisted, the company has no ticker today and ACME is the ticker it last had."""
     import edgar as edgartools
 
     day = [(date.today() - timedelta(days=n)).isoformat() for n in (5, 10)]
@@ -368,6 +377,8 @@ async def test_a_filing_reads_the_same_from_ginlix_data_as_from_edgar(monkeypatc
               row(ACC, "10-K", "2026-02-01", "2025-12-31"),
               row("0000000001-25-000001", "10-K", "2025-02-03", "2024-12-31"),
               row("0000000001-24-000001", "10-K", "2024-02-02", "")]
+    if delisted:
+        native[:0] = [row("0000000001-26-000021", "15-12G", day[0]), row("0000000001-26-000020", "25-NSE", day[1])]
     facts = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [
         {"accn": ACC, "form": "10-K", "fy": 2025, "fp": "FY"},
         {"accn": "0000000001-26-000003", "form": "10-Q", "fy": 2026, "fp": "Q3"}]}}}}}
@@ -380,7 +391,8 @@ async def test_a_filing_reads_the_same_from_ginlix_data_as_from_edgar(monkeypatc
         return SimpleNamespace(data=SimpleNamespace(num_rows=len(rows), to_pylist=lambda: rows))
 
     edgar_co = SimpleNamespace(cik=1, name="Acme Corp", not_found=False, fiscal_year_end="1231",
-                               get_ticker=lambda: "ACME", get_filings=table)
+                               get_ticker=lambda: None if delisted else "ACME", tickers=[] if delisted else ["ACME"],
+                               data=SimpleNamespace(entity_type="operating"), get_filings=table)
     monkeypatch.setattr(edgartools, "Company", lambda symbol: edgar_co)
     monkeypatch.setattr(edgar, "companyfacts_labels", lambda cik: labels_from_companyfacts(facts))
 
@@ -394,8 +406,14 @@ async def test_a_filing_reads_the_same_from_ginlix_data_as_from_edgar(monkeypatc
     monkeypatch.setattr(edgar, "amendments", AsyncMock(side_effect=lambda co, labels, ref: ([], [])))
     monkeypatch.setattr(edgar, "eight_k", AsyncMock(side_effect=lambda k: (read(k.ref), [])))
     monkeypatch.setattr(tool, "fetch_matching_earnings_call", AsyncMock(return_value=None))
-    remote = Ginlix(company={"cik": 1, "name": "Acme Corp", "fiscal_year_end": "1231", "tickers": ["ACME"]},
-                    filings=native, facts=facts)
+    company = {"cik": 1, "name": "Acme Corp", "fiscal_year_end": "1231", "entity_type": "operating",
+               "tickers": ["ACME"]}
+    if delisted:  # a company row read before SEC's map dropped the ticker still lists it
+        company["former_ticker"] = {"ticker": "ACME", "last_seen": 1, "tickers": []}
+    remote = Ginlix(company=company, filings=native, facts=facts)
+    listing = (f"ACME is a former ticker of Acme Corp, which has no listed ticker today: a Form 25-NSE to delist it "
+               f"was filed on {day[1]} (source: {edgar.index_url(1, '0000000001-26-000020')}), and it filed Form 15-12G "
+               f"on {day[0]} to stop reporting (source: {edgar.index_url(1, '0000000001-26-000021')}).")
 
     async def both(**kw):
         out = []
@@ -409,6 +427,7 @@ async def test_a_filing_reads_the_same_from_ginlix_data_as_from_edgar(monkeypatc
                {"filing_type": "8-K"}, {"filing_type": "10-K", "fiscal_year": 2030}):
         from_edgar, from_ginlix = await both(**kw)
         assert from_ginlix == from_edgar, kw
+        assert (listing in from_edgar[0]) == delisted, kw
     assert remote.facts_read == 0 and "fiscal-labels" in remote.asked
 
 

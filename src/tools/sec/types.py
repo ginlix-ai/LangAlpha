@@ -14,3 +14,6 @@ class FilingType(str, Enum):
 PERIODIC_FORMS = ("10-K", "10-Q", "20-F", "40-F")
 FOREIGN_FORMS = ("20-F", "40-F")
 EIGHT_K_FORMS = ("8-K", "8-K/A")
+#: The notices of a security's removal from exchange listing: Form 25 filed by its issuer, 25-NSE by its exchange.
+#: Their amendments are left out, since an amendment can withdraw the notice.
+DELISTING_FORMS = ("25", "25-NSE")

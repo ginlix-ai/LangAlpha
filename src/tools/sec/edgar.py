@@ -178,13 +178,22 @@ Rows = Callable[[list[str], bool], list[dict]]
 class Company:
     """A filer and its filings table: filings is EDGAR's recent page, or ginlix-data's whole history of
     indexed.INDEXED_FORMS. rows(forms, full_history) reads the table for those forms, the whole history when asked,
-    which ginlix-data's always is."""
+    which ginlix-data's always is. tickers: the company's tickers today; entity_type: SEC's (operating, investment,
+    other); former_ticker: the symbol asked, when it is a ticker the company no longer has."""
     symbol: str
     name: str
     cik: int
     rows: Rows = field(repr=False, compare=False)
     filings: list[dict]
     fiscal_year_end: str | None = None
+    tickers: tuple[str, ...] = ()
+    entity_type: str | None = None
+    former_ticker: str | None = None
+
+
+def _ticker_key(ticker: str) -> str:
+    """EDGAR spells a share class with a dash (BRK-B); callers also write a dot or a slash."""
+    return ticker.strip().upper().replace(".", "-").replace("/", "-")
 
 
 def edgar_rows(c: Any) -> Rows:
@@ -206,8 +215,13 @@ def _edgar_company(symbol: str) -> Company:
     if not getattr(c, "cik", None) or getattr(c, "not_found", False):
         raise NotAFiler(symbol)
     table = c.get_filings(trigger_full_load=False)
+    tickers = tuple(t for t in getattr(c, "tickers", None) or () if t)
+    # edgartools also resolves a class's base symbol (BRK for BRK-B), which is no former ticker.
+    current = {_ticker_key(t) for t in tickers} | {_ticker_key(t).split("-")[0] for t in tickers}
+    former = not symbol.strip().isdigit() and _ticker_key(symbol) not in current
     return Company((c.get_ticker() or symbol).upper(), c.name, int(c.cik), edgar_rows(c),
-                   table.data.to_pylist() if table is not None else [], getattr(c, "fiscal_year_end", None))
+                   table.data.to_pylist() if table is not None else [], getattr(c, "fiscal_year_end", None), tickers,
+                   getattr(getattr(c, "data", None), "entity_type", None), symbol.strip().upper() if former else None)
 
 
 async def company(symbol: str) -> Company:
@@ -222,7 +236,7 @@ async def company(symbol: str) -> Company:
         return [r for r in table if r["form"] in forms]
 
     return Company((row.tickers[0] if row.tickers else symbol).upper(), row.name, row.cik, rows, table,
-                   row.fiscal_year_end)
+                   row.fiscal_year_end, row.tickers, row.entity_type, row.former_ticker)
 
 
 @dataclass(frozen=True)

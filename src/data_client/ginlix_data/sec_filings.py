@@ -32,10 +32,15 @@ MAX_FILINGS = 5000
 
 @dataclass(frozen=True)
 class IndexedCompany:
+    """entity_type: SEC's (operating, investment, other). former_ticker: the ticker asked, as SEC spelled it, when it
+    resolved to the company that held it last because SEC's ticker map no longer lists it; tickers are then the ones
+    the map lists for the company today."""
     cik: int
     name: str | None
     tickers: tuple[str, ...]
     fiscal_year_end: str | None
+    entity_type: str | None = None
+    former_ticker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,9 +152,11 @@ class SecFilingsClient:
         body = self._json(f"/companies/{path_segment(ticker_or_cik)}")
         if body is None:
             return None
+        former = body.get("former_ticker")
         return IndexedCompany(int(body["cik"]), _maybe_text(body.get("name")),
-                              _texts(body.get("tickers")),
-                              _fiscal_year_end(body.get("fiscal_year_end")))
+                              _texts((former or body).get("tickers")),
+                              _fiscal_year_end(body.get("fiscal_year_end")), _maybe_text(body.get("entity_type")),
+                              former and _text(former["ticker"]))
 
     def filings(self, ticker_or_cik: str, forms: Sequence[str]) -> IndexedFilings | None:
         """The filer's filings of these forms, or None when there are more than one answer holds."""

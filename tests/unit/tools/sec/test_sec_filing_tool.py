@@ -576,3 +576,54 @@ def test_the_calendar_names_the_next_fiscal_year_after_an_annual_report_and_no_p
     assert render._next_period(q3, "FY") == " for fiscal year 2025"
     assert render._next_period(replace(ANNUAL, form="20-F"), "FY") == " for fiscal year 2026"
     assert render._next_period(replace(ANNUAL, fiscal_year=None), "Q1") == ""
+
+
+def _source(i):
+    return edgar.index_url(1, f"0000000001-26-{i:06d}")
+
+
+def _listed(tickers=(), former=None, *forms, entity="operating"):
+    rows = [{"accession_number": f"0000000001-26-{i:06d}", "form": form, "filing_date": filed[:10],
+             "acceptanceDateTime": filed[11:] and filed} for i, (form, filed) in enumerate(forms)]
+    return render.listing_line(edgar.Company("OLDC", "Oldco Inc", 1, edgar.edgar_rows(object()), rows,
+                                             tickers=tuple(tickers), entity_type=entity, former_ticker=former))
+
+
+def test_the_listing_line_names_a_former_ticker_the_delisting_and_the_form_15():
+    old, latest = ("25-NSE", "2021-06-22"), ("25-NSE", "2026-08-17")
+    assert _listed((), "OLDC", old, latest, ("15-12G", "2026-08-27"), ("10-Q", "2026-08-06")) == (
+        "OLDC is a former ticker of Oldco Inc, which has no listed ticker today: a Form 25-NSE to delist it was filed on "
+        f"2026-08-17 (source: {_source(1)}), and it filed Form 15-12G on 2026-08-27 to stop reporting (source: "
+        f"{_source(2)}).")
+    assert _listed((), None, ("25", "2026-01-05")) == (
+        f"Oldco Inc has no listed ticker today: a Form 25 to delist it was filed on 2026-01-05 (source: {_source(0)}).")
+    assert _listed((), None, ("15-15D", "2026-01-05")) == (
+        f"Oldco Inc has no listed ticker today: it filed Form 15-15D on 2026-01-05 to stop reporting (source: {_source(0)}).")
+    assert _listed((), "OLDC") == "OLDC is a former ticker of Oldco Inc, which has no listed ticker today."
+    assert _listed(("NEWC", "NEWC-W"), "OLDC", latest) == "OLDC is a former ticker of Oldco Inc, which trades as NEWC, NEWC-W today."
+
+
+def test_the_listing_line_says_nothing_it_cannot_stand_behind():
+    assert _listed(("OLDC",), None, ("25-NSE", "2026-08-17")) is None  # a warrant's delisting, the shares still listed
+    assert _listed((), None, ("10-K", "2026-02-01")) is None
+    assert _listed((), "IVV", ("25-NSE", "2026-10-20"), entity="investment") is None  # a trust's series, not its shares
+    assert _listed((), None, ("15-12B", "2026-01-05"), ("10-K", "2026-03-01")) is None  # still reporting after its Form 15
+    assert _listed((), None, ("15-12B", "2026-01-05T09:00:00"), ("10-Q", "2026-01-05T16:00:00")) is None
+    assert _listed((), None, ("10-Q", "2026-01-05T09:00:00"), ("15-12B", "2026-01-05T16:00:00")) == (
+        f"Oldco Inc has no listed ticker today: it filed Form 15-12B on 2026-01-05 to stop reporting (source: {_source(1)}).")
+    assert _listed((), None, ("25-NSE/A", "2026-01-05")) is None  # an amendment can withdraw the notice
+
+
+def test_a_symbol_edgartools_resolves_that_is_not_among_the_companys_tickers_is_a_former_ticker(monkeypatch):
+    import edgar as edgartools
+
+    table = SimpleNamespace(data=SimpleNamespace(to_pylist=lambda: []))
+    found = SimpleNamespace(cik=1, name="Oldco Inc", not_found=False, get_ticker=lambda: None, tickers=[],
+                            data=SimpleNamespace(entity_type="operating"), get_filings=lambda **kw: table)
+    monkeypatch.setattr(edgartools, "Company", lambda symbol: found)
+    assert edgar._edgar_company("oldc").former_ticker == "OLDC"
+    assert edgar._edgar_company("oldc").entity_type == "operating"
+    assert edgar._edgar_company("1234567").former_ticker is None
+    found.tickers = ["BRK-B", "BRK-A"]
+    assert edgar._edgar_company("brk.b").former_ticker is None
+    assert edgar._edgar_company("BRK").former_ticker is None  # edgartools' base symbol for the class tickers
