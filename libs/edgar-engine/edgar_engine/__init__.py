@@ -4,7 +4,7 @@ The public API is what this package exports, plus edgar_engine.filings (filing s
 edgar_engine.amendments (amended_sections, amendment_scope, merge, read, restates_statements), edgar_engine.cache,
 edgar_engine.documents, edgar_engine.forms (item_order, item_title, mdna_item), edgar_engine.statements (Financials,
 from_submission, read), edgar_engine.submission (fetching, reading and parsing a filing's .txt), edgar_engine.ownership
-(Forms 3, 4 and 5) and edgar_engine.thirteenf (Form 13F); each declares it in __all__.
+(Forms 3, 4 and 5, and Form 144) and edgar_engine.thirteenf (Form 13F); each declares it in __all__.
 Everything else, and every module of edgar_engine.sections except model, is internal.
 
 edgar_engine.periods (13F deadlines and the period expected on a day) is public too. The exports load on first use,
@@ -15,8 +15,8 @@ from importlib import import_module
 __version__ = "0.1.0"
 
 _EXPORTS = {
-    **dict.fromkeys(("ThirteenFReports", "get_13f_holdings", "get_13f_reports", "get_insider_filings", "get_sections"),
-                    ".api"),
+    **dict.fromkeys(("Form144Page", "ThirteenFReports", "get_13f_holdings", "get_13f_reports", "get_form144_notices",
+                     "get_insider_filings", "get_sections"), ".api"),
     **dict.fromkeys(("SubmissionDocument", "submission_documents"), ".documents"),
     **dict.fromkeys(("SECTIONS_VERSION", "extract_sections", "sections_for_filing"), ".sections"),
     **dict.fromkeys(("DocumentInfo", "FilingSections", "FilingStatus", "Scope", "Section", "Span", "Status", "Target",

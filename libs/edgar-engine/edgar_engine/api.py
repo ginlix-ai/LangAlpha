@@ -11,7 +11,8 @@ import pandas as pd
 from .amendments import amended_sections, merge, nth_amendment, read
 from .cache import SectionsCache, SubmissionCache
 from .filings import _company, list_filings, pick_ref, select_filing
-from .ownership import OwnershipFiling, belongs_to_issuer, parse_ownership
+from .ownership import Form144Filing, OwnershipFiling, belongs_to_issuer, parse_form144, parse_ownership
+from .ownership.form144 import FORM144_FORMS
 from .sections.model import FilingSections, View
 from .submission import decode, fetch_submission, header
 from .thirteenf import ThirteenFFiling, holding_rows, parse_13f, resolve_amendments
@@ -148,3 +149,50 @@ def get_13f_holdings(filer: Any, period: str, *, submissions: SubmissionCache | 
     for accession, cik in got.other_filer:
         warnings.warn(f"{accession}: filed under CIK {cik}, not {got.filer_cik}", stacklevel=2)
     return list(got.reports)
+
+
+@dataclass(frozen=True)
+class Form144Page:
+    """One page of an issuer's Form 144 notices: the notices read, how many the issuer's list holds, the offset the
+    page starts at, and where the next page starts (None after the last)."""
+    notices: tuple[Form144Filing, ...]
+    total: int
+    offset: int
+    next_offset: int | None
+
+
+def get_form144_notices(company: Any, *, limit: int = 50, offset: int = 0,
+                        submissions: SubmissionCache | None = None) -> Form144Page:
+    """A page of a company's Form 144 and 144/A notices as issuer, newest filed first (accession descending among
+    notices filed the same day), at most limit of them, read from position offset of the list EDGAR gives for the
+    company.
+
+    That list also holds notices the company filed as the seller of another issuer's securities, which are known
+    only once read: the page skips each of those, and any notice with no readable Form 144, with a warning naming
+    it, and reads on until it holds limit notices, has read 2 * limit of them, or the list ends. So a page may hold
+    fewer than limit notices, none even, while next_offset still names the next page. total counts the whole list
+    and next_offset is the position after the last notice read (None at the end of the list), so pages of an
+    unchanged list never overlap or skip. Each notice read costs one request (its .txt), or none when submissions
+    holds it, so a page costs at most 2 * limit requests, and notices before offset are never read.
+    EDGAR's XML Form 144 starts on 2023-04-13, the first notice any list holds. A notice EDGAR serves cut short
+    twice raises TruncatedSubmission.
+    """
+    if limit < 1 or offset < 0:
+        raise ValueError("limit must be at least 1 and offset at least 0")
+    company = _company(company)
+    listed = company.get_filings(form=list(FORM144_FORMS))
+    rows = [] if listed is None else [r for r in listed.data.to_pylist() if r["form"] in FORM144_FORMS]
+    rows.sort(key=lambda r: (str(r["filing_date"]), r["accession_number"]), reverse=True)
+    notices, end, stop = [], offset, min(len(rows), offset + 2 * limit)
+    while end < stop and len(notices) < limit:
+        accession = rows[end]["accession_number"]
+        end += 1
+        filing = parse_form144(fetch_submission(company.cik, accession, submissions), accession=accession)
+        if filing is None:
+            warnings.warn(f"{accession}: no readable Form 144", stacklevel=2)
+        elif filing.issuer_cik != int(company.cik):
+            warnings.warn(f"{accession}: a Form 144 for issuer CIK {filing.issuer_cik}, not {int(company.cik)}",
+                          stacklevel=2)
+        else:
+            notices.append(filing)
+    return Form144Page(tuple(notices), len(rows), offset, end if end < len(rows) else None)

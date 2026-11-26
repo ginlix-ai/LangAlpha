@@ -189,6 +189,35 @@ It is SEC's own extraction of the same documents, rounded to 2 decimals, and in 
 puts a line's nature of ownership (rarely a price or a holding) on a neighbouring line; the filing is right.
 Footnote ids come from its per-field footnote columns.
 
+## Form 144 notices of proposed sale
+
+`edgar_engine.ownership.form144` reads a Form 144 or 144/A, the notice an affiliate files when placing an order to
+sell restricted or control securities. EDGAR has required the XML form since 2023-04-13; earlier notices were paper.
+
+```python
+from edgar_engine import get_form144_notices
+from edgar_engine.ownership import notice_rows
+
+page = get_form144_notices("AAPL", limit=20)        # newest filed first; page.total, page.next_offset
+rows = [r for n in page.notices for r in notice_rows(n)]
+more = get_form144_notices("AAPL", limit=20, offset=page.next_offset) if page.next_offset is not None else None
+```
+
+**A page costs the notices it reads.** `get_form144_notices` lists the company's notices from EDGAR's submissions,
+orders them newest filed first (accession descending within a day) and fetches only the notices the page reads, one
+request a notice or none from a `SubmissionCache`. The list also holds notices the company filed as a seller of
+another issuer's securities, known only once read: the page skips each with a warning and reads on until it holds
+`limit` notices or has read `2 * limit`, so a page may come back short while `next_offset`, the list position after
+the last notice read, still names the next one; `total` counts the whole list.
+
+**Rows.** `notice_rows` gives one row per security class: blocks naming the same class (one per broker) are summed,
+with the earliest approximate sale date. The acquisition and past-sale blocks go to their class's row, or to the
+first row when they name no class of the notice (filers often title them with the issuer's name). `relationship`
+normalizes the free-text relationship entries to `director`, `officer`, `ten_percent_owner` and `other` (a
+former officer or director is `other`, and so is a former relationship in parentheses, as in `Director (Former
+Officer)`, which reads `director` and `other`), and `seller_cik` is the CIK the notice was filed under, None when that is
+the issuer's own. A 144/A is a whole notice again and names the one it amends in `previous_accession`.
+
 ## 13F holdings
 
 `edgar_engine.thirteenf` reads a 13F-HR or 13F-HR/A: the cover and summary page from the primary document, and
