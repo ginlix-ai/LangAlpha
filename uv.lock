@@ -2584,6 +2584,7 @@ dependencies = [
     { name = "edgartools" },
     { name = "lxml" },
     { name = "pandas" },
+    { name = "pyarrow" },
 ]
 
 [package.metadata]
@@ -2591,6 +2592,7 @@ requires-dist = [
     { name = "edgartools", specifier = ">=5.62.1,<7" },
     { name = "lxml", specifier = ">=5.3" },
     { name = "pandas", specifier = ">=2.2" },
+    { name = "pyarrow", specifier = ">=14" },
 ]
 
 [package.metadata.requires-dev]

@@ -232,7 +232,9 @@ symbols from other identifier services are not exchange tickers, so there is no 
 
 `read_13f_dataset` reads SEC's Form 13F Data Sets into the same columns, `value_usd` included (the same per-report
 unit resolution, with the filing date standing in for the schema version the data sets do not carry); select a
-period, since a filing window carries stray older ones.
+period, since a filing window carries stray older ones. `read_13f_dataset_table` returns the same rows as an Arrow
+table, text columns dictionary-encoded, which holds a window of millions of lines in a fraction of the memory.
+`resolve_value_units` resolves many reports' units in one pass, each the way `resolve_value_unit` resolves it.
 
 **Fetching.** `edgar_engine.submission.fetch_submission` reads a filing's `.txt` with one request through
 edgartools' identity, rate limit and retries. A body without its `</SEC-DOCUMENT>` trailer is a truncated download:

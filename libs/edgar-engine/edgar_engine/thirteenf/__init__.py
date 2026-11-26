@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from .amendments import resolve_amendments
 from .cusip import ticker_for_cusip, tickers_for_cusips
-from .datasets import FILING_COLUMNS, read_13f_dataset
+from .datasets import FILING_COLUMNS, read_13f_dataset, read_13f_dataset_table
 from .model import Holding13F, ThirteenFFiling, UnitResolution
 from .parse import HOLDING_COLUMNS, holding_rows, parse_13f
-from .units import check_units, consensus_prices, resolve_value_unit, unit_flags
+from .units import check_units, consensus_prices, resolve_value_unit, resolve_value_units, unit_flags
 
 __all__ = ["FILING_COLUMNS", "HOLDING_COLUMNS", "Holding13F", "ThirteenFFiling", "UnitResolution", "check_units",
-           "consensus_prices", "holding_rows", "parse_13f", "read_13f_dataset", "resolve_amendments",
-           "resolve_value_unit", "ticker_for_cusip", "tickers_for_cusips", "unit_flags"]
+           "consensus_prices", "holding_rows", "parse_13f", "read_13f_dataset", "read_13f_dataset_table",
+           "resolve_amendments", "resolve_value_unit", "resolve_value_units", "ticker_for_cusip", "tickers_for_cusips",
+           "unit_flags"]
