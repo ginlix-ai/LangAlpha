@@ -523,7 +523,13 @@ const shortcut = createShortcut({ supported: traits.globalShortcut, onPress: () 
 
 const loginItem = createLoginItem(traits)
 
-const settings = createSettingsService({ store, traits, loginItem, shortcutError: shortcut.error })
+const settings = createSettingsService({
+  store,
+  traits,
+  loginItem,
+  shortcutError: shortcut.error,
+  updates: () => updater.canTurnOffAutomatic(),
+})
 
 const glance = createGlance({
   traits,
@@ -545,6 +551,7 @@ const glance = createGlance({
 settings.onChange((next, prev) => {
   if (prev.shortcut !== next.shortcut) shortcut.apply(next.shortcut)
   if (prev.menubar.enabled !== next.menubar.enabled) syncMenubarItem(next.menubar.enabled)
+  if (prev.automaticUpdates !== next.automaticUpdates) updater.setAutomatic()
 })
 
 // ---------------------------------------------------------------------------
@@ -720,6 +727,7 @@ function registerIpc() {
   registerRemoteControlIpc(remoteControl)
 
   settings.registerIpc((event) => appSenderWindow(event))
+  updater.registerIpc((event) => appSenderWindow(event))
   // The main window's page only: it is the one the commands are sent to.
   commands.registerIpc((event) => appSenderWindow(event, { accepts: (w) => w === mainWindow }))
   glance.registerIpc()
@@ -858,7 +866,11 @@ if (!app.requestSingleInstanceLock()) {
     if (command) commands.deliver({ command })
     // Nothing until there is an app to load, which for the stack is once it is up.
     glance.ensure()
-    updater.init(() => mainWindow, { beforeInstall: () => backend.stop() })
+    updater.init(() => mainWindow, {
+      beforeInstall: () => backend.stop(),
+      // A restart stops the server only when it is this app's own stack.
+      stopsServer: () => backend.runsBundled(),
+    })
 
     // The user's windows, never all of them: the hidden menu bar window is
     // always there, and counting it left a Dock click with nothing to open.

@@ -1906,8 +1906,9 @@ describe('the bridge says what the shell can do', () => {
     const callable = Object.keys(bridge).filter((k) => typeof bridge[k] === 'function').sort()
     assert.deepEqual(callable, [
       'beginMcpOAuth', 'bindMcpOAuth', 'cancelMcpOAuth', 'clearNotifications', 'disableRemoteControl',
-      'enableRemoteControl', 'getDesktopSettings', 'getRemoteControl', 'hideMenubar', 'notify',
-      'onDesktopSettings', 'onMenuCommand', 'onNotificationAction', 'onTrayRefresh', 'openExternal', 'openInMain',
+      'enableRemoteControl', 'getDesktopSettings', 'getRemoteControl', 'getUpdateState', 'hideMenubar',
+      'hideUpdates', 'installUpdate', 'notify', 'onDesktopSettings', 'onMenuCommand', 'onNotificationAction', 'onTrayRefresh',
+      'onUpdateState', 'openExternal', 'openInMain',
       'savePdf', 'setAttention', 'setDesktopSettings', 'setMenuCommands', 'setTheme', 'setTrayItems',
     ])
   })

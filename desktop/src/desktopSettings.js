@@ -2,7 +2,7 @@
 
 // The user's desktop settings: which notifications to post, the menu bar icon
 // and what sits beside it, the panel's sections, open at login, the global
-// shortcut. The page edits them in the app's Settings and the shell keeps them,
+// shortcut, whether updates install by themselves. The page edits them in the app's Settings and the shell keeps them,
 // because the shell is what acts on every one, and a notification has to be
 // filtered by a window that may not have the app's own preferences loaded at
 // all.
@@ -53,6 +53,7 @@ const DEFAULTS = Object.freeze({
   openAtLogin: false,
   shortcut: '',
   keepRunningInTray: true,
+  automaticUpdates: true,
 })
 
 // Tickers as the data providers spell them: `BRK.B`, `^GSPC`, `BTC-USD`,
@@ -201,6 +202,7 @@ function normalize(raw, base = DEFAULTS) {
     openAtLogin: bool(r.openAtLogin, base.openAtLogin),
     shortcut: shortcut(r.shortcut, base.shortcut),
     keepRunningInTray: bool(r.keepRunningInTray, base.keepRunningInTray),
+    automaticUpdates: bool(r.automaticUpdates, base.automaticUpdates),
   }
 }
 
@@ -254,11 +256,17 @@ function support(traits) {
 /**
  * What the page is shown: the settings, what works here, and a shortcut that
  * would not register. The badge is the one drawn, so a choice this platform
- * cannot draw shows as what it gets instead.
+ * cannot draw shows as what it gets instead. `updates` says this build downloads
+ * its own updates, the only kind automatic updates can be turned off for; a
+ * build that never downloads one has nothing to turn off.
  */
-function view(settings, { traits, shortcutError } = {}) {
+function view(settings, { traits, shortcutError, updates = false } = {}) {
   const read = normalize(settings)
-  const out = { ...read, badge: shownBadge(read.badge, traits), support: support(traits) }
+  const out = {
+    ...read,
+    badge: shownBadge(read.badge, traits),
+    support: { ...support(traits), automaticUpdates: Boolean(updates) },
+  }
   if (shortcutError) out.shortcutError = shortcutError
   return out
 }

@@ -35,6 +35,7 @@ describe('desktop settings', () => {
       openAtLogin: false,
       shortcut: '',
       keepRunningInTray: true,
+      automaticUpdates: true,
     })
   })
 
@@ -194,6 +195,11 @@ describe('desktop settings', () => {
     assert.ok(plain.support)
     const failed = settings.view(settings.DEFAULTS, { traits: traits('darwin', {}), shortcutError: 'taken' })
     assert.equal(failed.shortcutError, 'taken')
+  })
+
+  test('automatic updates are offered only by a build that downloads its own', () => {
+    assert.equal(settings.view(settings.DEFAULTS, { traits: traits('darwin', {}) }).support.automaticUpdates, false)
+    assert.equal(settings.view(settings.DEFAULTS, { traits: traits('darwin', {}), updates: true }).support.automaticUpdates, true)
   })
 
   test('the store reads a hand-edited group back into shape', () => {

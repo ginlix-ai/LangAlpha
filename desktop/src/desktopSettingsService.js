@@ -16,9 +16,9 @@ const { gatedIpc } = require('./sender')
 /**
  * `loginItem` is loginItem.js's, since the OS has the last word on open at
  * login. `shortcutError()` is why the global shortcut did not register, if it
- * did not.
+ * did not. `updates()` says this build downloads its own updates.
  */
-function createSettingsService({ store, traits, loginItem, shortcutError = () => null }) {
+function createSettingsService({ store, traits, loginItem, shortcutError = () => null, updates = () => false }) {
   const listeners = []
 
   const get = () => store.get('desktop')
@@ -34,7 +34,7 @@ function createSettingsService({ store, traits, loginItem, shortcutError = () =>
     return registered === null ? stored : { ...stored, openAtLogin: registered }
   }
 
-  const viewNow = () => view(current(), { traits, shortcutError: shortcutError() })
+  const viewNow = () => view(current(), { traits, shortcutError: shortcutError(), updates: updates() })
 
   /** Every window showing the app hears the new settings: the main window's page and the menu bar's. */
   function broadcast(v) {

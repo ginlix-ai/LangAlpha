@@ -193,6 +193,8 @@ export interface DesktopSettings {
   shortcut: string;
   /** Windows only: closing the last window leaves the app in the tray. */
   keepRunningInTray: boolean;
+  /** Updates download by themselves and install on quit. Off, each one waits to be asked for. Absent on an older shell. */
+  automaticUpdates?: boolean;
 }
 
 /** One level deep: each group may be given in part. */
@@ -215,6 +217,8 @@ export interface DesktopSettingsView extends DesktopSettings {
     shortcut: boolean;
     keepRunningInTray: boolean;
     notificationActions: boolean;
+    /** This build downloads its own updates, so they can be turned off. Absent on an older shell. */
+    automaticUpdates?: boolean;
   };
   /** Set when the shortcut could not be registered, usually because another app holds it. */
   shortcutError?: string;
@@ -352,6 +356,35 @@ export interface DesktopBridge {
   enableRemoteControl?(scriptUrl: string): Promise<RemoteControlResult | null>;
   /** Turn the helper off and delete its folder, keys and tunnel with it. Idempotent. */
   disableRemoteControl?(): Promise<RemoteControlStatus | null>;
+  /** The app's own update. Asking also tells the shell this page shows it, so it holds back its own prompt. */
+  getUpdateState?(): Promise<DesktopUpdateState | null>;
+  /** Restart into the ready update, download an available one, or in notify mode open the download page. */
+  installUpdate?(): Promise<void>;
+  onUpdateState?(callback: (state: DesktopUpdateState) => void): () => void;
+  /** The page no longer shows the update, so the shell offers it itself again. Absent on an older shell. */
+  hideUpdates?(): Promise<void>;
+}
+
+/**
+ * The app's own update, as the shell sees it. `available` is found but not
+ * downloaded: a download from the release page in `mode: 'notify'`, or one the
+ * shell makes when asked while `automatic` is off. `downloading` is that
+ * download; `ready` is downloaded and installed by a restart. `stopsServer`
+ * says a restart takes the server down with the app, which is so when the app
+ * runs its own.
+ */
+export interface DesktopUpdateState {
+  status: 'idle' | 'available' | 'downloading' | 'ready';
+  version: string | null;
+  currentVersion: string;
+  channel: 'stable' | 'nightly';
+  mode: 'auto' | 'notify';
+  /** Updates download and install by themselves. Absent on an older shell, where they always do. */
+  automatic?: boolean;
+  /** A ready update installs on quit too; false when automatic updates were turned off after it downloaded. */
+  installsOnQuit?: boolean;
+  notesUrl: string | null;
+  stopsServer: boolean;
 }
 
 declare global {
@@ -621,6 +654,28 @@ export function setDesktopSettings(patch: DesktopSettingsPatch): Promise<Desktop
 /** Settings changed anywhere: another window, the tray menu. */
 export function onDesktopSettings(callback: (settings: DesktopSettingsView) => void): () => void {
   return listen('onDesktopSettings', callback);
+}
+
+/** Whether the shell tells this page about its own update. */
+export function canShowUpdates(): boolean {
+  return has('getUpdateState') && has('onUpdateState') && has('installUpdate');
+}
+
+export function getUpdateState(): Promise<DesktopUpdateState | null> {
+  return ask('getUpdateState');
+}
+
+/** Undoes what asking for the state told the shell, for a page whose update button is gone. */
+export function hideUpdates(): void {
+  fire('hideUpdates');
+}
+
+export function onUpdateState(callback: (state: DesktopUpdateState) => void): () => void {
+  return listen('onUpdateState', callback);
+}
+
+export function installUpdate(): Promise<void | null> {
+  return ask('installUpdate');
 }
 
 export function canSetTrayItems(): boolean {

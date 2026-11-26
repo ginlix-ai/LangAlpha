@@ -593,6 +593,9 @@
     "openAtLoginWindowDesc": "登录这台电脑时打开 LangAlpha 窗口。开启图标后，改为在后台启动。",
     "keepRunning": "关闭窗口后在托盘中继续运行",
     "keepRunningDesc": "关闭窗口后，通知和托盘图标仍会继续工作。",
+    "updatesGroup": "更新",
+    "automaticUpdates": "自动安装更新",
+    "automaticUpdatesDesc": "新版本会在后台下载，并在下次退出时安装。关闭后，侧边栏会提示每个新版本，由你决定何时下载。",
     "unavailable": "桌面应用没有响应，请重启后再试。"
   },
   "computers": {

@@ -85,20 +85,21 @@ if (edition === 'saas') {
 const overrides = {}
 if (process.env.DESKTOP_LOGIN_PATH) overrides.loginPath = process.env.DESKTOP_LOGIN_PATH
 if (process.env.DESKTOP_UPDATE_FEED) overrides.updateFeed = process.env.DESKTOP_UPDATE_FEED
-if (process.env.DESKTOP_DOWNLOAD_PAGE) {
-  // The one override that gets handed to `shell.openExternal`, so the scheme is
+for (const [key, envName] of [['downloadPage', 'DESKTOP_DOWNLOAD_PAGE'], ['releasesPage', 'DESKTOP_RELEASES_PAGE']]) {
+  if (!process.env[envName]) continue
+  // The overrides that get handed to `shell.openExternal`, so the scheme is
   // the bar and not just parseability: `mailto:` opens an email composer and
   // `file://` opens a path on whoever's machine, both from a button that says
   // Download. `updateFeed` is deliberately not checked the same way, since a
   // file:// feed is a legitimate way to rehearse an update locally.
-  const page = process.env.DESKTOP_DOWNLOAD_PAGE
+  const page = process.env[envName]
   let scheme = null
   try { scheme = new URL(page).protocol } catch { scheme = null }
   if (scheme !== 'http:' && scheme !== 'https:') {
-    console.error(`[config] DESKTOP_DOWNLOAD_PAGE='${page}' must be an http:// or https:// page`)
+    console.error(`[config] ${envName}='${page}' must be an http:// or https:// page`)
     process.exit(1)
   }
-  overrides.downloadPage = page
+  overrides[key] = page
 }
 
 const updateMode = (process.env.DESKTOP_UPDATE_MODE || 'auto').trim()

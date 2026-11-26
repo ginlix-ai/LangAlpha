@@ -503,6 +503,9 @@
     "openAtLoginWindowDesc": "Open LangAlpha when you sign in to this computer. With the icon on, it starts in the background instead.",
     "keepRunning": "Keep running in the tray when closed",
     "keepRunningDesc": "Closing the window leaves notifications and the tray icon running.",
+    "updatesGroup": "Updates",
+    "automaticUpdates": "Install updates automatically",
+    "automaticUpdatesDesc": "New versions download in the background and install the next time you quit. Off, the sidebar offers each one and waits for you to download it.",
     "unavailable": "The desktop app did not answer. Restart it and try again."
   },
   "computers": {

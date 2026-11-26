@@ -156,7 +156,7 @@ def _message(interrupted, tasks=()):
 def test_the_resume_message_for_an_interrupted_turn():
     assert _message(True) == (
         "<system>\n"
-        "Your previous turn was paused by a routine deployment before it "
+        "Your previous turn was paused by a restart before it "
         "finished. Continue where you left off. Before repeating a tool call "
         "from that turn, check whether it already took effect.\n"
         "</system>"
@@ -228,10 +228,10 @@ def test_the_resume_message_lists_the_stopped_subagents():
     message = _message(True, [_TASK, {"task_id": "def456"}])
     assert message == (
         "<system>\n"
-        "Your previous turn was paused by a routine deployment before it "
+        "Your previous turn was paused by a restart before it "
         "finished. Continue where you left off. Before repeating a tool call "
         "from that turn, check whether it already took effect.\n"
-        "The deployment also paused these background subagents before they finished:\n"
+        "The restart also paused these background subagents before they finished:\n"
         "- Task-abc123 (research): Pull the 10-K\n"
         "- Task-def456 (subagent)\n"
         "Their prior work is preserved. Resume each one still needed with "
@@ -239,7 +239,7 @@ def test_the_resume_message_lists_the_stopped_subagents():
         "</system>"
     )
     assert _message(False, [_TASK]).splitlines()[1] == (
-        "A routine deployment paused these background subagents before they finished:"
+        "A restart paused these background subagents before they finished:"
     )
 
 
@@ -285,7 +285,7 @@ async def test_a_retry_resume_posts_the_retry_route(tasks):
     # beside it.
     assert [d["type"] for d in directives] == ["directive"] * len(tasks)
     if tasks:
-        assert directives[0]["content"].startswith("A routine deployment paused")
+        assert directives[0]["content"].startswith("A restart paused")
         assert "Task-abc123 (research)" in directives[0]["content"]
 
 
