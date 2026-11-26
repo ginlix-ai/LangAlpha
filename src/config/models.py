@@ -596,27 +596,26 @@ class SharedWorkspacesConfig(BaseModel):
 
 
 class DriveHistoryConfig(BaseModel):
-    """Which old versions of a file the Drive keeps. Text held in the database
-    keeps every version; other bytes are kept for a while, and a copy too
-    large to keep is not a version once a save replaces it."""
+    """What an ordinary Drive file keeps of its history: the copy from before
+    its last save, for a while, as a one-step undo. A memo keeps every
+    version, whatever its size."""
 
     max_bytes: int | None = Field(
         default=100 * 1024 * 1024,
         ge=1,
         description=(
-            "A replaced copy this size or larger is not kept as a version; "
+            "A replaced copy this size or larger is not kept as an undo copy; "
             "null keeps every size"
         ),
     )
-    keep_days: int | None = Field(
-        default=30,
+    undo_days: int = Field(
+        default=7,
         ge=1,
-        description="Days an old version of a file not held as text is kept; null for no age limit",
-    )
-    keep_max: int | None = Field(
-        default=10,
-        ge=0,
-        description="Old versions per file kept, besides text; null for no count limit",
+        description=(
+            "Days the copy from before a file's last save is kept. The agent's "
+            "instructions, its Drive doc page and the CLI state the defaults, "
+            "7 days and 100 MB"
+        ),
     )
     replaced_grace_seconds: int = Field(
         default=3600,

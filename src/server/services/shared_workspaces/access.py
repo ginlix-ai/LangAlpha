@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Optional
 
@@ -300,6 +300,30 @@ async def thread_access(
     # Asked only once the thread is known to be theirs to see, so a refusal
     # to a member says nothing of a thread they do not reach.
     return Access(owner, await _as_manager(access.shared)) if manage else access
+
+
+async def thread_titles(caller: str, thread_ids: Iterable[Optional[str]]) -> dict[str, Optional[str]]:
+    """The titles of the threads a page names, for those ``caller`` may
+    see: in their own workspaces, and in a shared workspace they reach
+    (:func:`shared_access`, asked once per workspace) those its own rule
+    lets them see (``thread_reach.titled`` applies it, so another member's
+    private thread is left out). Any other, or one gone, is left out."""
+    found = await thread_reach.titled({t for t in thread_ids if t}, caller)
+    reached: dict[str, bool] = {}
+    out: dict[str, Optional[str]] = {}
+    for thread_id, (title, owner, workspace_id) in found.items():
+        if owner != caller:
+            if workspace_id not in reached:
+                reached[workspace_id] = is_holder(owner)
+                if reached[workspace_id]:
+                    try:
+                        await shared_access(workspace_id, owner, caller)
+                    except NoAccess:
+                        reached[workspace_id] = False
+            if not reached[workspace_id]:
+                continue
+        out[thread_id] = title
+    return out
 
 
 async def shared_org_of(workspace_id: Optional[str]) -> Optional[str]:

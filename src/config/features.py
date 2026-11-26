@@ -227,8 +227,10 @@ FEATURES: dict[str, FeatureSpec] = {
         label="Drive",
         description=(
             "A folder of your own files that you and your agent both read and "
-            "edit, from any workspace. Earlier versions of text and other small "
-            "files are kept, and deleted files wait in the trash for up to 14 days."
+            "edit, from any workspace. A file you mark as a memo keeps every "
+            "version, with who changed it and why. Any other file can be put "
+            "back as it was before its last save for 7 days, and deleted files "
+            "wait in the trash for up to 14 days."
         ),
         enabled=True,
         gate=FeatureGate.OPT_IN,
@@ -242,7 +244,8 @@ FEATURES: dict[str, FeatureSpec] = {
             off_if="your files belong to one workspace each.",
             good_to_know=(
                 "The agent may change these files at any time. Each change shows "
-                "who made it, and an earlier version can be restored while it is kept."
+                "who made it. Only a memo keeps its earlier versions to compare "
+                "and restore; any other file keeps one copy, from before its last save."
             ),
         ),
     ),

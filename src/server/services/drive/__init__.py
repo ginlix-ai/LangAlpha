@@ -1,5 +1,6 @@
 """The Drive: a server-held file tree per space, read and written by people
-and their agents, every change kept as a version.
+and their agents. A memo keeps every version with who made it and why; any
+other file keeps the copy from before its last save, for a while.
 
 Every surface (the REST routes, the agent's file tools, the file mount, the
 CLI) goes through these functions, and ``reach`` is the one permission check:
@@ -15,13 +16,15 @@ import asyncio
 import logging
 import time
 import uuid
+from types import EllipsisType
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Any, Literal
 
 from src.config.core import get_infrastructure_config
 from src.server.database.blob_keys import blob_key
-from src.server.database.drive import reads, retention, writes
+from src.server.database.drive import memos, reads, retention, writes
+from src.server.database.drive import trash as trash_rows
 from src.server.database.drive.keys import normalize
 from src.server.database.drive.records import (
     Actor,
@@ -39,7 +42,7 @@ from src.server.database.drive.records import (
 )
 from src.server.database.drive.writes import ContentRef
 from src.server.services.drive import content_bytes as _bytes
-from src.server.services.drive import feed
+from src.server.services.drive import extract, feed
 from src.server.services.drive.content_bytes import TEXT_MAX_BYTES, holding, read_range, stream
 from src.server.services import membership
 from src.server.services.features import user_feature_enabled
@@ -75,7 +78,7 @@ __all__ = [
     "purge",
     "reach",
     "read_range",
-    "replace",
+    "rename",
     "restore",
     "restore_version",
     "room_for",
@@ -179,10 +182,7 @@ async def allowance(user_id: str | None) -> int | None:
 def history_rule() -> HistoryRule:
     h = _config().history
     return HistoryRule(
-        max_bytes=h.max_bytes,
-        keep_days=h.keep_days,
-        keep_max=h.keep_max,
-        grace_seconds=h.replaced_grace_seconds,
+        max_bytes=h.max_bytes, undo_days=h.undo_days, grace_seconds=h.replaced_grace_seconds
     )
 
 
@@ -239,11 +239,15 @@ async def usage(space: Space, bounds: Limits | None = None) -> Usage:
 # --- reads ----------------------------------------------------------------
 
 
-async def stat(space: Space, path: str | None = None, *, entry_id: str | None = None) -> Entry:
+async def stat(
+    space: Space, path: str | None = None, *, entry_id: str | None = None, conn=None
+) -> Entry:
     if entry_id is not None:
-        found = await reads.live_entry(space.space_id, entry_id=_uuid(entry_id, "No such entry"))
+        found = await reads.live_entry(
+            space.space_id, entry_id=_uuid(entry_id, "No such entry"), conn=conn
+        )
     else:
-        found = await reads.live_entry(space.space_id, path=normalize(path or ""))
+        found = await reads.live_entry(space.space_id, path=normalize(path or ""), conn=conn)
     if found is None:
         raise DriveError("not_found", f"Nothing at {path}" if path else "No such entry")
     return found
@@ -372,30 +376,54 @@ async def text_bytes(
             yield found
 
 
-async def versions(space: Space, entry: Entry) -> tuple[list[Version], bool]:
-    """A file's versions, newest first, each with when the history rule
-    lets it go, and whether the head is too large to keep once replaced."""
-    if entry.kind != "file":
-        raise DriveError("is_folder", f"{entry.path} is a folder")
-    return await reads.versions(entry.entry_id, history_rule())
-
-
-async def history_bytes(space: Space, entry: Entry) -> int:
-    """What clearing ``entry``'s history would take out of the counts."""
-    return await reads.history_bytes(space.space_id, entry.entry_id, entry.head_seq)
+async def versions(
+    space: Space, path: str | None = None, *, entry_id: str | None = None
+) -> tuple[Entry, list[Version], bool, int, int]:
+    """A file with its mark, its versions newest first (an undo copy with
+    when it goes), whether the head is too large to keep as one once
+    replaced, and what a clear bound to the listed head drops: ``(versions,
+    bytes that leave the counts)``. One snapshot, since a clear is bound to
+    the head and the pin shown here: a pin and a save landing between the
+    reads would show a count that clear does not keep to."""
+    rule = history_rule()
+    async with reads.snapshot() as conn:
+        entry = await stat(space, path, entry_id=entry_id, conn=conn)
+        if entry.kind != "file":
+            raise DriveError("is_folder", f"{entry.path} is a folder")
+        found, large = await reads.versions(entry.entry_id, rule, conn)
+        head = found[0].seq if found else None
+        dropped, freed = await reads.clearable(space.space_id, entry.entry_id, rule, head, conn)
+    return entry, found, large, dropped, freed
 
 
 async def clear_history(
-    space: Space, entry_id: str, *, before: int | None = None
+    space: Space,
+    entry_id: str,
+    *,
+    before: int | None = None,
+    pinned: int | None | EllipsisType = ...,
+    actor: Actor,
 ) -> tuple[int, int]:
     """Drop a file's old versions (all, or those below seq ``before``),
     keeping the head: ``(versions dropped, bytes that left the counts)``.
-    Bytes another version or entry references stay."""
-    entry_id = _uuid(entry_id, "No such entry")
+    Bytes another version or entry references stay. A memo's record shows
+    who cleared it. For the person only: no surface an agent uses offers it.
+    ``pinned``, when given, is the memo's pinned final as the caller was
+    shown it: the clear keeps that version only while it is pinned, so one
+    whose pin moved since is refused ``changed`` and drops nothing."""
     # It only frees, so it is never refused for room. A clear that dropped
     # anything is a change to the file, which the feed carries.
     async with writes.upkeep(space.space_id, await limits(space)) as tx:
-        cleared = await retention.clear(tx, entry_id, before)
+        found = await tx.file(entry_id)
+        if pinned is not ... and (found.memo.final_seq if found.memo else None) != pinned:
+            raise DriveError(
+                "changed",
+                f"The final version of {found.path} changed since its versions were listed."
+                " List them again before clearing.",
+            )
+        cleared = await retention.clear(tx, found, before)
+        if cleared[0] and found.has_record:
+            await memos.add_event(tx, found, actor, "clear", note=None, cleared=cleared[0])
     if cleared[0]:
         await feed.announce(space.space_id)
     return cleared
@@ -441,18 +469,22 @@ def _blob_user(space: Space) -> str:
     return space.user_id
 
 
-def _note(note: str | None) -> str | None:
+def note_of(note: str | None) -> str | None:
     note = (note or "").strip()
     return note[:NOTE_MAX] or None
 
 
 @asynccontextmanager
-async def _changing(space: Space, bounds: Limits | None = None) -> AsyncIterator[writes.Tx]:
+async def changing(space: Space, bounds: Limits | None = None) -> AsyncIterator[writes.Tx]:
     """A change to the space under its lock; once it commits, a ``changes``
-    call waiting on the space wakes."""
+    call waiting on the space wakes, and each file it gave a new head is
+    handed on: the one place every committed version passes, whatever made
+    it (a save, a rename, a restore, an undo)."""
     async with writes.locked(space.space_id, bounds or await limits(space)) as tx:
         yield tx
     await feed.announce(space.space_id)
+    for entry in tx.heads:
+        extract.after_write(space, entry)
 
 
 async def write(
@@ -466,6 +498,7 @@ async def write(
     note: str | None = None,
     content_type: str | None = None,
     bounds: Limits | None = None,
+    mark: dict[str, Any] | None = None,
 ) -> Entry:
     """Save ``data`` as the file at ``path``, making the folders above it.
 
@@ -473,8 +506,14 @@ async def write(
     whatever file is there; ``if_none_match`` asks that nothing be at the
     path. Saves by one actor under one sitting are one version; the same
     bytes as the head record nothing. ``bounds``: the space's ``limits``
-    when the caller has them already.
+    when the caller has them already. ``mark``: a new file's memo mark
+    (``memos.checked`` keys), set in the save's own transaction, so a file
+    is never seen half made; only with ``if_none_match``.
     """
+    if mark is not None:
+        if not if_none_match or mark.get("memo") is not True:
+            raise DriveError("invalid", "A file is made a memo as it is saved only when new")
+        mark = memos.checked(mark)
     bounds = bounds or await limits(space)
     path = normalize(path)
     is_text = _bytes.kept_as_text(path, data)
@@ -502,6 +541,7 @@ async def write(
                 if_match=if_match,
                 if_none_match=if_none_match,
                 bounds=bounds,
+                note=note,
             )
             await _bytes.upload(blob_user_id, sha, data)
     return await save(
@@ -515,7 +555,15 @@ async def write(
         if_none_match=if_none_match,
         note=note,
         bounds=bounds,
+        then=None if mark is None else _marking(actor, mark),
     )
+
+
+def _marking(actor: Actor, mark: dict[str, Any]) -> Callable[[writes.Tx, Entry], Awaitable[None]]:
+    async def then(tx: writes.Tx, entry: Entry) -> None:
+        await memos.set_mark(tx, entry, actor, mark, note=None)
+
+    return then
 
 
 async def save(
@@ -536,7 +584,7 @@ async def save(
     the space or the store holds already (``blob_user_id``), or ``data``
     for the database. ``then`` runs in the same transaction, for a caller
     whose own record must land with the version."""
-    async with _changing(space, bounds) as tx:
+    async with changing(space, bounds) as tx:
         entry = await tx.save(
             normalize(path),
             ref,
@@ -545,11 +593,12 @@ async def save(
             blob_user_id=blob_user_id,
             if_match=if_match,
             if_none_match=if_none_match,
-            note=_note(note),
+            note=note_of(note),
         )
         if then is not None:
             await then(tx, entry)
-        return entry
+            entry = await tx.entry(entry.entry_id)
+    return entry
 
 
 async def room_for(
@@ -561,6 +610,7 @@ async def room_for(
     if_match: str | None,
     if_none_match: bool,
     bounds: Limits,
+    note: str | None = None,
 ) -> None:
     """Refuse, before a file's bytes move, a save its commit would refuse:
     the commit's own code, run and rolled back, so bytes the space already
@@ -578,44 +628,28 @@ async def room_for(
             blob_user_id=_blob_user(space),
             if_match=if_match,
             if_none_match=if_none_match,
-            note=None,
+            note=note_of(note),
         ),
     )
 
 
 async def mkdir(space: Space, path: str) -> Entry:
-    async with _changing(space) as tx:
+    async with changing(space) as tx:
         return await tx.mkdir(normalize(path))
 
 
 async def move(space: Space, src: str, dst: str) -> Entry:
     """Rename or move ``src`` to ``dst``; a folder takes everything under it."""
-    async with _changing(space) as tx:
+    async with changing(space) as tx:
         return await tx.move(normalize(src), normalize(dst))
 
 
-async def replace(
-    space: Space, src: str, dst: str, *, actor: Actor
-) -> tuple[Entry, str | None]:
-    """Move the file at ``src`` over the file at ``dst`` (a plain move when
-    nothing is there), as a rename over an existing file does: ``dst`` keeps
-    its id and history and takes ``src``'s content as a new version by
-    ``actor``, and ``src`` ends as a tombstone, reported by ``changes`` as
-    deleted, never in the trash, purged after a day. Its bytes live on as
-    ``dst``'s version, so keeping it would only leave every editor's temp
-    file in the person's trash. This is how a program's save by rename (an
-    editor, ``sed -i``) lands.
-
-    A source with earlier versions goes to the trash instead (``changes``
-    reports it deleted the same way), so nothing a replace displaces is
-    lost where the person cannot restore it.
-
-    Returns the entry now at ``dst`` and the id of the source when it ended.
-    Raises ``is_folder`` over a folder and ``not_folder`` for a folder source
-    over a file.
-    """
-    async with _changing(space) as tx:
-        return await tx.replace(normalize(src), normalize(dst), actor)
+async def rename(
+    space: Space, src: str, dst: str, *, actor: Actor, replace: bool
+) -> writes.Renamed:
+    """A rename on a computer through its mount (``writes.Tx.rename``)."""
+    async with changing(space) as tx:
+        return await tx.rename(normalize(src), normalize(dst), actor, replace=replace)
 
 
 async def trash(
@@ -633,16 +667,16 @@ async def trash(
     what is there (``is_folder``, ``not_folder``), and ``empty`` refuses a
     folder that holds anything (``not_empty``), as ``rmdir`` does.
     ``if_match``: only while the file's head is that sha256 (``changed``)."""
-    async with _changing(space) as tx:
-        return await tx.trash(normalize(path), actor, kind, empty, if_match)
+    async with changing(space) as tx:
+        return await trash_rows.trash(tx, normalize(path), actor, kind, empty, if_match)
 
 
 async def restore(space: Space, trash_id: str) -> list[Entry]:
     """Bring a trash item back. Each top entry goes beside a live one on its
     path under a numbered name, and folders it sat in are made again."""
     trash_id = _uuid(trash_id, "Nothing in the trash under that id")
-    async with _changing(space) as tx:
-        return await tx.restore(trash_id)
+    async with changing(space) as tx:
+        return await trash_rows.restore(tx, trash_id)
 
 
 async def purge(space: Space, trash_id: str | None = None) -> int:
@@ -652,7 +686,7 @@ async def purge(space: Space, trash_id: str | None = None) -> int:
     if trash_id is not None:
         trash_id = _uuid(trash_id, "Nothing in the trash under that id")
     async with writes.upkeep(space.space_id, await limits(space)) as tx:
-        purged = await tx.purge(trash_id, None)
+        purged = await trash_rows.purge(tx, trash_id, None)
     if tx.changed:
         await feed.announce(space.space_id)
     return purged
@@ -661,7 +695,7 @@ async def purge(space: Space, trash_id: str | None = None) -> int:
 async def maintain(space_id: str) -> None:
     """What the sweep does for a space, under one lock: recount it (a drift
     is corrected and logged), purge the trash and tombstones past their
-    days, trim history the rule says is due, free released copies past
+    days, drop undo copies whose time is up, free released copies past
     their grace; committing bounds the trash."""
     bounds = await _space_limits(space_id)
     # Never refused for room: a recount that raises the live bytes of a
@@ -671,8 +705,8 @@ async def maintain(space_id: str) -> None:
         if drift:
             # Counted wrong somewhere; healed here, and shown so it is found.
             logger.warning("[Drive] space %s counters drifted, corrected: %s", space_id, drift)
-        await tx.purge(None, _config().trash_days)
-        await retention.trim(tx)
+        await trash_rows.purge(tx, None, _config().trash_days)
+        await retention.expire(tx)
         await retention.free_released(tx, older_than_seconds=bounds.history.grace_seconds)
     # Freeing released copies moves no count a client reads; the rest take a
     # change number when they change anything, the trash's bound at commit too.
@@ -680,9 +714,11 @@ async def maintain(space_id: str) -> None:
         await feed.announce(space_id)
 
 
-async def restore_version(space: Space, entry_id: str, seq: int, *, actor: Actor) -> Entry:
+async def restore_version(
+    space: Space, entry_id: str, seq: int, *, actor: Actor, note: str | None = None
+) -> Entry:
     """Make version ``seq``'s content the head again, as a new version that
     names the one it came from."""
-    entry_id = _uuid(entry_id, "No such entry")
-    async with _changing(space) as tx:
-        return await tx.restore_version(entry_id, seq, actor)
+    async with changing(space) as tx:
+        return await tx.restore_version(entry_id, seq, actor, note_of(note))
+

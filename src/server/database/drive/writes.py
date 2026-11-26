@@ -13,28 +13,29 @@ so the case a caller sends never decides which entry it meets.
 from __future__ import annotations
 
 import dataclasses
-import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Literal
+from datetime import datetime
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
-from src.server.database.drive import reads, retention
+from src.server.database.drive import aside, changes, reads, retention, trash
+from src.server.database.drive.policy import UNDO_TARGET_SQL, folds
 from src.server.database.drive.keys import (
     MAX_DEPTH,
     MAX_PATH_BYTES,
-    MAX_SEGMENT_BYTES,
     check,
+    path_bytes,
+    path_depth,
     path_key,
+    split_path,
 )
 from src.server.database.drive.records import (
     ENTRY_COLUMNS,
     ENTRY_FROM,
-    EXPIRED_SQL,
-    TOMBSTONE_HOURS,
     Actor,
     DriveError,
     Entry,
@@ -43,9 +44,6 @@ from src.server.database.drive.records import (
 )
 from src.server.database.pool import get_db_connection
 
-#: How long after one delete another by the same actor in the same sitting
-#: joins its trash item.
-TRASH_BURST_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -66,21 +64,24 @@ class ContentGone(DriveError):
         super().__init__("not_found", "The space no longer holds that content")
 
 
+@dataclass(frozen=True)
+class Renamed:
+    """What a rename on a computer left at its destination."""
+
+    #: The entry at the destination now.
+    entry: Entry
+    #: The entry that ended: the file replaced, or the source whose bytes
+    #: the destination took.
+    ended_id: str | None
+    #: Whether ``entry`` is the source itself rather than a file that took
+    #: its bytes.
+    carried: bool
+    #: The trash id, when the source was a memo and went to the trash.
+    trashed_memo: str | None = None
+
+
 class _Trial(Exception):
     """Rolls back a change tried only to learn whether it would commit."""
-
-
-def _split(path: str) -> tuple[str, str]:
-    parent, _, name = path.rpartition("/")
-    return parent, name
-
-
-def _depth(path: str) -> int:
-    return path.count("/") + 1
-
-
-def _bytes(path: str) -> int:
-    return len(path.encode("utf-8"))
 
 
 def refuse_conflict(found: Entry | None, if_match: str | None, if_none_match: bool) -> None:
@@ -97,19 +98,6 @@ def refuse_conflict(found: Entry | None, if_match: str | None, if_none_match: bo
         raise DriveError("changed", "The file changed since that version was read")
 
 
-def same_sitting(head: Actor | None, actor: Actor) -> bool:
-    """Whether a save folds into the head version. A restored version is
-    recorded with no sitting, so nothing ever folds into it."""
-    return (
-        head is not None
-        and actor.sitting is not None
-        and head.sitting == actor.sitting
-        and head.kind == actor.kind
-        and head.user_id == actor.user_id
-        and head.agent == actor.agent
-    )
-
-
 class Tx:
     """One locked transaction on a space, and the changes made in it."""
 
@@ -118,6 +106,11 @@ class Tx:
         self.space_id = space_id
         self.limits = limits
         self._seq: int | None = None
+        #: Each file this transaction gave a new head, by id.
+        self.written: set[str] = set()
+        #: Those still live, as the transaction leaves them: read once it is
+        #: done, what the caller hands on once it commits.
+        self.heads: list[Entry] = []
 
     # --- building blocks ---------------------------------------------------
 
@@ -152,6 +145,10 @@ class Tx:
             self.space_id, path=path, entry_id=entry_id, conn=self.cur.connection
         )
 
+    async def file(self, entry_id: str) -> Entry:
+        """The live file ``entry_id`` names, under the lock, or the refusal."""
+        return await reads.live_file(self.space_id, entry_id, conn=self.cur.connection)
+
     async def entry(self, entry_id: str) -> Entry:
         row = await self.one(
             f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM} WHERE e.entry_id = %(id)s",
@@ -159,6 +156,12 @@ class Tx:
         )
         assert row is not None
         return entry_from_row(row)
+
+    async def now(self) -> datetime:
+        """The transaction's time, the one every ``now()`` in it reads."""
+        row = await self.one("SELECT now() AS now", {})
+        assert row is not None
+        return row["now"]
 
     async def check_room(self, adding: int) -> None:
         """Every row counts, the trash and delete notices included: a burst
@@ -218,7 +221,7 @@ class Tx:
         base, missing = await self.resolve_parent(path)
         await self.check_room(len(missing) + extra)
         parent = await self.make_folders(base, missing)
-        name = _split(path)[1]
+        name = split_path(path)[1]
         stored = f"{parent}/{name}" if parent else name
         if checked:
             check(stored)
@@ -236,7 +239,7 @@ class Tx:
         else:
             rows = "entry_id = ANY(%(ids)s::uuid[])"
             also = "ended = NULL, deleted_at = NULL, trash_id = NULL, deleted_by = NULL, trash_sitting = NULL"
-        parent, name = _split(new)
+        parent, name = split_path(new)
         await self.cur.execute(
             f"""
             UPDATE drive_entries SET
@@ -260,28 +263,6 @@ class Tx:
                 "seq": await self.seq(),
                 "space": self.space_id,
                 "ids": revive,
-            },
-        )
-
-    async def end(self, entry: Entry, actor: Actor, trash_id: str | None) -> None:
-        """Delete ``entry`` and everything under it: into the trash item
-        ``trash_id``, or with none as a tombstone, kept only as the notice
-        of its end."""
-        await self.cur.execute(
-            "UPDATE drive_entries SET deleted_at = now(), ended = %(ended)s,"
-            " trash_id = %(trash)s, deleted_by = %(by)s, trash_sitting = %(sitting)s,"
-            " changed_seq = %(seq)s"
-            " WHERE space_id = %(space)s AND deleted_at IS NULL"
-            " AND (entry_id = %(id)s OR starts_with(path, %(path)s || '/'))",
-            {
-                "ended": "tombstone" if trash_id is None else "trash",
-                "trash": trash_id,
-                "by": actor.user_id,
-                "sitting": actor.sitting,
-                "seq": await self.seq(),
-                "space": self.space_id,
-                "id": entry.entry_id,
-                "path": entry.path,
             },
         )
 
@@ -357,12 +338,13 @@ class Tx:
         actor: Actor,
         note: str | None,
         restored_from: int | None,
+        change_id: str | None,
     ) -> None:
         await self.cur.execute(
             "INSERT INTO drive_versions (entry_id, space_id, seq, sha256, byte_len,"
             " content_type, is_text, actor_kind, actor_user_id, agent, via, thread_id,"
-            " run_id, workspace_id, computer_id, sitting, note, restored_from)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " run_id, workspace_id, computer_id, sitting, note, restored_from, change_id)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 entry_id,
                 self.space_id,
@@ -382,6 +364,7 @@ class Tx:
                 actor.sitting,
                 note,
                 restored_from,
+                change_id,
             ),
         )
 
@@ -400,10 +383,14 @@ class Tx:
         one version; the same bytes as the head record nothing."""
         if found is not None and found.sha256 == content.sha256:
             return found
+        change_id = None
+        if found is not None:
+            # A memo the agent changes says why through its check-out.
+            change_id, note = await changes.for_save(self, found, actor, note)
         seq = await self.seq()
         if found is None:
             path = await self.place(path, 1)
-            parent, name = _split(path)
+            parent, name = split_path(path)
             row = await self.one(
                 "INSERT INTO drive_entries (space_id, path, path_key, parent, name, kind,"
                 " head_seq, changed_seq) VALUES (%(space)s, %(path)s, %(key)s, %(parent)s,"
@@ -417,9 +404,9 @@ class Tx:
                     "seq": seq,
                 },
             )
-            await self.record_version(row["id"], 1, content, actor, note, restored_from)
-            return await self.entry(row["id"])
-        if same_sitting(found.modified_by, actor):
+            await self.record_version(row["id"], 1, content, actor, note, restored_from, None)
+            return await self.wrote(row["id"])
+        if folds(found, actor, change_id):
             version = found.head_seq
             await self.cur.execute(
                 "UPDATE drive_versions SET sha256 = %s, byte_len = %s, content_type = %s,"
@@ -446,17 +433,34 @@ class Tx:
             await retention.release(self, [found.sha256])
         else:
             version = (found.head_seq or 0) + 1
-            await self.record_version(found.entry_id, version, content, actor, note, restored_from)
+            await self.record_version(
+                found.entry_id, version, content, actor, note, restored_from, change_id
+            )
         await self.cur.execute(
             "UPDATE drive_entries SET head_seq = %s, modified_at = now(), changed_seq = %s"
             " WHERE entry_id = %s",
             (version, seq, found.entry_id),
         )
-        if version != found.head_seq:
-            await retention.trim(self, found.entry_id)
-        return await self.entry(found.entry_id)
+        # A save folded into the head is still the file's last save.
+        await retention.keep(self, [found.entry_id], saved=True)
+        return await self.wrote(found.entry_id)
 
-    async def _found(self, path: str) -> Entry:
+    async def wrote(self, entry_id: str) -> Entry:
+        """The file as it now stands, noted in ``written``."""
+        self.written.add(entry_id)
+        return await self.entry(entry_id)
+
+    async def _read_heads(self) -> None:
+        if not self.written:
+            return
+        rows = await self.all(
+            f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM}"
+            " WHERE e.entry_id = ANY(%(ids)s::uuid[]) AND e.deleted_at IS NULL",
+            {"ids": list(self.written)},
+        )
+        self.heads = [entry_from_row(r) for r in rows]
+
+    async def found(self, path: str) -> Entry:
         found = await self.live(path)
         if found is None:
             raise DriveError("not_found", f"Nothing at {path}")
@@ -480,6 +484,8 @@ class Tx:
         holds) as the file at ``path``."""
         found = await self.live(path)
         refuse_conflict(found, if_match, if_none_match)
+        if found is None and await aside.reclaim(self, path, actor):
+            found = await self.live(path)
         if found is not None and found.sha256 == content.sha256:
             return found
         await self.retain(content, data=data, blob_user_id=blob_user_id)
@@ -491,12 +497,19 @@ class Tx:
             if found.kind != "folder":
                 raise DriveError("exists", f"{found.path} is a file")
             return found
-        parent, name = _split(await self.place(path, 1))
+        parent, name = split_path(await self.place(path, 1))
         made = await self.make_folders(parent, [name])
-        return await self._found(made)
+        return await self.found(made)
 
     async def move(self, src: str, dst: str) -> Entry:
-        return await self._move(await self._found(src), dst)
+        """A move through the Drive's API (the app, ``la``), never a
+        command's save: a memo it moves stays where it lands, not taken back
+        by a command that renamed it aside (``aside.forget``)."""
+        found = await self.found(src)
+        moved = await self._move(found, dst)
+        if found.is_memo and moved.path != found.path:
+            await aside.forget(self, found.entry_id)
+        return moved
 
     async def _move(self, found: Entry, dst: str) -> Entry:
         src = found.path
@@ -519,8 +532,8 @@ class Tx:
                 {"space": self.space_id, "src": src},
             )
             if deepest["bytes"] and (
-                deepest["bytes"] - _bytes(src) + _bytes(dst) > MAX_PATH_BYTES
-                or deepest["depth"] - _depth(src) + _depth(dst) > MAX_DEPTH
+                deepest["bytes"] - path_bytes(src) + path_bytes(dst) > MAX_PATH_BYTES
+                or deepest["depth"] - path_depth(src) + path_depth(dst) > MAX_DEPTH
             ):
                 raise DriveError(
                     "invalid_path", "A path under the folder would grow past the limit"
@@ -528,119 +541,73 @@ class Tx:
         await self.relocate(found.entry_id, src, dst)
         return await self.entry(found.entry_id)
 
-    async def replace(self, src: str, dst: str, actor: Actor) -> tuple[Entry, str | None]:
-        found = await self._found(src)
-        taken = await self.live(dst)
+    async def rename(self, src: str, dst: str, actor: Actor, *, replace: bool) -> Renamed:
+        """A rename on a computer: onto a free name, or with ``replace`` over
+        a file, as rename(2) does (``exists`` without it). Over a file,
+        ``dst`` keeps its id and history and takes ``src``'s content as a new
+        version by ``actor``, and ``src`` ends as a tombstone, reported by
+        ``changes`` as deleted, never in the trash, purged after a day: its
+        bytes live on as ``dst``'s version, so keeping it would only leave
+        every editor's temp file in the person's trash. This is how a
+        program's save by rename (an editor, ``sed -i``) lands. A source with
+        earlier versions or a memo's record goes to the trash instead, where
+        the person can restore it. A memo moved onto an ordinary file keeps
+        its identity at ``dst``, and the file there goes to the trash. What
+        lands at a name a memo was renamed away from by the same command
+        takes the memo back (``aside``). Raises ``is_folder`` over a folder
+        and ``not_folder`` for a folder source over a file."""
+        found, taken = await self.found(src), await self.live(dst)
+        if taken is not None and taken.entry_id != found.entry_id and not replace:
+            raise DriveError("exists", f"{taken.path} already exists")
+        # Only a file is a save by rename; a folder moves into the free name.
+        if (
+            taken is None
+            and found.kind == "file"
+            and await aside.reclaim(self, dst, actor, renaming=found.entry_id)
+        ):
+            found, taken = await self.found(src), await self.live(dst)
         if taken is None or taken.entry_id == found.entry_id:
-            return await self._move(found, dst), None
+            return Renamed(await self._carry(found, dst, actor), None, carried=True)
         if found.kind != "file":
             # As rename(2) answers a folder moved over a file.
             raise DriveError("not_folder", f"{taken.path} is a file, not a folder")
         if taken.kind != "file":
             raise DriveError("is_folder", f"{taken.path} is a folder")
+        if aside.keeps_source(found, taken):
+            # A memo moved onto an ordinary file is still that memo; what it
+            # replaced goes to the trash, as an overwrite would lose it.
+            await trash.end(self, taken, actor, await trash.item_for(self, actor))
+            return Renamed(await self._carry(found, dst, actor), taken.entry_id, carried=True)
         head = await self.stored(found.entry_id, found.head_seq)
         assert head is not None  # a live file's head version always exists
         target = await self.write(taken, taken.path, head, actor)
         # The head lives on as the target's version; earlier versions of the
-        # source would end with a notice nobody can restore, so a source
-        # with any goes to the trash instead, where it can be.
-        history = await self.one(
+        # source, or its record as a memo, would end with a notice nobody
+        # can restore, so a source with either goes to the trash instead,
+        # where it can be.
+        kept = found.has_record or await self.one(
             "SELECT 1 AS n FROM drive_versions WHERE entry_id = %(id)s AND seq <> %(head)s LIMIT 1",
             {"id": found.entry_id, "head": found.head_seq},
         )
-        await self.end(found, actor, None if history is None else await self._trash_id(actor))
-        return target, found.entry_id
-
-    async def trash(
-        self,
-        path: str,
-        actor: Actor,
-        kind: Literal["file", "folder"] | None,
-        empty: bool,
-        if_match: str | None = None,
-    ) -> str:
-        found = await self._found(path)
-        if if_match is not None and (found.kind != "file" or found.sha256 != if_match):
-            # A delete of the version the caller saw, not of whatever is there now.
-            raise DriveError("changed", "The file changed since that version was read")
-        if kind == "file" and found.kind != "file":
-            raise DriveError("is_folder", f"{found.path} is a folder")
-        if kind == "folder" and found.kind != "folder":
-            raise DriveError("not_folder", f"{found.path} is a file, not a folder")
-        if empty and found.kind == "folder":
-            inside = await self.one(
-                "SELECT 1 AS n FROM drive_entries WHERE space_id = %(space)s"
-                " AND deleted_at IS NULL AND parent = %(path)s LIMIT 1",
-                {"space": self.space_id, "path": found.path},
-            )
-            if inside is not None:
-                raise DriveError("not_empty", f"{found.path} is not empty")
-        trash_id = await self._trash_id(actor)
-        await self.end(found, actor, trash_id)
-        return trash_id
-
-    async def _trash_id(self, actor: Actor) -> str:
-        """``rm -r`` on a computer arrives one call per file: a delete joins
-        the item the same actor's last one in the same sitting made, if that
-        was within TRASH_BURST_SECONDS, so the person finds one item. One
-        descent of ``ix_drive_entries_burst``, however long the burst."""
-        recent = None
-        if actor.sitting is not None:
-            recent = await self.one(
-                "SELECT trash_id::text AS trash_id FROM drive_entries"
-                " WHERE space_id = %(space)s AND ended = 'trash'"
-                " AND trash_sitting = %(sitting)s AND deleted_by = %(by)s"
-                " AND deleted_at > now() - make_interval(secs => %(burst)s)"
-                " ORDER BY deleted_at DESC LIMIT 1",
-                {
-                    "space": self.space_id,
-                    "sitting": actor.sitting,
-                    "by": actor.user_id,
-                    "burst": TRASH_BURST_SECONDS,
-                },
-            )
-        return recent["trash_id"] if recent is not None else str(uuid.uuid4())
-
-    async def restore(self, trash_id: str) -> list[Entry]:
-        rows = await self.all(
-            "SELECT entry_id::text AS entry_id, path, kind, changed_seq FROM drive_entries"
-            " WHERE space_id = %(space)s AND trash_id = %(trash)s",
-            {"space": self.space_id, "trash": trash_id},
+        trash_id = await trash.item_for(self, actor) if kept else None
+        await trash.end(self, found, actor, trash_id)
+        return Renamed(
+            target, found.entry_id, carried=False, trashed_memo=trash_id if found.is_memo else None
         )
-        if not rows:
-            raise DriveError("not_found", "Nothing in the trash under that id")
-        # Where each folder this restore brought back landed, by its old key:
-        # a later delete of the same burst under it (``rm -r`` deletes the
-        # children first) follows it there, not into a folder made since.
-        landed: dict[str, str] = {}
-        for top, members in _roots(rows):
-            old = top["path"]
-            below = max(_bytes(m["path"]) for m in members) - _bytes(old)
-            wanted = await self.place(_under_landed(old, landed), 0, checked=False)
-            target, n = wanted, 0
-            while _bytes(target) + below > MAX_PATH_BYTES or await self.live(target) is not None:
-                n += 1
-                if n > 1000:
-                    raise DriveError("exists", f"No free name beside {wanted}")
-                target = beside(wanted, n, folder=top["kind"] == "folder", below=below)
-            ids = [m["entry_id"] for m in members]
-            await self.relocate(top["entry_id"], old, target, revive=ids)
-            if top["kind"] == "folder" and target != old:
-                landed[path_key(old)] = target
-        restored = await self.all(
-            f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM}"
-            " WHERE e.entry_id = ANY(%(ids)s::uuid[]) ORDER BY e.path",
-            {"ids": [r["entry_id"] for r in rows]},
-        )
-        return [entry_from_row(r) for r in restored]
 
-    async def restore_version(self, entry_id: str, seq: int, actor: Actor) -> Entry:
-        found = await self.live(entry_id=entry_id)
-        if found is None:
-            raise DriveError("not_found", "No such entry")
-        if found.kind != "file":
-            raise DriveError("is_folder", f"{found.path} is a folder")
-        version = await self.stored(entry_id, seq)
+    async def _carry(self, found: Entry, dst: str, actor: Actor) -> Entry:
+        """``found`` moved to ``dst`` as itself, noted for ``aside`` when a
+        memo left its name."""
+        moved = await self._move(found, dst)
+        if moved.path != found.path:
+            await aside.note(self, found, moved.path, actor)
+        return moved
+
+    async def restore_version(
+        self, entry_id: str, seq: int, actor: Actor, note: str | None = None
+    ) -> Entry:
+        found = await self.file(entry_id)
+        version = await self.stored(found.entry_id, seq)
         if version is None:
             raise DriveError("not_found", f"{found.path} has no version {seq}")
         return await self.write(
@@ -648,53 +615,32 @@ class Tx:
             found.path,
             version,
             dataclasses.replace(actor, sitting=None),
+            note=note,
             restored_from=seq,
         )
 
-    async def purge(
-        self, trash_id: str | None, older_than_days: int | None, *, entry_id: str | None = None
-    ) -> int:
-        """Delete for good: one trash item (``trash_id``), what is past its
-        days (``older_than_days``), the deleted entry ``entry_id`` (a
-        replaced file's notice), or with none the whole trash."""
-        params: dict[str, Any] = {"space": self.space_id}
-        where = "e.space_id = %(space)s AND "
-        if entry_id is not None and trash_id is None:
-            where += "e.entry_id = %(entry)s::uuid AND e.deleted_at IS NOT NULL"
-            params["entry"] = entry_id
-        elif older_than_days is not None:
-            where += EXPIRED_SQL
-            params.update(days=older_than_days, hours=TOMBSTONE_HOURS)
-        elif trash_id is not None:
-            where += "e.trash_id = %(trash)s"
-            params["trash"] = trash_id
-        else:
-            where += "e.ended = 'trash'"
-        shas = await self.all(
-            "SELECT DISTINCT v.sha256 FROM drive_versions v"
-            f" JOIN drive_entries e ON e.entry_id = v.entry_id WHERE {where}",
-            params,
+    async def undo(
+        self, entry_id: str, actor: Actor, if_match: str | None, note: str | None
+    ) -> Entry:
+        """Put back the state before the last save (``UNDO_TARGET_SQL``) as
+        a new version. The save undone is then the version below the head,
+        so undoing again redoes it. A file not a live memo can be undone
+        only within its window: past it, or after an un-mark, the version
+        below may be a former memo's record that outlives the window, which
+        is not a copy the file still offers to go back to."""
+        found = await self.file(entry_id)
+        refuse_conflict(found, if_match, False)
+        # On the database's clock, as the sweep's ``expire``: a window past
+        # its end is over even before the sweep clears it.
+        below = await self.one(
+            f"SELECT {UNDO_TARGET_SQL} AS seq FROM drive_entries e WHERE e.entry_id = %(id)s"
+            " AND (%(memo)s OR e.undo_until > now())",
+            {"id": found.entry_id, "memo": found.is_memo},
         )
-        gone = await self.one(
-            f"WITH gone AS (DELETE FROM drive_entries e WHERE {where}"
-            " RETURNING e.changed_seq)"
-            " SELECT count(*) AS n, max(changed_seq) AS top FROM gone",
-            params,
-        )
-        if not gone["n"]:
-            if trash_id is not None:
-                raise DriveError("not_found", "Nothing in the trash under that id")
-            return 0
-        await self.cur.execute(
-            "UPDATE drive_spaces SET purged_seq = GREATEST(purged_seq, %s)"
-            " WHERE space_id = %s",
-            (gone["top"], self.space_id),
-        )
-        # The trash and its bytes changed with no entry to show it: a change
-        # number of its own moves every cursor, and a feed answers it empty.
-        await self.seq()
-        await retention.release(self, [r["sha256"] for r in shas])
-        return gone["n"]
+        if below is None or below["seq"] is None:
+            raise DriveError("not_found", "No earlier copy to go back to")
+        return await self.restore_version(found.entry_id, below["seq"], actor, note)
+
 
 
 async def trial(space_id: str, limits: Limits, change: Callable[[Tx], Awaitable[Any]]) -> None:
@@ -740,72 +686,13 @@ async def _locked(
             live_before = await retention.opening(tx) if allowance else None
             try:
                 yield tx
+                await tx._read_heads()
                 # The allowance and the trash's bound are checked once, on what
                 # the whole change left, whatever path it took there.
-                await retention.settle(tx, live_before, allowance=allowance)
+                seen = await retention.settle(tx, live_before, allowance=allowance)
+                await trash.bound(tx, seen)
                 if trial:
                     raise _Trial()
             except psycopg.errors.UniqueViolation:
                 # The lock makes this unreachable; kept as the answer it would be.
                 raise DriveError("exists", "Something already has that name") from None
-
-
-def _cut(text: str, budget: int) -> str:
-    """``text`` cut to at most ``budget`` bytes of UTF-8, on a character."""
-    return text.encode("utf-8")[: max(budget, 0)].decode("utf-8", "ignore").rstrip(" ")
-
-
-def beside(path: str, n: int, *, folder: bool, below: int = 0) -> str:
-    """``path`` renamed ``name (n).ext`` (a folder: ``name (n)``), its stem
-    shortened so the name and, with ``below`` more bytes under it, every
-    path under it keep the limits.
-
-    Raises:
-        DriveError: ``invalid_path``, when no stem fits.
-    """
-    parent, name = _split(path)
-    stem, dot, ext = name.rpartition(".")
-    if folder or not stem or not dot:
-        stem, dot, ext = name, "", ""
-    suffix = f" ({n}){dot}{ext}"
-    room = MAX_PATH_BYTES - below - (_bytes(parent) + 1 if parent else 0)
-    budget = min(MAX_SEGMENT_BYTES, room) - _bytes(suffix)
-    short = _cut(stem, budget)
-    if not short:
-        raise DriveError(
-            "invalid_path",
-            f"{path} cannot be restored beside what now has its name; "
-            "move or rename that first",
-        )
-    named = f"{short}{suffix}"
-    out = f"{parent}/{named}" if parent else named
-    check(out)
-    return out
-
-
-def _under_landed(path: str, landed: dict[str, str]) -> str:
-    """``path`` under where its nearest restored ancestor landed; as it is
-    when none moved."""
-    segments = path.split("/")
-    for depth in range(len(segments) - 1, 0, -1):
-        to = landed.get(path_key("/".join(segments[:depth])))
-        if to is not None:
-            return "/".join([to, *segments[depth:]])
-    return path
-
-
-def _roots(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
-    """A trash item's deletes, each its top entry with the rows deleted with
-    it, shallowest first: one delete has one, a burst of deletes may have
-    many. Grouped by the delete (its change number), never by path: a burst
-    may hold two generations of one path (a file deleted, made again and
-    deleted again), which were never live at once and so cannot come back
-    as one; the later is put beside the earlier."""
-    deletes: dict[int, list[dict[str, Any]]] = {}
-    for row in rows:
-        deletes.setdefault(row["changed_seq"], []).append(row)
-    groups = []
-    for members in deletes.values():
-        top = min(members, key=lambda r: (_depth(r["path"]), r["path"]))
-        groups.append((top, members))
-    return sorted(groups, key=lambda g: (_depth(g[0]["path"]), g[0]["path"], g[0]["changed_seq"]))

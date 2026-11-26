@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from psycopg.rows import dict_row
 
 from src.server.database.drive.keys import path_key
+from src.server.database.drive.policy import CLEARED, HISTORY_SQL
 from src.server.database.drive.records import (
-    CLEARING_SQL,
     COUNTS_SQL,
     ENTRY_COLUMNS,
     ENTRY_FROM,
@@ -23,31 +25,42 @@ from src.server.database.drive.records import (
     Space,
     TrashItem,
     Version,
+    a_file,
     entry_from_row,
-    history_sql,
     version_from_row,
 )
 from src.server.database.pool import get_db_connection
+from src.server.utils.pg_sanitize import normalize_uuid
 
 _SPACE_COLUMNS = "space_id::text AS space_id, kind, user_id, created_at"
 
 
-async def _rows(sql: str, params: dict[str, Any], conn=None) -> list[dict[str, Any]]:
+async def fetch(sql: str, params: dict[str, Any], conn=None) -> list[dict[str, Any]]:
+    """The rows ``sql`` reads, as dicts, on ``conn`` or a pooled connection."""
     async with get_db_connection(conn) as c:
         async with c.cursor(row_factory=dict_row) as cur:
             await cur.execute(sql, params)
             return list(await cur.fetchall())
 
 
+@asynccontextmanager
+async def snapshot() -> AsyncIterator[Any]:
+    """A connection whose reads all see one committed state, from its first."""
+    async with get_db_connection() as conn:
+        async with conn.transaction():
+            await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            yield conn
+
+
 async def personal_space(user_id: str) -> Space:
     """The user's personal space, made on first use."""
-    found = await _rows(
+    found = await fetch(
         f"SELECT {_SPACE_COLUMNS} FROM drive_spaces"
         " WHERE kind = 'personal' AND user_id = %(user_id)s",
         {"user_id": user_id},
     )
     if not found:
-        found = await _rows(
+        found = await fetch(
             "INSERT INTO drive_spaces (kind, user_id) VALUES ('personal', %(user_id)s)"
             " ON CONFLICT (user_id) WHERE kind = 'personal' DO NOTHING"
             f" RETURNING {_SPACE_COLUMNS}",
@@ -55,7 +68,7 @@ async def personal_space(user_id: str) -> Space:
         )
     if not found:
         # Another request made it between the two statements.
-        found = await _rows(
+        found = await fetch(
             f"SELECT {_SPACE_COLUMNS} FROM drive_spaces"
             " WHERE kind = 'personal' AND user_id = %(user_id)s",
             {"user_id": user_id},
@@ -64,7 +77,7 @@ async def personal_space(user_id: str) -> Space:
 
 
 async def get_space(space_id: str) -> Space | None:
-    found = await _rows(
+    found = await fetch(
         f"SELECT {_SPACE_COLUMNS} FROM drive_spaces WHERE space_id = %(id)s",
         {"id": space_id},
     )
@@ -78,7 +91,7 @@ async def live_entry(
         where, params = "e.entry_id = %(id)s", {"id": entry_id}
     else:
         where, params = "e.path_key = %(key)s", {"key": path_key(path or "")}
-    found = await _rows(
+    found = await fetch(
         f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM}"
         f" WHERE e.space_id = %(space)s AND e.deleted_at IS NULL AND {where}",
         {"space": space_id, **params},
@@ -87,8 +100,16 @@ async def live_entry(
     return entry_from_row(found[0]) if found else None
 
 
+async def live_file(space_id: str, entry_id: str, conn=None) -> Entry:
+    """The live file ``entry_id`` names, any spelling of an id; refused as
+    ``a_file`` refuses."""
+    canonical = normalize_uuid(entry_id)
+    found = await live_entry(space_id, entry_id=canonical, conn=conn) if canonical else None
+    return a_file(found)
+
+
 async def children(space_id: str, parent: str) -> list[Entry]:
-    rows = await _rows(
+    rows = await fetch(
         f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM}"
         " WHERE e.space_id = %(space)s AND e.deleted_at IS NULL AND e.parent = %(parent)s"
         " ORDER BY e.kind DESC, lower(e.name)",
@@ -107,7 +128,7 @@ _AT_OR_BELOW = f"(e.path_key = %(under_key)s OR ({_BELOW}))"
 async def subtree(space_id: str, under: str) -> list[Entry]:
     """Every live entry below ``under`` (a folder's own path), or the whole
     space for ``''``."""
-    rows = await _rows(
+    rows = await fetch(
         f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM}"
         " WHERE e.space_id = %(space)s AND e.deleted_at IS NULL"
         + (f" AND {_BELOW}" if under else "")
@@ -117,15 +138,22 @@ async def subtree(space_id: str, under: str) -> list[Entry]:
     return [entry_from_row(r) for r in rows]
 
 
-async def versions(entry_id: str, rule: HistoryRule) -> tuple[list[Version], bool]:
-    """A file's versions, newest first, each with ``expires_at`` from the
-    history rule, and whether the head is too large to keep once replaced."""
-    rows = await _rows(
-        history_sql("entry")
-        + f" SELECT {VERSION_COLUMNS}, h.goes_at AS expires_at, h.too_large AND h.is_head AS head_large"
+async def versions(
+    entry_id: str, rule: HistoryRule, conn=None
+) -> tuple[list[Version], bool]:
+    """A file's versions, newest first, and whether its head is too large to
+    keep as an undo copy once replaced. ``expires_at`` is the undo copy's
+    end (``policy.HISTORY_SQL``): the file's undo window."""
+    rows = await fetch(
+        f"WITH {HISTORY_SQL}"
+        f" SELECT {VERSION_COLUMNS},"
+        " CASE WHEN h.role = 'undo' THEN e.undo_until END AS expires_at,"
+        " (h.role = 'head' AND NOT h.small AND NOT h.memo) AS head_large"
         " FROM drive_versions v JOIN history h ON h.entry_id = v.entry_id AND h.seq = v.seq"
+        " JOIN drive_entries e ON e.entry_id = v.entry_id"
         " ORDER BY v.seq DESC",
-        {"entry": entry_id, **rule.params},
+        {"ids": [entry_id], "max": rule.max_bytes},
+        conn,
     )
     # Popped from every row before any() looks: it stops at the first true.
     flags = [r.pop("head_large") for r in rows]
@@ -133,14 +161,20 @@ async def versions(entry_id: str, rule: HistoryRule) -> tuple[list[Version], boo
     return [version_from_row(r) for r in rows], large
 
 
-async def history_bytes(space_id: str, entry_id: str, head_seq: int | None) -> int:
-    """The bytes clearing a file's whole history would take out of the
-    counts (``CLEARING_SQL``, the clear's own definition): those no version
-    left behind references."""
-    rows = await _rows(
-        f"WITH {CLEARING_SQL}"
+async def clearable(
+    space_id: str, entry_id: str, rule: HistoryRule, before: int | None = None, conn=None
+) -> tuple[int, int]:
+    """What clearing a file's history drops, all of it or what lies below
+    seq ``before``: how many versions (those ``policy.CLEARED`` names, as the
+    clear reads them) and the bytes it takes out of the counts, theirs that
+    no version left behind references."""
+    rows = await fetch(
+        f"WITH {HISTORY_SQL},"
+        " dropped AS (SELECT seq, sha256 FROM history WHERE role = ANY(%(roles)s)"
+        " AND (%(before)s::int IS NULL OR seq < %(before)s::int))"
         """
-        SELECT (SELECT COALESCE(sum(c.byte_len), 0) FROM drive_contents c
+        SELECT (SELECT count(*) FROM dropped) AS versions,
+               (SELECT COALESCE(sum(c.byte_len), 0) FROM drive_contents c
                  WHERE c.space_id = %(space)s AND c.released_at IS NULL
                    AND c.sha256 IN (SELECT sha256 FROM dropped)
                    AND NOT EXISTS (
@@ -149,13 +183,21 @@ async def history_bytes(space_id: str, entry_id: str, head_seq: int | None) -> i
                           AND NOT (o.entry_id = %(id)s
                                    AND o.seq IN (SELECT seq FROM dropped)))) AS n
         """,
-        {"space": space_id, "id": entry_id, "head": head_seq, "before": None},
+        {
+            "space": space_id,
+            "id": entry_id,
+            "ids": [entry_id],
+            "max": rule.max_bytes,
+            "roles": list(CLEARED),
+            "before": before,
+        },
+        conn,
     )
-    return int(rows[0]["n"])
+    return int(rows[0]["versions"]), int(rows[0]["n"])
 
 
 async def content_of(space_id: str, entry_id: str, seq: int) -> Content | None:
-    found = await _rows(
+    found = await fetch(
         "SELECT c.space_id::text AS space_id, c.sha256, c.byte_len AS size, v.is_text,"
         " v.content_type, c.blob_user_id"
         " FROM drive_versions v JOIN drive_contents c"
@@ -183,7 +225,7 @@ async def held_bytes(space_id: str, sha256: str, offset: int, length: int) -> by
 
 async def content_by_sha(space_id: str, sha256: str) -> Content | None:
     """Content the space holds under ``sha256``, whichever version has it."""
-    found = await _rows(
+    found = await fetch(
         "SELECT c.space_id::text AS space_id, c.sha256, c.byte_len AS size, c.is_text,"
         " 'application/octet-stream' AS content_type, c.blob_user_id FROM drive_contents c"
         " WHERE c.space_id = %(space)s AND c.sha256 = %(sha)s",
@@ -233,7 +275,7 @@ async def texts(
     async with get_db_connection() as conn:
         async with conn.transaction():
             await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            sized = await _rows(
+            sized = await fetch(
                 f"SELECT e.entry_id::text AS entry_id, c.byte_len{joined}{where}"
                 f"{'' if entry_ids is None else _CHOSEN} ORDER BY e.entry_id LIMIT %(limit)s",
                 params,
@@ -247,7 +289,7 @@ async def texts(
                 total += row["byte_len"]
             if not chosen:
                 return []
-            rows = await _rows(
+            rows = await fetch(
                 f"SELECT {ENTRY_COLUMNS}, c.content{joined}{where}{_CHOSEN}"
                 " ORDER BY e.entry_id LIMIT %(limit)s",
                 {**params, "ids": chosen},
@@ -259,7 +301,7 @@ async def texts(
 
 async def trashed(space_id: str, limit: int | None = None) -> list[TrashItem]:
     """Trash items newest first; a rename's tombstone is never one."""
-    rows = await _rows(
+    rows = await fetch(
         f"""
         SELECT * FROM (
             SELECT DISTINCT ON (e.trash_id) {ENTRY_COLUMNS},
@@ -288,7 +330,7 @@ async def usage(space_id: str) -> tuple[int, int, int]:
     """Bytes live files keep, bytes only deleted entries keep, and the
     entries counted against the space's limit: every row, the trash and
     delete notices too. Read off the space's own row (``COUNTS_SQL``)."""
-    rows = await _rows(COUNTS_SQL, {"space": space_id})
+    rows = await fetch(COUNTS_SQL, {"space": space_id})
     if not rows:
         raise DriveError("not_found", "No such space")
     return int(rows[0]["live"]), int(rows[0]["trash"]), int(rows[0]["entries"])
@@ -296,7 +338,7 @@ async def usage(space_id: str) -> tuple[int, int, int]:
 
 async def cursor(space_id: str) -> int:
     """The space's last change number, for ``changes`` to start after."""
-    found = await _rows(
+    found = await fetch(
         "SELECT change_seq FROM drive_spaces WHERE space_id = %(space)s", {"space": space_id}
     )
     if not found:
@@ -314,7 +356,7 @@ async def changes(space_id: str, since: int, limit: int | None = None) -> Change
     async with get_db_connection() as conn:
         async with conn.transaction():
             await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            space = await _rows(
+            space = await fetch(
                 "SELECT change_seq, purged_seq FROM drive_spaces WHERE space_id = %(space)s",
                 {"space": space_id},
                 conn,
@@ -326,7 +368,7 @@ async def changes(space_id: str, since: int, limit: int | None = None) -> Change
                 return Changes(entries=[], cursor=cursor, resync=True)
             if since == cursor:
                 return Changes(entries=[], cursor=cursor, resync=False)
-            rows = await _rows(
+            rows = await fetch(
                 f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM}"
                 " WHERE e.space_id = %(space)s AND e.changed_seq > %(since)s"
                 " ORDER BY e.changed_seq, e.path"
@@ -339,52 +381,25 @@ async def changes(space_id: str, since: int, limit: int | None = None) -> Change
     return Changes(entries=[entry_from_row(r) for r in rows], cursor=cursor, resync=False)
 
 
-async def spaces_to_maintain(trash_days: int, rule: HistoryRule, limit: int) -> list[str]:
+async def spaces_to_maintain(trash_days: int, grace_seconds: int, limit: int) -> list[str]:
     """Spaces the sweep has work in: trash or tombstones past their days,
-    released copies past their grace, or history the rule says is due.
-    History is looked for in at most ``limit`` spaces a pass, those holding
-    versions not kept as text (``binary_versions``) that were looked at
-    longest ago, read off ``ix_drive_spaces_history``, so a pass costs the
-    batch and those spaces' versions, never every space; each is stamped as
-    looked at."""
-    async with get_db_connection() as conn:
-        async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-            # Stamped in a transaction of its own, so a space being changed is
-            # passed over (SKIP LOCKED) and none is held while history is read.
-            await cur.execute(
-                """
-                WITH batch AS (
-                    SELECT s.space_id FROM drive_spaces s
-                     WHERE s.binary_versions > 0
-                     ORDER BY s.history_checked_at NULLS FIRST, s.space_id
-                     LIMIT %(limit)s
-                       FOR UPDATE SKIP LOCKED)
-                UPDATE drive_spaces s SET history_checked_at = now()
-                  FROM batch WHERE s.space_id = batch.space_id
-                RETURNING s.space_id
-                """,
-                {"limit": limit},
-            )
-            batch = [r["space_id"] for r in await cur.fetchall()]
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                history_sql("spaces")
-                + f"""
-                (SELECT DISTINCT e.space_id::text AS space_id FROM drive_entries e
-                  WHERE {EXPIRED_SQL} LIMIT %(limit)s)
-                UNION
-                (SELECT DISTINCT space_id::text FROM drive_contents
-                  WHERE released_at < now() - make_interval(secs => %(grace)s) LIMIT %(limit)s)
-                UNION
-                (SELECT DISTINCT space_id::text FROM history WHERE goes_at <= now())
-                """,
-                {
-                    "days": trash_days,
-                    "hours": TOMBSTONE_HOURS,
-                    "grace": rule.grace_seconds,
-                    "limit": limit,
-                    "spaces": batch,
-                    **rule.params,
-                },
-            )
-            return [r["space_id"] for r in await cur.fetchall()]
+    released copies past their grace, or undo copies whose time is up
+    (``ix_drive_entries_undo``), at most ``limit`` of each. Of the last,
+    those whose copy has been due longest: a pass ends a batch of each
+    space's windows, so with more spaces due than a pass takes, one left
+    out is first in a later pass."""
+    rows = await fetch(
+        f"""
+        (SELECT DISTINCT e.space_id::text AS space_id FROM drive_entries e
+          WHERE {EXPIRED_SQL} LIMIT %(limit)s)
+        UNION
+        (SELECT DISTINCT space_id::text FROM drive_contents
+          WHERE released_at < now() - make_interval(secs => %(grace)s) LIMIT %(limit)s)
+        UNION
+        (SELECT space_id::text FROM drive_entries
+          WHERE undo_until <= now() AND deleted_at IS NULL
+          GROUP BY space_id ORDER BY min(undo_until) LIMIT %(limit)s)
+        """,
+        {"days": trash_days, "hours": TOMBSTONE_HOURS, "grace": grace_seconds, "limit": limit},
+    )
+    return [r["space_id"] for r in rows]

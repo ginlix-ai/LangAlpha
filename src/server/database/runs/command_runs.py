@@ -38,6 +38,7 @@ from typing import (
 from psycopg.rows import dict_row
 
 from src.server.database import pool
+from src.server.database.runs.thread_activity import TURN_END_SQL
 from src.server.database.shared_workspaces import former_member_sql
 from src.server.models.chart_layer import CommandOutbox
 from src.server.models.command import CommandStatus, FailureReason, StopMark
@@ -605,10 +606,7 @@ async def thread_coverage(thread_ids: Sequence[str]) -> Dict[str, Dict[str, Any]
                                 WHERE s.thread_id = ct.conversation_thread_id
                                   AND s.status = 'in_progress')) AS live,
                     GREATEST(
-                        (SELECT GREATEST(r.created_at, COALESCE(
-                                    r.usage_settled_at,
-                                    r.created_at
-                                        + COALESCE(r.execution_time, 0) * INTERVAL '1 second'))
+                        (SELECT {TURN_END_SQL}
                          FROM conversation_responses r
                          WHERE r.conversation_thread_id = ct.conversation_thread_id
                            AND r.status <> 'in_progress'
