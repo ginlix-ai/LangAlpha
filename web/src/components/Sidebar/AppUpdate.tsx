@@ -50,7 +50,7 @@ function useVersionLabel(): (version: string) => string {
     const [, base, y, mo, d, h, mi] = m;
     // The stamp is the build's UTC time, and the formatter reads it in UTC.
     const built = new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi));
-    return t('appUpdate.nightlyLabel', { version: base, date: calendarMonthDay(built, locale) });
+    return t('appUpdate:nightlyLabel', { version: base, date: calendarMonthDay(built, locale) });
   };
 }
 
@@ -79,12 +79,12 @@ function AutomaticSwitch({ state }: { state: DesktopUpdateState }) {
   const on = state.automatic;
   return (
     <div className="app-update-auto">
-      <label id={labelId} htmlFor={`${labelId}-switch`}>{t('appUpdate.automatic')}</label>
+      <label id={labelId} htmlFor={`${labelId}-switch`}>{t('appUpdate:automatic')}</label>
       <ToggleSwitch
         id={`${labelId}-switch`}
         checked={on}
         onChange={() => void setDesktopSettings({ automaticUpdates: !on })}
-        ariaLabel={t('appUpdate.automatic')}
+        ariaLabel={t('appUpdate:automatic')}
       />
     </div>
   );
@@ -92,11 +92,11 @@ function AutomaticSwitch({ state }: { state: DesktopUpdateState }) {
 
 /** What the panel says about an update that is not ready yet. */
 function pendingBodyKey(state: DesktopUpdateState): string {
-  if (state.status === 'downloading') return 'appUpdate.downloadingBody';
-  if (state.mode === 'notify') return 'appUpdate.notifyBody';
+  if (state.status === 'downloading') return 'appUpdate:downloadingBody';
+  if (state.mode === 'notify') return 'appUpdate:notifyBody';
   // Available with automatic updates on is a download that failed. A shell
   // that does not say is one that always updates by itself.
-  return state.automatic === false ? 'appUpdate.manualBody' : 'appUpdate.retryBody';
+  return state.automatic === false ? 'appUpdate:manualBody' : 'appUpdate:retryBody';
 }
 
 function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: () => void }) {
@@ -115,16 +115,16 @@ function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: (
   return (
     <div className="app-update-panel">
       <div className="app-update-title">
-        {t(ready ? 'appUpdate.readyTitle' : 'appUpdate.availableTitle', { version })}
+        {t(ready ? 'appUpdate:readyTitle' : 'appUpdate:availableTitle', { version })}
       </div>
       <div className="app-update-sub">
-        {t('appUpdate.youHave', { version: label(state.currentVersion) })}
+        {t('appUpdate:youHave', { version: label(state.currentVersion) })}
         {state.notesUrl && (
           <>
             {' · '}
             {/* The shell sends a page's external link to the system browser. */}
             <a className="app-update-link tap-target" href={state.notesUrl} target="_blank" rel="noreferrer">
-              {t('appUpdate.whatsNew')}
+              {t('appUpdate:whatsNew')}
             </a>
           </>
         )}
@@ -133,34 +133,34 @@ function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: (
         {ready ? (
           <>
             <li className="app-update-line">
-              <span>{t(state.stopsServer ? 'appUpdate.relaunch' : 'appUpdate.relaunchRemote')}</span>
+              <span>{t(state.stopsServer ? 'appUpdate:relaunch' : 'appUpdate:relaunchRemote')}</span>
             </li>
             {counting && (
               <li className="app-update-line">
-                <span>{t('appUpdate.countingWork')}</span>
+                <span>{t('appUpdate:countingWork')}</span>
               </li>
             )}
             {state.stopsServer && countFailed && !running && (
               <li className="app-update-line app-update-line--running">
-                <span>{t('appUpdate.workUnknown')}</span>
+                <span>{t('appUpdate:workUnknown')}</span>
               </li>
             )}
             {state.stopsServer && running && (
               <>
                 <Consequence
                   count={running.turns}
-                  label={t('appUpdate.turns', { count: running.turns })}
-                  after={t('appUpdate.turnsAfter', { count: running.turns })}
+                  label={t('appUpdate:turns', { count: running.turns })}
+                  after={t('appUpdate:turnsAfter', { count: running.turns })}
                 />
                 <Consequence
                   count={running.background_tasks}
-                  label={t('appUpdate.tasks', { count: running.background_tasks })}
-                  after={t('appUpdate.tasksAfter', { count: running.background_tasks })}
+                  label={t('appUpdate:tasks', { count: running.background_tasks })}
+                  after={t('appUpdate:tasksAfter', { count: running.background_tasks })}
                 />
                 <Consequence
                   count={running.local_commands}
-                  label={t('appUpdate.commands', { count: running.local_commands })}
-                  after={t('appUpdate.commandsAfter', { count: running.local_commands })}
+                  label={t('appUpdate:commands', { count: running.local_commands })}
+                  after={t('appUpdate:commandsAfter', { count: running.local_commands })}
                 />
               </>
             )}
@@ -173,7 +173,7 @@ function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: (
       </ul>
       <div className="app-update-buttons">
         <button type="button" className="app-update-btn tap-target" onClick={onLater}>
-          {t('appUpdate.later')}
+          {t('appUpdate:later')}
         </button>
         <button
           type="button"
@@ -184,19 +184,19 @@ function UpdatePanel({ state, onLater }: { state: DesktopUpdateState; onLater: (
             void installUpdate();
           }}
         >
-          {t(ready ? 'appUpdate.restartNow' : downloading ? 'appUpdate.downloadingButton' : 'appUpdate.download')}
+          {t(ready ? 'appUpdate:restartNow' : downloading ? 'appUpdate:downloadingButton' : 'appUpdate:download')}
         </button>
       </div>
-      {ready && state.installsOnQuit !== false && <div className="app-update-foot">{t('appUpdate.installsOnQuit')}</div>}
+      {ready && state.installsOnQuit !== false && <div className="app-update-foot">{t('appUpdate:installsOnQuit')}</div>}
       <AutomaticSwitch state={state} />
     </div>
   );
 }
 
 const ROW_LABEL = {
-  available: 'appUpdate.available',
-  downloading: 'appUpdate.downloading',
-  ready: 'appUpdate.ready',
+  available: 'appUpdate:available',
+  downloading: 'appUpdate:downloading',
+  ready: 'appUpdate:ready',
 } as const;
 
 /**

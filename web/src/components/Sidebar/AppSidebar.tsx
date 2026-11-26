@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { lazy, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { LayoutGrid, Plus, Search } from 'lucide-react';
@@ -10,7 +10,9 @@ import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
 import { useNavTreeProps } from '@/pages/ChatAgent/hooks/useNavTreeProps';
 import type { NavWorkspace } from '@/pages/ChatAgent/hooks/useNavigationData';
 import AccountMenu from './AccountMenu';
-import AppUpdate from './AppUpdate';
+import { MountOnceOpen } from '@/components/MountOnceOpen';
+import { canShowUpdates } from '@/lib/desktop';
+import { withCopy } from '@/i18n';
 import { draftKeys } from '@/lib/composerDrafts';
 import { DraftPencil } from '@/components/ui/draft-mark';
 import { useChatRoute } from './useChatRoute';
@@ -22,6 +24,10 @@ import { GettingStartedGate } from '@/pages/Onboarding';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './sidebarWidth';
 import type { SidebarPeek } from './useSidebarPeek';
 import './Sidebar.css';
+
+// Off first load: only the desktop app has an update to offer, so a browser
+// never fetches the button or its copy.
+const AppUpdate = lazy(withCopy(() => import('./AppUpdate'), ['appUpdate']));
 
 /** The pages whose own composer keeps a draft, which their item points at
  *  while you are elsewhere. */
@@ -226,7 +232,9 @@ function AppSidebar({ hidden, width, onWidthChange, peek, panelRef }: AppSidebar
       <GettingStartedGate />
 
       <div className="sidebar-panel-bottom">
-        <AppUpdate variant="row" />
+        <MountOnceOpen open={canShowUpdates()}>
+          <AppUpdate variant="row" />
+        </MountOnceOpen>
         <AccountMenu />
       </div>
 
