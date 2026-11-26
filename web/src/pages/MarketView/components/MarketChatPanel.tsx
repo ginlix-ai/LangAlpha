@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useNavigate } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, RefreshCw, MessageSquare } from 'lucide-react';
@@ -17,7 +17,10 @@ import { useLocale } from '@/hooks/useLocale';
 import { compactNumber } from '@/lib/format';
 import { readTurnEndScroll } from '@/lib/turnEndScroll';
 import { LiveMessageList } from '../../ChatAgent/components/MessageList';
-import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/components/messageList/MessageActionsContext';
+import { MessageActionsProvider } from '../../ChatAgent/components/messageList/MessageActionsContext';
+import { useMessageActionBundles } from '../../ChatAgent/components/chatView/useMessageActionBundles';
+import { useWidgetPromptActions } from '../../ChatAgent/components/chatView/useWidgetPromptActions';
+import { newThreadCarry } from '../../ChatAgent/components/chatView/newThreadCarry';
 import { usePublishFile } from '../../ChatAgent/components/chatView/usePublishFile';
 import { useComposerGiveBack } from '../../ChatAgent/components/chatView/useComposerGiveBack';
 import { SubagentTelemetryContext, useHistoryTelemetry } from '../../ChatAgent/components/SubagentTelemetryContext';
@@ -39,14 +42,16 @@ import { useTranscriptFollow } from '../../ChatAgent/components/chatView/useTran
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { appendPathSuffix, getPreviewUrl, previewFailure, summarizeThread, offloadThread, type NextSummary } from '../../ChatAgent/utils/api';
 import { attachmentSendParts, type AttachmentMeta } from '../../ChatAgent/utils/fileUpload';
+import type { WidgetSendParts } from '../../ChatAgent/utils/widgetPrompt';
+import type { SendOptions } from '../../ChatAgent/session/types';
 import type { SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
 import { useToolCallLookup } from '../../ChatAgent/components/chatView/toolCallLookup';
 import type { PreviewData } from '../../ChatAgent/hooks/utils/types';
 import type { Workspace } from '@/types/api';
 import MarketChatHistoryButton from './MarketChatHistoryButton';
 import MarketDetailDialog, { type DialogPayload } from './MarketDetailDialog';
-import { getMarketThreadId, setMarketThreadId, clearMarketThreadId } from '../utils/threadPersistence';
-import { readMarketViewRoute } from '../utils/marketRoute';
+import { setMarketThreadId } from '../utils/threadPersistence';
+import { useMarketThreadRoute, type WidgetFirstSend } from '../hooks/useMarketThreadRoute';
 import { buildMarketSendContexts } from '../utils/marketSend';
 import { layerAskContext } from '../utils/layerAsk';
 import { useChartAskHandler, useChartComposer } from '@/components/chart/chartComposer';
@@ -161,63 +166,9 @@ function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
   const computers = useComputerRoots({ enabled: !!activeWorkspace });
   const folders = useMemo(() => computerFolders(activeWorkspace, null, computers), [activeWorkspace, computers]);
 
-  // Initial thread resolution. URL `?thread=` wins, then localStorage keyed by
-  // (workspace, symbol), then a new chat. This state determines which thread
-  // mounts on the keyed `<ChatBody>` — changing it forces a remount so the SSE
-  // engine can re-initialise with a different thread.
-  const [searchParams] = useSearchParams();
-  const editSearchParams = useEditSearchParams();
-  const [activeThreadInit, setActiveThreadInit] = useState<string>(() => {
-    const fromUrl = readMarketViewRoute(searchParams).threadId;
-    if (fromUrl) return fromUrl;
-    return getMarketThreadId(activeWorkspaceId, symbol) ?? '__default__';
-  });
-
-  // Re-resolve thread when symbol changes: restore the last-seen thread for
-  // the new symbol in the current workspace, or start a fresh chat if none.
-  // A fresh chat also drops `?thread` from the URL; the mirror below rewrites
-  // it for a restored thread but never touches it for a default one, so a
-  // reload would otherwise reopen the previous symbol's conversation and
-  // save it as this symbol's.
-  const lastSymbolRef = useRef(symbol);
-  useEffect(() => {
-    if (lastSymbolRef.current === symbol) return;
-    lastSymbolRef.current = symbol;
-    const restored = getMarketThreadId(activeWorkspaceId, symbol);
-    setActiveThreadInit(restored ?? '__default__');
-    if (restored) return;
-    editSearchParams((params) => params.delete('thread'), { replace: true });
-  }, [symbol, activeWorkspaceId, editSearchParams]);
-
-  // Reset to a fresh chat when the scope or workspace changes. The user
-  // explicitly chose a different scope — surface a clean slate. localStorage
-  // is keyed by (workspace, symbol), so the previous scope's pointer stays
-  // intact and is reachable via the history dropdown.
-  const prevWorkspaceRef = useRef<string | null>(activeWorkspaceId);
-  useEffect(() => {
-    const prev = prevWorkspaceRef.current;
-    if (prev === activeWorkspaceId) return;
-    prevWorkspaceRef.current = activeWorkspaceId;
-    if (prev === null || activeWorkspaceId === null) return;
-    setActiveThreadInit(`__default__#${Date.now()}`);
-    editSearchParams((params) => params.delete('thread'), { replace: true });
-  }, [activeWorkspaceId, editSearchParams]);
-
-  const handleSelectThread = useCallback((threadId: string) => {
-    setMarketThreadId(activeWorkspaceId, symbol, threadId);
-    setActiveThreadInit(threadId);
-  }, [activeWorkspaceId, symbol]);
-
-  const handleStartNewChat = useCallback(() => {
-    clearMarketThreadId(activeWorkspaceId, symbol);
-    // Force a remount even if we were already on __default__ — append a
-    // monotonic suffix that's stripped before passing to useChatMessages.
-    setActiveThreadInit(`__default__#${Date.now()}`);
-    // Clear `?thread=` from the URL too — otherwise a refresh on the
-    // empty new-chat panel would restore the old thread from the URL,
-    // beating the freshly-cleared localStorage entry.
-    editSearchParams((params) => params.delete('thread'), { replace: true });
-  }, [activeWorkspaceId, symbol, editSearchParams]);
+  // The thread the keyed `<ChatBody>` mounts on: a change remounts it, so the
+  // SSE engine re-initialises on the other thread.
+  const route = useMarketThreadRoute(activeWorkspaceId, symbol);
 
   if (scope === 'workspace' && !activeWorkspaceId) {
     return (
@@ -234,12 +185,14 @@ function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
   return (
     <WorkspaceProvider workspaceId={activeWorkspaceId} downloadFile={null} folders={folders}>
       <ChatBody
-        key={`${activeWorkspaceId}:${activeThreadInit}`}
+        key={`${activeWorkspaceId}:${route.key}`}
         {...props}
         activeWorkspaceId={activeWorkspaceId}
-        initialThreadId={activeThreadInit.split('#')[0]}
-        onSelectThread={handleSelectThread}
-        onStartNewChat={handleStartNewChat}
+        initialThreadId={route.threadId}
+        onSelectThread={route.selectThread}
+        onStartNewChat={route.startNewChat}
+        onStartThread={route.startThread}
+        firstSend={route.firstSend}
       />
     </WorkspaceProvider>
   );
@@ -250,6 +203,10 @@ interface ChatBodyProps extends MarketChatPanelProps {
   initialThreadId: string;
   onSelectThread: (threadId: string) => void;
   onStartNewChat: () => void;
+  /** Opens a new chat that sends `first` as its first message. */
+  onStartThread: (first: WidgetFirstSend) => void;
+  /** What this chat was opened to send first. */
+  firstSend?: WidgetFirstSend;
 }
 
 function ChatBody(props: ChatBodyProps): React.ReactElement {
@@ -280,6 +237,8 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     initialThreadId,
     onSelectThread,
     onStartNewChat,
+    onStartThread,
+    firstSend,
   } = props;
 
   const { t } = useTranslation();
@@ -621,81 +580,73 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     setDialogPayload({ type: 'toolcall', toolCallId });
   }, []);
 
-  // The panel's transcript action surface. Each member is useStableHandler'd
-  // so the context value survives every streamed chunk — the chat engine
-  // rebuilds its handlers per render, and a fresh value here would re-render
-  // every settled bubble in the panel.
-  const stableOpenSubagentTask = useStableHandler(handleOpenSubagentTask);
-  const stableToolCallDetail = useStableHandler(handleToolCallDetailClick);
-  const stableAnswerQuestion = useStableHandler(handleAnswerQuestion);
-  const stableSkipQuestion = useStableHandler(handleSkipQuestion);
-  const stableApproveCreateWorkspace = useStableHandler(handleApproveCreateWorkspace);
-  const stableRejectCreateWorkspace = useStableHandler(handleRejectCreateWorkspace);
-  const stableApproveStartQuestion = useStableHandler(handleApproveStartQuestion);
-  const stableRejectStartQuestion = useStableHandler(handleRejectStartQuestion);
-  const stableApprovePTCAgent = useStableHandler(handleApprovePTCAgent);
-  const stableRejectPTCAgent = useStableHandler(handleRejectPTCAgent);
-  const stableApproveSecretaryAction = useStableHandler(handleApproveSecretaryAction);
-  const stableRejectSecretaryAction = useStableHandler(handleRejectSecretaryAction);
-  const stableResumeCreditPause = useStableHandler(handleResumeCreditPause);
-  const stableApproveToolCall = useStableHandler(handleApproveToolCall);
-  const stableRejectToolCall = useStableHandler(handleRejectToolCall);
-  const stableEditMessage = useStableHandler((id: string, content: string) =>
-    handleEditMessage(id, content, chatInputRef.current?.getModelOptions?.()));
-  const stableRegenerate = useStableHandler((id: string) =>
-    handleRegenerate(id, chatInputRef.current?.getModelOptions?.()));
-  const stableRetry = useStableHandler(() => handleRetry(chatInputRef.current?.getModelOptions?.()));
   // Steering the agent finished without reading, edit text whose message is
   // gone, and the files of a send a stop held back come back to the composer,
   // beside whatever was typed there since.
   useComposerGiveBack(chatInputRef, chat);
-  const stableThumbUp = useStableHandler(handleThumbUp);
-  const stableThumbDown = useStableHandler(handleThumbDown);
-  const stableThumbDownFollowUp = useStableHandler(handleThumbDownFollowUp);
-  const stableWidgetSendPrompt = useStableHandler((text: string) => {
-    handleSendMessage(text, null, null, {});
+  // A widget's prompt calls send as the box's send would, with the chart's
+  // skill and views; a new chat opens in the panel, as its "new chat" does.
+  const sendFromWidget = (text: string, parts: WidgetSendParts, options: SendOptions) => {
+    const market = buildMarketSendContexts(symbol, interval, collectViews());
+    return handleSendMessage(text, [market.skill, ...parts.contexts], null, {
+      ...options, ...parts.options, ...(market.chartViews.length > 0 ? { chartViews: market.chartViews } : {}),
+    });
+  };
+  const widgetPrompts = useWidgetPromptActions({
+    chatInputRef,
+    send: (text, parts) => sendFromWidget(text, parts, { ...readComposerOptions(), subagentsAllowed: subagentsToSend, ...tuningToSend }),
+    openThread: (text, parts, carry) => onStartThread({ text, parts, options: carry }),
+    readCarry: () => newThreadCarry(readComposerOptions(), threadSubagents, threadTuning.tuning),
   });
+  // The first message of a chat a widget's startThread opened, once its
+  // engine has mounted. The guard is set when it goes, so a strict-mode
+  // remount reschedules rather than drops it.
+  const firstSentRef = useRef(false);
+  const sendFirst = useStableHandler((first: WidgetFirstSend) => {
+    firstSentRef.current = true;
+    sendFromWidget(first.text, first.parts, first.options);
+  });
+  useEffect(() => {
+    if (!firstSend || firstSentRef.current) return;
+    const timer = setTimeout(() => sendFirst(firstSend), 100);
+    return () => clearTimeout(timer);
+  }, [firstSend, sendFirst]);
 
   const { onPublishFile, dialog: publishDialog } = usePublishFile(activeWorkspaceId);
-  const messageActions = useMemo<MessageActions>(() => ({
+  // The panel's transcript action surface, identity-stable across streamed
+  // chunks: the chat engine rebuilds its handlers per render, and a fresh
+  // value here would re-render every settled bubble in the panel.
+  const { messageActions } = useMessageActionBundles({
     onOpenArtifactComment: commentOpeners,
-    onOpenSubagentTask: stableOpenSubagentTask,
-    onToolCallDetailClick: stableToolCallDetail,
-    onAnswerQuestion: stableAnswerQuestion,
-    onSkipQuestion: stableSkipQuestion,
-    onApproveCreateWorkspace: stableApproveCreateWorkspace,
-    onRejectCreateWorkspace: stableRejectCreateWorkspace,
-    onApproveStartQuestion: stableApproveStartQuestion,
-    onRejectStartQuestion: stableRejectStartQuestion,
-    onApprovePTCAgent: stableApprovePTCAgent,
-    onRejectPTCAgent: stableRejectPTCAgent,
-    onApproveSecretaryAction: stableApproveSecretaryAction,
-    onRejectSecretaryAction: stableRejectSecretaryAction,
-    onResumeCreditPause: stableResumeCreditPause,
-    onApproveToolCall: stableApproveToolCall,
-    onRejectToolCall: stableRejectToolCall,
-    onEditMessage: stableEditMessage,
-    onRegenerate: stableRegenerate,
-    onRetry: stableRetry,
+    onOpenSubagentTask: handleOpenSubagentTask,
+    onToolCallDetailClick: handleToolCallDetailClick,
+    onAnswerQuestion: handleAnswerQuestion,
+    onSkipQuestion: handleSkipQuestion,
+    onApproveCreateWorkspace: handleApproveCreateWorkspace,
+    onRejectCreateWorkspace: handleRejectCreateWorkspace,
+    onApproveStartQuestion: handleApproveStartQuestion,
+    onRejectStartQuestion: handleRejectStartQuestion,
+    onApprovePTCAgent: handleApprovePTCAgent,
+    onRejectPTCAgent: handleRejectPTCAgent,
+    onApproveSecretaryAction: handleApproveSecretaryAction,
+    onRejectSecretaryAction: handleRejectSecretaryAction,
+    onResumeCreditPause: handleResumeCreditPause,
+    onApproveToolCall: handleApproveToolCall,
+    onRejectToolCall: handleRejectToolCall,
+    onEditMessage: handleEditMessage,
+    onRegenerate: handleRegenerate,
+    onRetry: handleRetry,
     editDrafts,
-    onThumbUp: stableThumbUp,
-    onThumbDown: stableThumbDown,
-    onThumbDownFollowUp: stableThumbDownFollowUp,
-    onWidgetSendPrompt: stableWidgetSendPrompt,
+    onThumbUp: handleThumbUp,
+    onThumbDown: handleThumbDown,
+    onThumbDownFollowUp: handleThumbDownFollowUp,
+    widgetPrompts,
     onRevealMessage: follow.reveal,
     onPublishFile,
     // A thread the server has named, so a failed turn's banner can offer "Report this".
     reportThreadId: realThreadId,
-  }), [
-    stableOpenSubagentTask, stableToolCallDetail,
-    stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
-    stableRejectCreateWorkspace, stableApproveStartQuestion, stableRejectStartQuestion,
-    stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
-    stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,
-    stableEditMessage, stableRegenerate, stableRetry, editDrafts,
-    stableThumbUp, stableThumbDown, stableThumbDownFollowUp, stableWidgetSendPrompt, follow.reveal, onPublishFile, realThreadId,
-    commentOpeners,
-  ]);
+    chatInputRef,
+  });
 
   // In the Chief of Staff, carry the source thread/workspace into a PTC-agent
   // proposal so its "open in chat" deep-link lands back here. Null in a

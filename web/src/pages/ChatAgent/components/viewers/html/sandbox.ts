@@ -8,6 +8,16 @@
 export const SERVED_HTML_SANDBOX = 'allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-popups-to-escape-sandbox';
 
 /**
+ * A ShowWidget frame (inline, fullscreen, print, export shell, headless
+ * render) runs agent-written HTML as a report does, so it gets a report's
+ * tokens: its own opaque origin keeps it from the app's cookies and storage,
+ * and the rest is what a page needs to not look broken. Never
+ * `allow-same-origin` (a srcdoc frame would then BE the app's origin), never
+ * top navigation.
+ */
+export const WIDGET_SANDBOX = SERVED_HTML_SANDBOX;
+
+/**
  * The page the Publish review loads out of sight: its code runs, and nothing it
  * does on load reaches the owner as a dialog, a download or a new window.
  */
@@ -15,6 +25,25 @@ export const SCOUT_SANDBOX = 'allow-scripts';
 
 /** What a framed page may ask of the browser beyond loading: a copy button, full screen. */
 export const SERVED_HTML_PERMISSIONS = 'clipboard-write *; fullscreen *';
+
+/** A widget asks what a served page may. */
+export const WIDGET_PERMISSIONS = SERVED_HTML_PERMISSIONS;
+
+/**
+ * A widget frame's attributes, for JSX: `<iframe {...WIDGET_FRAME} />`. The
+ * marker has focus taken without the user's gesture given back
+ * (`frameActivation.ts`).
+ */
+export const WIDGET_FRAME = { sandbox: WIDGET_SANDBOX, allow: WIDGET_PERMISSIONS, 'data-widget-frame': '' } as const;
+
+/** A widget frame made outside React (the print copy, the headless render). */
+export function createWidgetFrame(): HTMLIFrameElement {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', WIDGET_FRAME.sandbox);
+  frame.setAttribute('allow', WIDGET_FRAME.allow);
+  frame.setAttribute('data-widget-frame', '');
+  return frame;
+}
 
 /**
  * A running app is served from its own origin, not the app's, so it keeps

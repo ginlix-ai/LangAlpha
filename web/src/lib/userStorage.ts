@@ -16,7 +16,8 @@ import { LOCAL_USER_ID, hasAuthEnv } from '../config/localUser';
  */
 export interface UserStorage {
   getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
+  /** False when the value was not kept: nobody signed in, or the store refused it (blocked, full). */
+  setItem(key: string, value: string): boolean;
   removeItem(key: string): void;
   /** Removes the current user's keys under `prefix`, and any unscoped ones. */
   removeByPrefix(prefix: string): void;
@@ -93,9 +94,11 @@ function userScoped(store: () => Storage): UserStorage {
     },
     setItem(key, value) {
       const user = currentUser();
-      if (!user) return;
+      if (!user) return false;
       // As above: a refused write leaves the legacy key the only copy.
-      if (write(scoped(user, key), value)) remove(key);
+      if (!write(scoped(user, key), value)) return false;
+      remove(key);
+      return true;
     },
     removeItem(key) {
       const user = currentUser();

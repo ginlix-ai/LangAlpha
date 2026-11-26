@@ -20,6 +20,7 @@ import type { PairState } from '../types';
 import type { StructuredError } from '@/utils/rateLimitError';
 import { wakeTurnOpener } from '../wakeupEvents';
 import { openerMatchText, readArtifactCommentsShown } from '../../components/artifactComments/artifactCommentSend';
+import { widgetSegmentId } from '../stream/widgetIds';
 
 
 /** Shape of an SSE history event. */
@@ -932,7 +933,7 @@ export function handleHistoryHtmlWidget({ assistantMessageId, artifactType, arti
   }
 
   const { html, title } = payload;
-  const segmentId = `widget-${artifactId}`;
+  const segmentId = widgetSegmentId(artifactId);
   const currentOrder = eventId != null ? eventId : ++pairState.contentOrderCounter;
 
   setMessages((prev: MessageRecord[]) => {

@@ -20,7 +20,7 @@ import { readWorkflowStatus } from '../utils/primedStatus';
 import { useLocalRunPublisher } from '@/lib/threadLifecycle/useLocalRunPublisher';
 import { subscribeThreadCompactions } from '@/lib/threadLifecycle/feedClient';
 import { ThreadMuxSlot } from '../session/stream/threadStreamMux';
-import type { NextSummary, WorkflowStatusResponse } from '../utils/api';
+import type { ChatDevice, NextSummary, WorkflowStatusResponse } from '../utils/api';
 import type { BrowserUse } from '../session/stream/browserUse';
 import type { CancelOutcome, HeldSteer } from '../utils/cancelOutcome';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
@@ -147,6 +147,12 @@ export interface ChatMessagesOptions {
    *  (`returnedDraft`) rather than staying in the transcript with its Retry:
    *  the host's answer at the moment it fails. */
   returnsUnsent?: (() => boolean) | null;
+}
+
+/** The layout the app is in as a message leaves, read then rather than at
+ *  render, so a send names the device the person is on now. */
+function sendingDevice(): ChatDevice {
+  return getIsMobileSnapshot() ? 'phone' : 'desktop';
 }
 
 export function useChatMessages(
@@ -2148,6 +2154,7 @@ export function useChatMessages(
         locale: userLocale,
         timezone: userTimezone,
         platform,
+        device: sendingDevice(),
         onRunIdResolved: () => requestKeys.spend(requestKey),
         requestKey,
         steerOnly: true,
@@ -2656,6 +2663,7 @@ export function useChatMessages(
         fastMode: fastMode ?? null,
         keepFullContext,
         platform,
+        device: sendingDevice(),
         // Latch run_id AND the server-assigned thread_id from Content-Location,
         // which come with the first frame. run_id closes the reconnect race
         // window; the thread_id latch lets an early stop on a brand-new thread
@@ -3455,6 +3463,7 @@ export function useChatMessages(
             reasoningEffort: modelOptions.reasoningEffort || null,
             fastMode: modelOptions.fastMode ?? null,
             platform,
+            device: sendingDevice(),
             onRunIdResolved: latchRunId,
             signal: abortController.signal,
             requestKey,

@@ -347,6 +347,45 @@ export interface PendingToolCallChunk {
   firstSeenAt: number;
 }
 
+/**
+ * Where the scanner in `session/stream/widgetArgs.ts` stands in a ShowWidget
+ * call's arguments, and the `html` and `title` it has decoded so far.
+ */
+export interface WidgetArgsStream {
+  /** Nesting depth: 1 inside the arguments object. */
+  depth: number;
+  /** Inside a string, and which: a top-level key, a value kept, or one skipped. */
+  string: 'key' | 'html' | 'title' | 'skip' | null;
+  /** An escape begun and not finished: `''` right after the backslash, else
+   *  the characters after it (`u12`). Null outside one. */
+  escape: string | null;
+  /** A decoded high surrogate waiting for its low half. */
+  highSurrogate: string;
+  /** The top-level key being read, then the last one read. */
+  key: string;
+  /** A top-level `:` was read and its value has not started. */
+  expectValue: boolean;
+  /** Null until the `html` string opens. */
+  html: string | null;
+  title: string | null;
+}
+
+/**
+ * A main-agent ShowWidget call's widget before its artifact lands, drawn
+ * from the call's arguments: while they stream (`scan` set) and, once the
+ * call has landed, from all of them until the artifact replaces it or the
+ * call ends without one.
+ */
+export interface WidgetDraft {
+  /** The markup so far; null before the `html` argument opens. */
+  html: string | null;
+  title: string | null;
+  /** The arguments' length so far, for the line shown before anything draws. */
+  argsLength: number;
+  /** The scanner, while the arguments are still being written. */
+  scan?: WidgetArgsStream;
+}
+
 // --- HITL Interrupt State Records ---
 
 /** Where one approval card sits among the action requests its interrupt raised.
@@ -659,6 +698,9 @@ export type AssistantMessage = {
   planSnapshots?: PlanSnapshot[];
   subagentTasks?: Record<string, SubagentTaskRecord>;
   pendingToolCallChunks?: Record<string, PendingToolCallChunk>;
+  /** ShowWidget calls whose widget is still drawn from their arguments, by
+   *  tool call id (`widgetDraftKey`, until a call streamed with no id has one). */
+  widgetDrafts?: Record<string, WidgetDraft>;
   // HITL interrupt state
   userQuestions?: Record<string, UserQuestionState>;
   workspaceProposals?: Record<string, WorkspaceProposalState>;

@@ -4,7 +4,7 @@ import {
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
   Sparkles, BookText, BookMarked, HardDrive, BookPlus, PenLine, Eye, Plug, Send, Contact, AlarmClock, Activity,
-  Layers, ArrowUpDown, Copy,
+  Layers, ArrowUpDown, Copy, LayoutDashboard,
 } from 'lucide-react';
 import { AGENT_PATH_TRAITS } from '../utils/agentPathTraits';
 import {
@@ -123,6 +123,8 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   // Messaging
   send_message:             { displayName: 'Send Message',         i18nKey: 'sendMessage',         icon: Send },
   list_message_targets:     { displayName: 'Message Targets',      i18nKey: 'messageTargets',      icon: Contact },
+  // Drawn as the widget itself; named only on the line shown before it draws.
+  ShowWidget:               { displayName: 'Widget',               i18nKey: 'showWidget',          icon: LayoutDashboard },
 };
 
 // Single source of truth for "what tool name indicates a file
@@ -771,6 +773,8 @@ export function getPreparingText(toolName: string, argsLength: number, t?: TFn):
       return tr?.('composingMessage', { size: sizeLabel }) ?? `composing message${sizeLabel}...`;
     case 'list_message_targets':
       return tr?.('preparingRequest') ?? 'preparing request...';
+    case 'ShowWidget':
+      return tr?.('drawingWidget', { size: sizeLabel }) ?? `drawing widget${sizeLabel}...`;
     default:
       return tr?.('generating', { size: sizeLabel }) ?? `generating${sizeLabel}...`;
   }

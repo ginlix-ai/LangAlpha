@@ -1,5 +1,5 @@
 import type { StructuredError } from '@/utils/rateLimitError';
-import { withoutPending } from './toolCallChunks';
+import { withoutStreamDrafts } from './toolCallChunks';
 
 type MessageEnd = 'completed' | 'stopped' | 'failed' | 'paused' | 'disconnected';
 
@@ -12,7 +12,7 @@ export function finalizeAssistantMessage<T extends object>(
 ): T & { isStreaming: false; completionObservedAt?: number } {
   const previous = 'completionObservedAt' in message ? message.completionObservedAt : undefined;
   const terminal = end === 'completed' || end === 'stopped' || end === 'failed';
-  return withoutPending({
+  return withoutStreamDrafts({
     ...message,
     isStreaming: false,
     completionObservedAt: terminal

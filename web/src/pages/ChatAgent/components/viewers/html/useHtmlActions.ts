@@ -5,12 +5,25 @@ import { useStableHandler } from '@/hooks/useStableHandler';
 import { desktop } from '@/lib/desktop';
 import { holdReload } from '@/lib/reloadHolds';
 import { pdfQuery } from './wsfilesUrl';
+import { saveBlob } from './docUtils';
+import { LIGHT_PALETTE, paletteCss, readThemePalette } from './frameTheme';
 import { saveWidgetPdf } from './widgetPdf';
+import { buildWidgetShell } from './widgetExport';
 
 interface WidgetModeOptions {
   mode: 'widget';
-  /** Full srcDoc — opened/downloaded/printed via a blob URL. */
+  /**
+   * The live srcDoc, which the desktop shell prints as it is: that copy is made
+   * and gone in the viewer's own window.
+   */
   srcDoc: string;
+  /**
+   * The document everything that leaves the viewer carries (a download, a new
+   * tab, the browser's print tab), which must not carry the viewer's file
+   * grant (InlineWidget inlines what it needs). Asynchronous only when there
+   * is something to fetch.
+   */
+  exportDoc: () => string | Promise<string>;
   fileName?: string;
 }
 
@@ -133,15 +146,7 @@ export async function exportServedPdf({
       printFallback();
       return;
     }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = pdfNameFromPath(filePath);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveBlob(await res.blob(), pdfNameFromPath(filePath));
   } catch {
     // Includes the AbortError from the timeout above — fall back to print.
     printFallback();
@@ -152,10 +157,48 @@ export async function exportServedPdf({
   }
 }
 
+/** A blob URL of the widget shell, revoked once the tab has had time to load it. */
+function shellUrl(doc: string, title: string, themeCss: string, print = false): string {
+  const blob = new Blob([buildWidgetShell(doc, { title, themeCss, print })], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return url;
+}
+
+/**
+ * Open the widget shell in a new tab, inside the click that asked for it, or
+ * a popup blocker takes it. A copy still being made opens the tab now and its
+ * document follows; the handle is kept for that and nothing else, the tab's
+ * opener cut at once. A ready one needs no handle at all.
+ */
+function openShellTab(ready: string | Promise<string>, title: string, themeCss: string, print = false): void {
+  if (typeof ready === 'string') {
+    window.open(shellUrl(ready, title, themeCss, print), '_blank', 'noopener,noreferrer');
+    return;
+  }
+  // Not printed while empty: the copy prints once its own document settles.
+  const win = window.open(shellUrl('', title, themeCss), '_blank');
+  try {
+    if (win) win.opener = null;
+  } catch {
+    /* a browser that refuses still holds the frame to its sandbox */
+  }
+  ready.then(
+    (doc) => {
+      if (win && !win.closed) win.location.replace(shellUrl(doc, title, themeCss, print));
+    },
+    (err: unknown) => {
+      console.error('[useHtmlActions] Widget copy failed:', err);
+      win?.close();
+    },
+  );
+}
+
 /**
  * Open/download/print actions for an HTML surface.
  *
- * Widget mode operates on a blob built from the srcDoc; file mode fetches the
+ * Widget mode opens and prints a blob of the widget shell (widgetExport.ts)
+ * and downloads the export document itself; file mode fetches the
  * server-rendered PDF from the byte-faithful served URL and opens the item's
  * own page in a new tab. exportPdf falls back to browser print on any non-OK
  * response.
@@ -171,11 +214,7 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
   // precondition.
   const openInNewTab = useStableHandler(() => {
     if (opts.mode === 'widget') {
-      const blob = new Blob([opts.srcDoc], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener,noreferrer');
-      // Revoke once the new tab has had a chance to load.
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      openShellTab(opts.exportDoc(), opts.fileName || 'Widget', paletteCss(readThemePalette()));
     } else if (opts.openUrl) {
       window.open(opts.openUrl, '_blank', 'noopener,noreferrer');
     }
@@ -183,15 +222,11 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
 
   const downloadHtml = useStableHandler(() => {
     if (opts.mode === 'widget') {
-      const blob = new Blob([opts.srcDoc], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = opts.fileName || 'widget.html';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      const fileName = opts.fileName || 'widget.html';
+      Promise.resolve(opts.exportDoc()).then(
+        (doc) => saveBlob(new Blob([doc], { type: 'text/html' }), fileName),
+        (err: unknown) => console.error('[useHtmlActions] Download failed:', err),
+      );
     } else {
       // Server original bytes, not the rendered content.
       opts.triggerDownload?.().catch((err: unknown) =>
@@ -233,22 +268,10 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
           toast({ description: t('filePanel:pdfFailed') });
           return;
         }
-        const blob = new Blob([opts.srcDoc], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
-        // Same-origin blob tab: keep the handle (no noopener) so auto-print fires.
-        const win = window.open(url, '_blank');
-        if (win) {
-          const triggerPrint = () => {
-            try {
-              win.print();
-            } catch {
-              /* user can print manually */
-            }
-          };
-          win.addEventListener?.('load', triggerPrint);
-          setTimeout(triggerPrint, 800);
-        }
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        // The tab stays open, so it carries the export copy, never the live
+        // one with the viewer's grant in its base. The shell prints itself
+        // once the widget settles, so this side needs no handle on it.
+        openShellTab(opts.exportDoc(), opts.fileName || 'Widget', paletteCss(LIGHT_PALETTE), true);
         return;
       }
 

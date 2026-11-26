@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { resolveThemeVars } from './buildHtmlSrcDoc';
+import { paletteCss, readThemePalette } from './frameTheme';
 import { parsePageMessage, type PageToViewer, type ViewerToPage } from './pageProtocol';
 
 /** The viewer's end of the bridge, handed to whatever draws over the frame. */
@@ -92,7 +92,7 @@ export function usePageBridge({ frameRef, origin, frameKey }: UsePageBridgeOptio
   const path = ready ? hello.path : null;
   const bridge = useMemo<PageBridge>(() => ({ ready, session, path, post, subscribe }), [ready, session, path, post, subscribe]);
 
-  const pushTheme = useCallback(() => post({ type: 'page:theme', css: resolveThemeVars() }), [post]);
+  const pushTheme = useCallback(() => post({ type: 'page:theme', css: paletteCss(readThemePalette()) }), [post]);
 
   const onMessage = useEffectEvent((e: MessageEvent) => {
     const win = frameRef.current?.contentWindow;

@@ -231,6 +231,18 @@ html {
   --color-context-memory: #D55181;
   --color-context-environment: #008300;
   --color-context-conversation: #9085E9;
+  /* Chart series, in order: the default palette a widget's chart draws its
+     series with (viewers/html/frameTheme.ts). Neighbours are checked apart
+     for color-deficient readers on the page and the card; a few light steps
+     sit under 3:1 on white, so a series also needs a legend or a label. */
+  --color-chart-1: #3987E5;
+  --color-chart-2: #D95926;
+  --color-chart-3: #199E70;
+  --color-chart-4: #C98500;
+  --color-chart-5: #D55181;
+  --color-chart-6: #0CA30C;
+  --color-chart-7: #9085E9;
+  --color-chart-8: #E66767;
   --color-accent-light: #F2B67C;
   --color-btn-primary-bg: #ECECEA;
   --color-btn-primary-text: #1A1B1D;
@@ -452,6 +464,14 @@ html {
   --color-context-memory: #E87BA4;
   --color-context-environment: #008300;
   --color-context-conversation: #6250D6;
+  --color-chart-1: #2A78D6;
+  --color-chart-2: #EB6834;
+  --color-chart-3: #1BAF7A;
+  --color-chart-4: #EDA100;
+  --color-chart-5: #E87BA4;
+  --color-chart-6: #008300;
+  --color-chart-7: #6250D6;
+  --color-chart-8: #E34948;
   --color-accent-light: #E09A57;
   /* Confirm/approve buttons in chat — deliberately ink, not the accent, so
      approving a request never reads as the same affordance as a brand action. */
@@ -750,7 +770,7 @@ html {
    rounded corners and of a divider above the list. A container that tints its
    thumb sets background-color, never the background shorthand, which would
    reset the clip and paint the inset too. Documents the app frames carry a
-   copy, so a change here goes to each: buildHtmlSrcDoc.ts (widgets), the
+   copy, so a change here goes to each: viewers/html/frameStyles.ts (widgets), the
    server's workspace_files/serve.py (served HTML) and sec_proxy.py (filings). */
 ::-webkit-scrollbar {
   width: var(--scrollbar-size);

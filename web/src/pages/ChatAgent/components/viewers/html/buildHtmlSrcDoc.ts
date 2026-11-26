@@ -1,327 +1,151 @@
 /**
- * srcDoc builder for sandboxed HTML widget iframes.
+ * srcDoc builder for sandboxed HTML widget iframes: the chat's inline and
+ * fullscreen frames, the print copy, the exported copies, the preview drawn
+ * while a call streams, and the headless render page the server runs after a
+ * ShowWidget call (`src/widgetRender/`). That page is built apart from the
+ * app, so this module and what it imports stay pure string building: no
+ * React, no app singletons, and the DOM is read only when no `theme` is
+ * passed. Locked against captured fixtures (__tests__/buildHtmlSrcDoc.test.ts).
+ * File documents do NOT use this; they load via the served wsfiles URL.
  *
- * Extracted verbatim from InlineWidget so widget rendering stays byte-identical
- * (see __tests__/buildHtmlSrcDoc.test.ts, locked against captured fixtures).
- * File documents do NOT use this — they load via the served wsfiles URL.
+ * The parts live beside it: the theme (frameTheme.ts), the stylesheet
+ * (frameStyles.ts), the programs the document runs (frameScripts/), and what
+ * the frame and its parent say to each other (widgetProtocol.ts).
  */
+import { escapeAttr, scriptJson } from './docUtils';
+import { BRIDGE_SCRIPT, EARLY_SCRIPT, STREAM_RECEIVER_SCRIPT } from './frameScripts';
+import { frameStyles, ownsScrollbar, type FrameLayout } from './frameStyles';
+import { paletteCss, readThemePalette, type ThemePalette } from './frameTheme';
+import { SEND_PROMPT_DATA_MAX_BYTES } from './widgetProtocol';
+
+export { STREAM_RECEIVER_SCRIPT } from './frameScripts';
 
 export type HtmlSrcDocVariant = 'widget-inline' | 'widget-fullscreen';
 
 export interface BuildHtmlSrcDocOptions {
   html: string;
-  /** Inline data file contents — injected directly as __WIDGET_DATA__. */
+  /** Inline data file contents, injected as `window.__WIDGET_DATA__`. */
   data?: Record<string, string>;
+  /**
+   * Absolute URL ending in `/`, emitted as `<base href>`: the workspace folder
+   * under the viewer's file grant, so `<img src="memes/01.jpg">` and
+   * `fetch("data/bars.json")` load the workspace's files. Omitted, relative
+   * URLs resolve against the embedding page, which serves none of them.
+   */
+  base?: string;
+  /**
+   * What the localStorage stand-in starts with on an opaque origin, where the
+   * browser refuses real storage. Its writes go to the parent as
+   * `widget:storage`, which keeps them for the next render.
+   */
+  storageSeed?: Record<string, string>;
+  /** A fixed palette. Omitted, the live document's theme is read (`readThemePalette`). */
+  theme?: ThemePalette;
 }
 
-/** CSS variables to inject into the widget iframe for theme matching. */
-export const THEME_VARS = [
-  '--color-bg-page',
-  '--color-bg-card',
-  '--color-bg-elevated',
-  '--color-bg-input',
-  '--color-bg-surface',
-  '--color-bg-hover',
-  '--color-bg-subtle',
-  '--color-border-muted',
-  '--color-border-default',
-  '--color-border-elevated',
-  '--color-border-subtle',
-  '--color-text-primary',
-  '--color-text-secondary',
-  '--color-text-tertiary',
-  '--color-text-quaternary',
-  '--color-text-muted',
-  '--color-accent-primary',
-  '--color-accent-soft',
-  '--color-profit',
-  '--color-profit-soft',
-  '--color-loss',
-  '--color-loss-soft',
-  '--color-warning',
-  '--color-info',
-  '--color-success',
-];
-
-/** CSS safety net: force outermost element to be seamless regardless of agent HTML. */
-const SEAMLESS_OVERRIDE = `
-body > :first-child {
-  background: transparent !important;
-  border: none !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-  margin: 0 auto !important;
-}`;
-
-/**
- * The widget is a separate document, so it inherits none of the app's chrome and
- * draws the platform's default scrollbar: a bright slab against a dark surface.
- * Applies to both variants — an inline widget with its own scrolling table shows
- * the same one. Matches `styles/tokens.css`; keep them in step. A widget with
- * WebKit scrollbar rules of its own gets none of it: the two would merge rule by
- * rule, and a 6px scrollbar less this 3px inset on each side paints no thumb at
- * all. `scrollbar-width` and `scrollbar-color` cannot merge that way, so a
- * widget that sets only those still gets it, and a browser without them shows it.
- */
-const SCROLLBARS = `
-::-webkit-scrollbar { width: 12px; height: 12px; }
-::-webkit-scrollbar-track { background: transparent; margin: 4px; }
-::-webkit-scrollbar-thumb { background-color: var(--color-border-elevated); background-clip: padding-box; border: 3px solid transparent; border-radius: 6px; }
-::-webkit-scrollbar-thumb:hover { background-color: var(--color-text-tertiary); }`;
-const STYLES_OWN_SCROLLBAR = /-webkit-scrollbar/i;
-
-/**
- * Fullscreen caps at the chat column the widget was authored for and centres in
- * whatever room is left, rather than stretching: a widget built for a 768px
- * column has no layout to give at 1366px, so the extra width becomes dead space.
- *
- * The magnification that fills the dialog is NOT here. It is a `zoom` on the
- * host iframe (HtmlFullscreenModal.css), which is the element that knows how
- * much room there is; Chromium divides the child's layout viewport by it, so
- * this stays plain layout with no measurement in it. Keeping it out of the
- * document is also what stops it reaching the other boxes the same markup is
- * rendered in, notably the 680px print root.
- */
-const FULLSCREEN_LAYOUT = `
-body {
-  max-width: 768px;
-  margin-left: auto;
-  margin-right: auto;
-}
-body > :first-child {
-  margin-left: auto !important;
-  margin-right: auto !important;
-}`;
-
-/**
- * `rgba(r, g, b, a)` as the canvas serializes a translucent color, as
- * `#rrggbbaa`; null for any other form.
- */
-export function rgbaToHex(serialized: string): string | null {
-  const m = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(serialized);
-  if (!m) return null;
-  const byte = (n: number) => Math.min(255, Math.max(0, n)).toString(16).padStart(2, '0');
-  return `#${byte(+m[1])}${byte(+m[2])}${byte(+m[3])}${byte(Math.round(+m[4] * 255))}`;
+export interface BuildStreamSrcDocOptions {
+  base?: string;
+  theme?: ThemePalette;
 }
 
 /**
- * A theme color as hex: `#rrggbb`, or `#rrggbbaa` when translucent. The tokens
- * are written in whatever syntax suits the stylesheet (`hsl(var(--primary))`
- * reads back as `hsl(28 63% 51%)`), but a document reads them to paint a
- * canvas, and the report skills present them as hex. Code that derives a
- * shade by parsing hex gets NaN from any other form, and the canvas paints a
- * color it rejects black. The canvas's own parser does the conversion; with
- * none (jsdom), or for a value that is not an sRGB color, it passes through.
+ * The load policy of a served HTML report (`src/server/utils/html_policy.py`,
+ * `_LOADS`): it limits nothing a document loads, since a widget that cannot
+ * reach its chart library, an image or a public API just looks broken. What a
+ * widget can read is settled by the opaque origin (`WIDGET_SANDBOX`) and the
+ * grant its `<base>` carries. Keep the two in step.
  */
-function hexColor(value: string, painter: CanvasRenderingContext2D | null): string {
-  if (!painter) return value;
-  painter.fillStyle = '#000000';
-  painter.fillStyle = value;
-  const read = painter.fillStyle;
-  painter.fillStyle = '#ffffff';
-  painter.fillStyle = value;
-  // Not a color: each assignment was refused and left its sentinel.
-  if (typeof read !== 'string' || read !== painter.fillStyle) return value;
-  return read.startsWith('#') ? read : (rgbaToHex(read) ?? value);
-}
+export const WIDGET_CSP = "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'";
 
-/**
- * `from` exists for the print path, which needs the light palette rather than
- * the one the document is currently wearing (see widgetPdf.ts). Every other
- * caller wants the live theme and passes nothing.
- */
-export function resolveThemeVars(from: Element = document.documentElement): string {
-  const style = getComputedStyle(from);
-  const painter = document.createElement('canvas').getContext('2d');
-  const vars = THEME_VARS.map((v) => {
-    const val = style.getPropertyValue(v).trim();
-    return val ? `${v}: ${hexColor(val, painter)};` : '';
-  })
-    .filter(Boolean)
-    .join('\n  ');
-  // The host <html> declares color-scheme (index.html); an embedded document
-  // whose used color-scheme differs from its embedder's loses transparent
-  // compositing — the browser paints the iframe canvas opaque white, which in
-  // dark mode puts a white sheet behind the widget's transparent body. Mirror
-  // the host's scheme into the injected :root block (themeUpdate pushes ride
-  // along, since the iframe splices this string into that same block).
-  const scheme = style.colorScheme;
-  return scheme && scheme !== 'normal' ? `color-scheme: ${scheme};\n  ${vars}` : vars;
-}
-
-/**
- * What each variant asks of the document, so the template carries no branches.
- *
- * A widget is authored for the chat column, so neither variant stretches to fill
- * a wider box and the inline one never scrolls vertically. Fullscreen still caps
- * at that column width, but it no longer clips what overflows it. `html` here
- * carries no overflow of its own, so the body's value propagates to the
- * viewport, and `overflow-x: hidden` there put a widget wider than the cap out
- * of reach entirely rather than merely making it untidy. A widget that does not
- * fit the column is a widget we did not author; a sideways scrollbar is the
- * better way to be wrong about one.
- */
-const VARIANTS: Record<HtmlSrcDocVariant, { bodyOverflow: string; layout: string }> = {
-  'widget-inline': {
-    // Seamless in the chat flow: the host sizes the iframe from the widget's
-    // own reported height, so the document never scrolls down. It can scroll
-    // across: a widget wider than the column would otherwise be out of reach, and
-    // the height it reports counts what that scrollbar takes from the viewport,
-    // unless it is sized in vh and already fills the frame: each report would grow
-    // the frame, and the widget with it, without end.
-    bodyOverflow: 'overflow-x: auto; overflow-y: hidden;',
-    layout: SEAMLESS_OVERRIDE,
-  },
-  'widget-fullscreen': {
-    bodyOverflow: 'overflow: auto; height: 100%;',
-    layout: FULLSCREEN_LAYOUT,
-  },
+const LAYOUT: Record<HtmlSrcDocVariant, FrameLayout> = {
+  'widget-inline': 'inline',
+  'widget-fullscreen': 'fullscreen',
 };
 
-export function buildHtmlSrcDoc(
-  variant: HtmlSrcDocVariant,
-  { html, data: widgetData }: BuildHtmlSrcDocOptions,
-): string {
-  const themeCSS = resolveThemeVars();
-  const dataScript = widgetData && Object.keys(widgetData).length > 0
-    ? `<script>window.__WIDGET_DATA__ = ${JSON.stringify(widgetData).replace(/<\//g, '<\\/')};</script>\n`
-    : '';
+/**
+ * The theme's own element. A `widget:themeUpdate` push rewrites it whole
+ * (frameScripts/bridge.js writes this same text), then fires `themechange` on
+ * the window, so a widget can repaint what it drew from the variables (a
+ * canvas keeps the colors it was painted with). The first theme fires
+ * nothing: it is parsed before any widget script runs, and the template never
+ * applies it later, so there is nothing a listener could miss. A frame that
+ * needs another theme after load (the fullscreen dialog, the print copy) gets
+ * it as a push, which does fire.
+ */
+function themeStyle(css: string): string {
+  return `<style id="widget-theme">\n:root {\n  ${css}\n}\n</style>`;
+}
 
-  // Injected before any widget code runs:
-  // 1. Patch JSON.parse to handle NaN/Infinity from Python's json.dumps (not valid JSON).
-  //    Quoted strings are left untouched: a flat token scan with a per-parse
-  //    inString flag, so there is no repetition for the regexp engine to
-  //    backtrack over and a very long string cannot exhaust its stack. Text
-  //    with neither spelling skips the scan: the patch is global to the iframe,
-  //    so every other parse (chart libraries included) would pay for it.
-  // 2. Catch uncaught errors and unhandled rejections, display an inline error overlay.
-  // 3. Route link clicks to window.open(..., 'noopener'): a plain <a href>
-  //    navigates the IFRAME itself, rendering the target inside the sandbox
-  //    where it has no cookie access (real sites' bot checks break).
-  const earlyScripts = `<script>
-(function(){
-  var _p=JSON.parse;
-  JSON.parse=function(t,r){
-    if(typeof t==='string'&&(t.indexOf('NaN')!==-1||t.indexOf('Infinity')!==-1)){
-      var inString=false;
-      t=t.replace(/\\\\[\\s\\S]|"|(?<!\\w)(?:NaN|-?Infinity)\\b/g,function(token){
-        if(token==='"'){inString=!inString;return token;}
-        return inString||token.charAt(0)==='\\\\'?token:'null';
-      });
-    }
-    return _p.call(this,t,r);
-  };
-  var shown={},count=0,rendering=false;
-  function showError(msg){
-    if(rendering||shown[msg])return;
-    shown[msg]=1;
-    if(++count>5)return;
-    rendering=true;
-    msg=String(msg).slice(0,500);
-    var root=document.body||document.documentElement;
-    var d=document.createElement('div');
-    d.style.cssText='margin:12px;padding:14px 16px;background:var(--color-bg-card);border:0.5px solid var(--color-border-muted);border-radius:10px;display:flex;align-items:center;gap:12px;';
-    var dot=document.createElement('span');
-    dot.style.cssText='flex-shrink:0;width:6px;height:6px;border-radius:50%;background:var(--color-loss);';
-    var mid=document.createElement('div');
-    mid.style.cssText='flex:1;min-width:0;';
-    var detail=document.createElement('div');
-    detail.style.cssText='font:13px/1.4 ui-monospace,SFMono-Regular,monospace;color:var(--color-text-muted);white-space:pre-wrap;word-break:break-word;';
-    detail.textContent=msg;
-    mid.appendChild(detail);
-    var b=document.createElement('button');
-    b.textContent='Fix';
-    b.style.cssText='flex-shrink:0;padding:6px 14px;border-radius:8px;border:0.5px solid var(--color-border-default);background:var(--color-bg-elevated);color:var(--color-text-primary);font:500 13px/1 -apple-system,sans-serif;cursor:pointer;transition:background 0.15s;';
-    b.onmouseover=function(){b.style.background='var(--color-bg-hover)';};
-    b.onmouseout=function(){b.style.background='var(--color-bg-elevated)';};
-    b.onclick=function(){window.sendPrompt('The widget threw an error: '+msg+'. Please fix the widget code and call ShowWidget again.');b.textContent='Sent';b.disabled=true;b.style.opacity='0.4';b.style.cursor='default';};
-    d.appendChild(dot);d.appendChild(mid);d.appendChild(b);
-    root.appendChild(d);
-    parent.postMessage({type:'widget:resize',height:root.scrollHeight},'*');
-    rendering=false;
-  }
-  window.onerror=function(_,__,___,____,e){showError(e&&e.message||String(_));};
-  window.addEventListener('unhandledrejection',function(e){showError(e.reason&&e.reason.message||String(e.reason));});
-  document.addEventListener('click',function(e){
-    if(e.defaultPrevented)return;
-    var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
-    if(!a)return;
-    var href=a.getAttribute('href')||'';
-    if(href.charAt(0)==='#')return;
-    if(!/^https?:/i.test(a.href)){e.preventDefault();return;}
-    if(a.host===location.host)return;
-    e.preventDefault();
-    window.open(a.href,'_blank','noopener,noreferrer');
-  });
-})();
-</script>\n`;
+interface FrameHeadOptions {
+  base?: string;
+  theme?: ThemePalette;
+  csp: string;
+  layout: FrameLayout;
+  scrollbars: boolean;
+}
 
-  // A `widget:themeUpdate` push swaps the :root block, then fires `themechange`
-  // on the window, so a widget can repaint what it drew from the variables (a
-  // canvas keeps the colors it was painted with). The first theme fires
-  // nothing: it is the inline :root block below, parsed before any widget
-  // script runs, and the template never applies it later, so there is nothing
-  // a listener could miss. A frame that needs another theme after load (the
-  // fullscreen dialog, the print copy) gets it as a push, which does fire.
+/** The start of either document, up to where their scripts differ. */
+function frameHead({ base, theme, csp, layout, scrollbars }: FrameHeadOptions): string {
+  const themeCss = paletteCss(theme ?? readThemePalette());
+  // First in <head>: a <base> applies only to URLs resolved after it.
+  const baseTag = base ? `<base href="${escapeAttr(base)}">\n` : '';
   return `<!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; connect-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh;">
+${baseTag}<meta http-equiv="Content-Security-Policy" content="${csp}">
+${themeStyle(themeCss)}
 <style>
-:root {
-  ${themeCSS}
-}
-*, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; ${VARIANTS[variant].bodyOverflow} }
-${VARIANTS[variant].layout}\n${STYLES_OWN_SCROLLBAR.test(html) ? '' : SCROLLBARS}
+${frameStyles(layout, scrollbars)}
 </style>
-${earlyScripts}${dataScript}<script>
-window.sendPrompt = function(text) {
-  parent.postMessage({ type: 'widget:sendPrompt', text: String(text) }, '*');
-};
-(function() {
-  var lastH = 0;
-  var pending = 0;
-  function reportHeight() {
-    if (!document.body) return;
-    var h = document.body.scrollHeight;
-    if (h !== window.innerHeight) h += window.innerHeight - document.documentElement.clientHeight;
-    if (h > 0 && Math.abs(h - lastH) > 2) {
-      lastH = h;
-      parent.postMessage({ type: 'widget:resize', height: h }, '*');
-    }
-  }
-  function debouncedReport() {
-    if (pending) return;
-    pending = requestAnimationFrame(function() {
-      pending = 0;
-      reportHeight();
-    });
-  }
-  document.addEventListener('DOMContentLoaded', function() {
-    var mo = new MutationObserver(debouncedReport);
-    mo.observe(document.body, { childList: true, subtree: true });
-    if (typeof ResizeObserver === 'function') {
-      new ResizeObserver(debouncedReport).observe(document.body);
-    }
-    reportHeight();
-  });
-  var checks = [100, 300, 800, 2000, 5000];
-  checks.forEach(function(ms) { setTimeout(reportHeight, ms); });
-  // A container width change is a pure reflow — no DOM mutation — so the
-  // observers above never see it; track the viewport and body box directly.
-  window.addEventListener('resize', debouncedReport);
-  window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'widget:themeUpdate' && e.data.css) {
-      var style = document.querySelector('style');
-      if (style) {
-        style.textContent = style.textContent.replace(
-          /:root\\s*\\{[^}]*\\}/,
-          ':root {\\n  ' + e.data.css + '\\n}'
-        );
-        try { window.dispatchEvent(new Event('themechange')); } catch (err) {}
-      }
-    }
-  });
-})();
+`;
+}
+
+/**
+ * The widget's document, and the line of it on which the widget's own html
+ * starts: an inline script's error names a line of the whole document, and
+ * the widget's author knows the lines of its own html.
+ */
+export function buildWidgetSrcDoc(
+  variant: HtmlSrcDocVariant,
+  { html, data: widgetData, base, storageSeed, theme }: BuildHtmlSrcDocOptions,
+): { doc: string; htmlLine: number } {
+  const dataScript = widgetData && Object.keys(widgetData).length > 0
+    ? `<script>window.__WIDGET_DATA__ = ${scriptJson(widgetData)};</script>\n`
+    : '';
+  const head = `${frameHead({ base, theme, csp: WIDGET_CSP, layout: LAYOUT[variant], scrollbars: !ownsScrollbar(html) })}<script>
+${EARLY_SCRIPT}(${scriptJson(storageSeed ?? {})},${scriptJson(base ?? '')});
 </script>
-</head><body>${html}</body></html>`;
+${dataScript}<script>
+${BRIDGE_SCRIPT}(${SEND_PROMPT_DATA_MAX_BYTES});
+</script>
+</head><body>`;
+  return { doc: `${head}${html}</body></html>`, htmlLine: head.split('\n').length };
+}
+
+/** A fresh nonce for the preview's own scripts, so none in the markup can claim it. */
+function scriptNonce(): string {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes));
+}
+
+/**
+ * The preview drawn while a ShowWidget call's arguments stream: the widget's
+ * policy, theme, base, inline layout and height reports, with the receiver
+ * (`STREAM_RECEIVER_SCRIPT`) in place of the widget's code and an empty body,
+ * which the parent fills by posting `widget:streamHtml`. Laid out as the inline
+ * widget that replaces it, so the hand-over moves nothing. Only scripts
+ * carrying its nonce run, so markup drawn into it never does.
+ */
+export function buildStreamSrcDoc({ base, theme }: BuildStreamSrcDocOptions = {}): string {
+  const nonce = scriptNonce();
+  return `${frameHead({ base, theme, csp: `${WIDGET_CSP}; script-src 'nonce-${nonce}'`, layout: 'inline', scrollbars: true })}<script nonce="${nonce}">
+${BRIDGE_SCRIPT}(${SEND_PROMPT_DATA_MAX_BYTES});
+</script>
+<script nonce="${nonce}">
+${STREAM_RECEIVER_SCRIPT}();
+</script>
+</head><body></body></html>`;
+}
+
+export function buildHtmlSrcDoc(variant: HtmlSrcDocVariant, options: BuildHtmlSrcDocOptions): string {
+  return buildWidgetSrcDoc(variant, options).doc;
 }

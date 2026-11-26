@@ -32,3 +32,26 @@
   justify-content: center;
   pointer-events: none;
 }
+
+/* One ShowWidget call in the transcript, preview and widget alike (WidgetBlock).
+   A block of its own, so the margins of the frame in the flow stay inside it
+   and the preview lying under the widget lines up with it; clipped, so a
+   preview taller than the widget it hands over to never overlaps what follows. */
+.widget-block {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Nothing drawn yet: the preview takes no room, and the preparing line stands in. */
+.widget-stream-container[data-empty] {
+  margin: 0;
+}
+
+/* Handing over: the preview stays under the widget until the widget has faded in. */
+.widget-stream-container[data-overlay] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}

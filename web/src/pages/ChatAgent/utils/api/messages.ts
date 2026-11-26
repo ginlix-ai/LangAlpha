@@ -59,6 +59,9 @@ export interface SendThreadSettings {
 
 type OnStreamEvent = (event: Record<string, unknown>) => void;
 
+/** `ChatRequest.device`: which of the app's layouts a message was sent from. */
+export type ChatDevice = 'phone' | 'desktop';
+
 /** What a send and a resume both carry besides their message. */
 interface StreamTurnOptions {
   onEvent?: OnStreamEvent;
@@ -82,6 +85,9 @@ export interface SendChatMessageOptions extends StreamTurnOptions {
    *  refuses the fork as stale when another run came since. */
   expectedLatestRunId?: string | null;
   platform?: string | null;
+  /** The layout the app was in when the user sent this (`phone` below a
+   *  768 px viewport), so the agent shapes the reply for that device first. */
+  device?: ChatDevice | null;
   threadSettings?: SendThreadSettings;
   /** Only steer a running turn: with none running the server refuses the
    *  send as `not_running` instead of starting one. */
@@ -136,6 +142,7 @@ export async function sendChatMessageStream(
     reasoningEffort = null,
     fastMode = null,
     platform = null,
+    device = null,
     onRunIdResolved = null,
     signal = null,
     requestKey = null,
@@ -177,6 +184,7 @@ export async function sendChatMessageStream(
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
   if (fastMode != null) body.fast_mode = fastMode;
   if (platform) body.platform = platform;
+  if (device) body.device = device;
   if (threadSettings.subagentsAllowed !== undefined) body.subagents_allowed = threadSettings.subagentsAllowed;
   // Use /threads/{id}/messages for existing thread, /threads/messages for new
   const isNewThread = !threadId || threadId === '__default__';

@@ -63,7 +63,11 @@ import {
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
 import type { ComposerSend, ContextPayload } from '../../../components/ui/chat-input.types';
-import { attachmentSendParts, widgetSnapshotsToContexts } from '../utils/fileUpload';
+import { attachmentSendParts } from '../utils/fileUpload';
+import { snapshotSendParts } from '../utils/widgetPrompt';
+import { newThreadCarry } from './chatView/newThreadCarry';
+import { hostSendParts } from './chatView/hostSendParts';
+import { useWidgetPromptActions } from './chatView/useWidgetPromptActions';
 import MessageList, { LiveMessageList, normalizeSubagentText } from './MessageList';
 import { MessageActionsProvider } from './messageList/MessageActionsContext';
 import { UserBubble } from './messageList/UserBubble';
@@ -792,6 +796,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   }, [isCompacting, isLoading, handleStop, stableStopCompaction]);
 
   const panelChart = usePanelChart(chatInputRef);
+  const pageSendParts = useStableHandler((marketWatch: boolean | null | undefined, present: Record<string, unknown>[]) =>
+    hostSendParts(!!marketWatch && marketWatchEnabled, present, panelChart.viewsForSend()));
 
   // Wrapper: converts ChatInput's send into handleSendMessage(message,
   // additionalContext, attachmentMeta), the send itself the draft it gives back.
@@ -810,29 +816,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       }
     }
 
-    // Watch toggle activates the market-watch skill (re-sent every turn while
-    // on, as MarketView's sends carry the chart-annotation skill). Dedup against a manually-typed
-    // /market-watch pill added by the loop above (SkillsMiddleware also dedups
-    // the body, but this keeps the context list clean).
-    if (modelOptions.marketWatch && marketWatchEnabled && !contexts.some((c) => c.type === 'skills' && c.name === 'market-watch')) {
-      contexts.push({
-        type: 'skills',
-        name: 'market-watch',
-        instruction: 'Market watch mode is on for this message. If the central tickers are not yet registered, register them with watch_market.',
-      });
-    }
+    const host = pageSendParts(modelOptions.marketWatch, contexts);
+    contexts.push(...host.contexts);
 
     // Widget context snapshots from the deck rail. Each snapshot becomes one
     // `{type:"widget"}` item plus an optional sibling `{type:"image"}` item
     // (the existing MultimodalContext channel handles vision-vs-text-only
     // routing). The same snapshots are also forwarded to handleSendMessage so
     // the user message renders chip cards inline below its bubble.
-    if (modelOptions.widgetSnapshots && modelOptions.widgetSnapshots.length > 0) {
-      contexts.push(...widgetSnapshotsToContexts(modelOptions.widgetSnapshots));
-    }
-
-    // What each chart in the panel shows.
-    const chartViews = panelChart.viewsForSend();
+    contexts.push(...snapshotSendParts(modelOptions.widgetSnapshots).contexts);
 
     const additionalContext = contexts.length > 0 ? contexts : null;
     const attachmentMeta = meta.length > 0 ? meta : null;
@@ -841,10 +833,30 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     stableSendMessage(message, additionalContext, attachmentMeta, composerSendOptions({
       ...modelOptions,
       ...(artifactComments ? { artifactComments } : {}),
-      ...(chartViews.length > 0 ? { chartViews } : {}),
+      ...host.options,
       draft: send,
     }));
-  }, [marketWatchEnabled, stableSendMessage, panelChart, takeQueuedComments, composerSendOptions]);
+  }, [pageSendParts, stableSendMessage, takeQueuedComments, composerSendOptions]);
+
+  // A widget's send goes out as the box's would; its new thread opens in this
+  // workspace (Home's, in the Chief of Staff) as a new chat's composer opens one.
+  const widgetPrompts = useWidgetPromptActions({
+    chatInputRef,
+    send: (text, parts) => {
+      const composer = readComposerOptions();
+      const host = pageSendParts(composer?.marketWatch, parts.contexts);
+      const contexts = [...host.contexts, ...parts.contexts];
+      stableSendMessage(text, contexts.length > 0 ? contexts : null, null, composerSendOptions({ ...composer, ...parts.options, ...host.options }));
+    },
+    openThread: (text, parts, carry) => {
+      const host = pageSendParts(readComposerOptions()?.marketWatch, parts.contexts);
+      const contexts = [...host.contexts, ...parts.contexts];
+      // Through the file panel's unsaved-draft check, as every exit to another thread.
+      leaveToThread('__default__', { workspaceId, initialMessage: text,
+        ...(contexts.length > 0 ? { additionalContext: contexts } : {}), ...parts.options, ...host.options, ...carry } satisfies LocationState);
+    },
+    readCarry: () => newThreadCarry(readComposerOptions(), threadSubagents, threadTuning.tuning),
+  });
 
   const planReader = useLatestRef(usePlanReader());
 
@@ -1318,13 +1330,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     onThumbUp: handleThumbUp,
     onThumbDown: handleThumbDown,
     onThumbDownFollowUp: handleThumbDownFollowUp,
-    onWidgetSendPrompt: stableSendMessage,
+    widgetPrompts,
     onEditMessage: stableEditMessage,
     onRegenerate: stableRegenerate,
     onRetry: stableRetry,
     onForkFromTurn: handleForkFromTurn,
     editDrafts,
-    onSendMessage: handleSendMessage,
     chatInputRef,
   });
 

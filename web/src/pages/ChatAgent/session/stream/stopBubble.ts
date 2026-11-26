@@ -2,7 +2,7 @@ import type { StructuredError } from '@/utils/rateLimitError';
 import type { TurnStop } from '@/types/chat';
 import { failAssistantMessage, finalizeAssistantMessage } from './finalizeMessage';
 import { continuationChain, holdsContent } from './continuedBubbles';
-import { withoutPending } from './toolCallChunks';
+import { withoutStreamDrafts } from './toolCallChunks';
 import type { MessageRecord, SetMessages } from '../../hooks/utils/types';
 import type { StreamRefs } from '../streamRefs';
 import type { SSEEvent } from '../types';
@@ -72,7 +72,7 @@ function settleTurnEnd(
     if (chain.length === 0) return prev;
     const target = chain.find(holdsContent) ?? chain[chain.length - 1];
     const settled = new Map(chain.map((msg): [string, MessageRecord] => {
-      const closed = withoutPending({
+      const closed = withoutStreamDrafts({
         ...msg,
         toolCallProcesses: closeToolRows(msg),
         reasoningProcesses: closeThoughts(msg, closedAt, fromBacklog),

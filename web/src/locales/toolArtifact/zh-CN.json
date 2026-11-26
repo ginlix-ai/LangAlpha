@@ -166,6 +166,7 @@
   "done": "完成",
   "toolCall": "工具调用",
   "tool": {
+    "showWidget": "小组件",
     "stockPrices": "股票价格",
     "companyOverview": "公司概况",
     "liveQuotes": "实时报价",
@@ -368,7 +369,8 @@
     "preparingRequest": "准备请求...",
     "buildingSearchPattern": "构建搜索模式...",
     "composingMessage": "撰写消息{{size}}...",
-    "generating": "生成中{{size}}..."
+    "generating": "生成中{{size}}...",
+    "drawingWidget": "绘制小组件{{size}}..."
   },
   "nChars": "~{{count}} 字符",
   "nKB": "~{{size}} KB",
