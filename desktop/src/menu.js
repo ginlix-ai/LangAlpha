@@ -142,7 +142,10 @@ function buildMenu({
   const viewMenu = {
     label: 'View',
     submenu: [
-      command('Toggle Sidebar', 'toggle-sidebar', isMac ? 'Ctrl+Cmd+S' : 'Ctrl+Shift+S'),
+      // The page answers Cmd+B itself and takes the key, so a shell keeps it
+      // out of the menu's hands while that build is loaded; the menu answers
+      // only for a build that leaves the key alone.
+      command('Toggle Sidebar', 'toggle-sidebar', 'CmdOrCtrl+B'),
       { type: 'separator' },
       // Not `role: 'reload'`: on the outage page that reloads the local error
       // file, which is the one moment someone actually reaches for ⌘R.
