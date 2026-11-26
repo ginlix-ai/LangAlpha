@@ -36,3 +36,8 @@ def test_the_payload_stamps_chat_app_from_its_platform(platform, chat_app):
 
     assert payload["chat_app"] is chat_app
     assert payload["platform"] == (platform or None)
+
+
+def test_the_payload_keeps_the_device_it_was_sent_from():
+    assert steer_payload("also cover bonds", "u-1", device="phone")["device"] == "phone"
+    assert "device" not in steer_payload("also cover bonds", "u-1")

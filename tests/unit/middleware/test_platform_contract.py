@@ -154,14 +154,23 @@ class TestTheLowDiskLine:
 CALLER_RULES = "Surface slack: plain text, a few short paragraphs, no widgets."
 
 
-def _rules(surface: str, surface_rules: str | None = None) -> str:
+def _rules(
+    surface: str,
+    surface_rules: str | None = None,
+    *,
+    device: str | None = None,
+    symbol: str | None = None,
+    level: str = "lean",
+) -> str:
     from ptc_agent.agent.prompts import guidance_template_vars, init_loader
 
     return init_loader().render(
         "envelope/surface_rules.md.j2",
-        **guidance_template_vars("lean"),
+        **guidance_template_vars(level),
         surface=surface,
         surface_rules=surface_rules,
+        device=device,
+        symbol=symbol,
     )
 
 
@@ -209,3 +218,49 @@ class TestTheReadersAgree:
             workspace_id="ws-1", first_query="what moved?", platform="market_view:AAPL"
         )
         assert parse_surface(request.platform) == Surface("market_view", "AAPL")
+
+
+#: The web line per device the web app sends, and with none.
+WEB_LINES = {
+    "phone": (
+        "Surface web, on a phone: full markdown, no length cap; widgets, charts, "
+        "HTML reports and file deliverables are all available. The chat column "
+        "is about 350 px wide, so shape tables, widgets and charts for a phone "
+        "first."
+    ),
+    "desktop": (
+        "Surface web, on a desktop: full markdown, no length cap; widgets, "
+        "charts, HTML reports and file deliverables are all available. The chat "
+        "column is up to 768 px wide."
+    ),
+    None: (
+        "Surface web: full markdown, no length cap; widgets, charts, HTML "
+        "reports and file deliverables are all available."
+    ),
+}
+
+MARKET_VIEW_LINE = (
+    "Surface market_view: the user is looking at the price chart for AAPL and "
+    "asking about what is in front of them. Anything they selected on that chart "
+    "arrives with their message. Annotations you draw on that chart show up to "
+    "the user on it. Its chat is a narrow panel, about 350 px wide."
+)
+
+
+class TestTheDevice:
+    """The web app names the layout it was in when the user sent the turn, so
+    the reply is shaped for that device first."""
+
+    @pytest.mark.parametrize("device", ["phone", "desktop", None])
+    @pytest.mark.parametrize("level", ["lean", "detailed"])
+    def test_the_web_line_names_the_device(self, device, level):
+        assert _rules("web", device=device, level=level).strip() == WEB_LINES[device]
+
+    @pytest.mark.parametrize("device", ["phone", "desktop", None])
+    @pytest.mark.parametrize("level", ["lean", "detailed"])
+    def test_the_market_view_chat_is_narrow_on_any_device(self, device, level):
+        rendered = _rules("market_view", device=device, symbol="AAPL", level=level)
+        assert rendered.strip() == MARKET_VIEW_LINE
+
+    def test_caller_rules_still_replace_the_line(self):
+        assert _rules("web", CALLER_RULES, device="phone").strip() == CALLER_RULES

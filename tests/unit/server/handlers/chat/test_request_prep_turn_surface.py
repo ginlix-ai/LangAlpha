@@ -168,6 +168,37 @@ class TestARetryTakesItsAttemptsSurface:
         assert inherits is False
 
     @pytest.mark.asyncio
+    async def test_a_retried_web_turn_keeps_the_device_it_was_sent_from(self):
+        """The web line reads the device, so a retry sent with none would
+        restate the line without it."""
+        request = ChatRequest(platform="web", device="phone")
+        stamp = surface_stamp(request, PriorThread(), inherits_rules=False)
+        assert stamp == {"surface": {"platform": "web", "device": "phone"}}
+
+        retry = ChatRequest(messages=[], checkpoint_id="cp-1", retry_of_run_id="run-0")
+        with patch(
+            f"{PREP}.tl_db.get_run",
+            new_callable=AsyncMock,
+            return_value={"metadata": stamp},
+        ):
+            restored, _ = await retried_on_its_surface(retry)
+
+        assert restored.device == "phone"
+        ctx = build_turn_context(restored, PriorThread(), user_profile=None)
+        assert (ctx.platform, ctx.device) == ("web", "phone")
+
+    @pytest.mark.asyncio
+    async def test_a_stamped_device_this_build_does_not_know_is_dropped(self):
+        failed = {"metadata": {"surface": {"platform": "web", "device": "watch"}}}
+        retry = ChatRequest(messages=[], checkpoint_id="cp-1", retry_of_run_id="run-0")
+        with patch(
+            f"{PREP}.tl_db.get_run", new_callable=AsyncMock, return_value=failed
+        ):
+            restored, _ = await retried_on_its_surface(retry)
+
+        assert restored.device is None
+
+    @pytest.mark.asyncio
     async def test_a_turn_that_is_no_retry_reads_nothing(self):
         request = ChatRequest()
         with patch(f"{PREP}.tl_db.get_run", new_callable=AsyncMock) as get_run:

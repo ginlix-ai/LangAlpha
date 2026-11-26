@@ -125,7 +125,7 @@ def _patched(watchlist, snaps=_SNAPS, phase=MarketPhase.REGULAR, cfg=_CFG):
         stack.enter_context(
             patch(f"{_MOD}.clock_for_ref", return_value=_fake_clock(phase))
         )
-        stack.enter_context(patch(f"{_MOD}.get_config", MagicMock(return_value=cfg)))
+        stack.enter_context(patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(return_value=cfg)))
         yield SimpleNamespace(provider=provider)
 
 
@@ -215,7 +215,7 @@ async def test_noop_without_thread_id(recording_handler):
     mw = _mw()
     request = _human_request()
 
-    with patch(f"{_MOD}.get_config", MagicMock(return_value={"configurable": {}})):
+    with patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(return_value={"configurable": {}})):
         await _call(mw, request, recording_handler)
 
     assert recording_handler.seen[0] is request
@@ -227,7 +227,7 @@ async def test_noop_outside_runnable_context(recording_handler):
     mw = _mw()
     request = _human_request()
 
-    with patch(f"{_MOD}.get_config", MagicMock(side_effect=RuntimeError("no ctx"))):
+    with patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(side_effect=RuntimeError("no ctx"))):
         await _call(mw, request, recording_handler)
 
     assert recording_handler.seen[0] is request
@@ -357,7 +357,7 @@ async def test_watchlist_change_mid_window_refetches(recording_handler):
          patch("src.tools.market_data.quote_format.get_market_session",
                return_value=("REGULAR_HOURS", _FIXED_ET)), \
          patch(f"{_MOD}.clock_for_ref", return_value=_fake_clock(MarketPhase.REGULAR)), \
-         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+         patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(return_value=_CFG)):
         first = _human_request()
         await _call(mw, first, recording_handler)
         second = _human_request()
@@ -385,7 +385,7 @@ async def test_venue_close_mid_window_stops_injection(recording_handler):
          patch(f"{_MOD}.clock_for_ref",
                side_effect=[_fake_clock(MarketPhase.REGULAR),
                             _fake_clock(MarketPhase.CLOSED)]), \
-         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+         patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(return_value=_CFG)):
         first = _human_request()
         await _call(mw, first, recording_handler)
         second = _human_request()
@@ -435,7 +435,7 @@ async def test_stamps_when_hk_open_while_us_closed(recording_handler):
          patch("src.tools.market_data.quote_format.get_market_session",
                return_value=("CLOSED", _FIXED_ET)), \
          patch(f"{_MOD}.clock_for_ref", side_effect=_by_venue), \
-         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+         patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(return_value=_CFG)):
         await _call(mw, request, recording_handler)
 
     _assert_stamped(request, recording_handler.seen[0])
@@ -468,7 +468,7 @@ async def test_provider_failure_is_silent(recording_handler):
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["NVDA"])), \
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
          patch(f"{_MOD}.clock_for_ref", return_value=_fake_clock(MarketPhase.REGULAR)), \
-         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+         patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(return_value=_CFG)):
         result = await _call(mw, request, recording_handler)
 
     assert result == "MODEL_RESPONSE"
@@ -484,7 +484,7 @@ async def test_post_throttle_failure_is_silent(recording_handler):
 
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["NVDA"])), \
          patch(f"{_MOD}.clock_for_ref", side_effect=RuntimeError("boom")), \
-         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+         patch("ptc_agent.agent.middleware._utils.get_config", MagicMock(return_value=_CFG)):
         result = await _call(mw, request, recording_handler)
 
     assert result == "MODEL_RESPONSE"

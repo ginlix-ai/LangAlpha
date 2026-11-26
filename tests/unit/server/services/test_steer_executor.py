@@ -121,6 +121,14 @@ async def test_a_user_steer_becomes_its_own_turn_under_its_surface(platform):
 
 
 @pytest.mark.asyncio
+async def test_a_user_steer_that_becomes_its_own_turn_keeps_its_device():
+    """A phone user's unread steer is still answered for the phone."""
+    mocks = await _execute(_payload(device="phone"))
+
+    assert mocks["post"].await_args.kwargs["body"]["device"] == "phone"
+
+
+@pytest.mark.asyncio
 async def test_a_user_steer_without_a_key_gets_one_stable_per_job():
     """A re-post after a lost answer must dedup on the same key."""
     mocks = await _execute(_payload(request_key=None))
