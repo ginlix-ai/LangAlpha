@@ -18,6 +18,8 @@ RENAMED_SETTINGS: dict[str, str] = {
     "GINLIXFLOW_BASE_URL": "SERVER_LOOPBACK_URL",
     "PDF_RENDER_INTERNAL_BASE": "SERVER_LOOPBACK_URL",
     "EGRESS_RELAY_LOOPBACK_URL": "SERVER_LOOPBACK_URL",
+    "EGRESS_RELAY_BASE_URL": "SERVER_SANDBOX_URL",
+    "PUBLIC_API_BASE_URL": "LANGALPHA_DATA_SANDBOX_URL",
 }
 
 #: Former names whose blank was a value, not unset: a blank GINLIX_DATA_SEC_ENABLED
@@ -97,11 +99,10 @@ LANGALPHA_DATA_ENABLED: bool = bool(LANGALPHA_DATA_URL)
 # on LangAlpha Data.
 LANGALPHA_DATA_SEC_ENABLED: bool = os.getenv("LANGALPHA_DATA_SEC_ENABLED", "true").lower() == "true"
 
-# Where a sandbox reaches the platform's public API, LangAlpha Data included.
-# Sandboxes are remote, so this stays publicly reachable even when this server
-# reaches the same services over a private address; unset, they use
-# LANGALPHA_DATA_URL as this server does.
-PUBLIC_API_BASE_URL: str = os.getenv("PUBLIC_API_BASE_URL", "").rstrip("/")
+# Where sandboxes reach LangAlpha Data. Sandboxes are remote, so this stays
+# publicly reachable even when this server reaches the service over a private
+# address; unset, they use LANGALPHA_DATA_URL as this server does.
+LANGALPHA_DATA_SANDBOX_URL: str = os.getenv("LANGALPHA_DATA_SANDBOX_URL", "").rstrip("/")
 
 # Public base URL of this server (used in agent-generated URLs like preview links)
 SERVER_BASE_URL: str = os.getenv("SERVER_BASE_URL", "http://localhost:8000")
@@ -160,17 +161,15 @@ SERVER_LOOPBACK_URL: str = (
 # then have no execution path, but nothing else is affected.
 EGRESS_RELAY_SECRET: str = os.getenv("EGRESS_RELAY_SECRET", "")
 
-# Base URL sandboxes use to reach this backend: the egress relay (the generated
-# client appends /v1/egress/{grant_id}) and the file mount that serves memory,
-# profile, automations and workflows to sandbox code, plus memos and
-# transcripts read-only (/api/v1/livefs/). Sandboxes are remote
-# (or in OSS Docker, on a different network), so this must be a
-# sandbox-reachable address. Empty means
-# unconfigured: services/egress/reachability.py then falls back to the server
-# base, adapted per sandbox provider (Docker host gateway) or warned about
-# (Daytona + a local address). Point it at the API origin, not an SPA-fallback
-# frontend.
-EGRESS_RELAY_BASE_URL: str = os.getenv("EGRESS_RELAY_BASE_URL", "")
+# Where sandboxes, SSH machines and their la CLI reach this backend: the egress
+# relay (the generated client appends /v1/egress/{grant_id}), the file and
+# Drive mounts (/api/v1/livefs/), the la CLI's token file and the SSH pairing
+# script. Sandboxes are remote (or, in OSS Docker, on another network), so this
+# must be an address they can reach. Unset, services/egress/reachability.py
+# falls back to the server base, adapted per sandbox provider (Docker host
+# gateway) or warned about (a remote provider with a local address). Point it
+# at the API origin, not an SPA-fallback frontend.
+SERVER_SANDBOX_URL: str = os.getenv("SERVER_SANDBOX_URL", "")
 
 # Credit conversion rate (USD → credits).  Override with USD_TO_CREDITS_RATE env var.
 USD_TO_CREDITS_RATE: int = int(os.getenv("USD_TO_CREDITS_RATE", "1000"))

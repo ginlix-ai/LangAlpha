@@ -49,16 +49,16 @@ def _is_local_host(host: str) -> bool:
 def effective_relay_base_url(provider: str) -> str:
     """The relay base a sandbox on `provider` should dial.
 
-    An explicitly configured EGRESS_RELAY_BASE_URL is always honored verbatim.
+    An explicitly configured SERVER_SANDBOX_URL is always honored verbatim.
     Only the implicit SERVER_BASE_URL fallback is adapted: for local Docker
     sandboxes a loopback host is rewritten to the Docker host gateway, so the
     OSS default stack works with zero relay configuration. A computer on this
     very machine dials loopback as it is.
     """
-    from src.config.env import EGRESS_RELAY_BASE_URL, SERVER_BASE_URL
+    from src.config.env import SERVER_BASE_URL, SERVER_SANDBOX_URL
 
-    if EGRESS_RELAY_BASE_URL:
-        return EGRESS_RELAY_BASE_URL
+    if SERVER_SANDBOX_URL:
+        return SERVER_SANDBOX_URL
     parts = urlsplit(SERVER_BASE_URL)
     host = (parts.hostname or "").lower()
     if provider_reaches_host_through_alias(provider) and (
@@ -84,7 +84,7 @@ def relay_reachability_warning(provider: str, base_url: str) -> str | None:
         f"{provider_class(provider).label} sandboxes run remotely and "
         f"cannot reach the egress relay at "
         f"'{base_url}'. OAuth connector tools will fail inside sandboxes until "
-        "EGRESS_RELAY_BASE_URL points at a URL that is reachable from the "
+        "SERVER_SANDBOX_URL points at a URL that is reachable from the "
         "sandbox network — your backend's public domain, or a tunnel "
         "(e.g. cloudflared) during local development."
     )

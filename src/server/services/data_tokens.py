@@ -22,7 +22,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from src.config.env import PLATFORM_SERVICE_URL, LANGALPHA_DATA_URL, PUBLIC_API_BASE_URL
+from src.config.env import (
+    LANGALPHA_DATA_SANDBOX_URL,
+    LANGALPHA_DATA_URL,
+    PLATFORM_SERVICE_URL,
+)
 from src.server.auth import computer_token_core
 from src.server.database import computer_data_tokens as db
 from src.server.database.shared_workspaces import is_holder
@@ -247,7 +251,7 @@ def _payload(minted: Minted) -> dict[str, Any]:
             "%Y-%m-%dT%H:%M:%SZ"
         ),
         # Sandboxes are remote, so they reach ginlix-data at its public address.
-        "ginlix_data_url": PUBLIC_API_BASE_URL or LANGALPHA_DATA_URL.rstrip("/"),
+        "ginlix_data_url": LANGALPHA_DATA_SANDBOX_URL or LANGALPHA_DATA_URL.rstrip("/"),
     }
 
 
