@@ -74,7 +74,9 @@ def resolve_amendments(filings: pd.DataFrame, rows: pd.DataFrame | None = None) 
     number = f.amendment_no if "amendment_no" in f else pd.Series(0, index=f.index)
     f = f.assign(_amended=f.kind != "original", _no=pd.to_numeric(number, errors="coerce").fillna(0))
     f = f.sort_values(["filer_cik", "period", "filed", "_amended", "_no", "accession"])
-    keys = _row_keys(rows[rows.accession.isin(set(f.accession))]) if rows is not None and len(rows) else {}
+    # Rows are compared only within a filer's period that has a NEW HOLDINGS amendment, so only those are keyed.
+    amended = f.merge(f.loc[f.kind == "new", ["filer_cik", "period"]].drop_duplicates()).accession
+    keys = _row_keys(rows[rows.accession.isin(set(amended))]) if rows is not None and len(rows) else {}
     keep: list[str] = []
     for _, g in f.groupby(["filer_cik", "period"], sort=False):
         base = None

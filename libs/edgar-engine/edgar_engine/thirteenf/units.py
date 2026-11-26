@@ -11,10 +11,12 @@ Neither names a filer: the evidence is the report's own rows and the quarter's.
 from __future__ import annotations
 
 from datetime import datetime
+from functools import lru_cache
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
+from edgar.thirteenf import units as _edgartools_units
 from edgar.thirteenf.units import resolve_value_unit as _edgartools_resolver
 
 from .model import UnitResolution
@@ -35,33 +37,126 @@ def resolve_value_unit(rows: Iterable[tuple], schema_version: str | None, period
     return UnitResolution(r.unit, r.source, bool(r.ambiguous), int(r.priceable_rows or 0))
 
 
-def _per_filer_prices(rows: pd.DataFrame) -> pd.DataFrame:
-    """Median implied price (value per share, as filed) per CUSIP and filer, over priceable share rows."""
-    pc = rows.put_call.fillna("").astype(str).str.strip()
-    x = rows[(rows.sh_prn == "SH") & (pc == "") & (rows.shares > 0) & (rows.value > 0)]
+@lru_cache(maxsize=None)
+def _by_metadata(schema_version: str | None, period: str | None) -> UnitResolution:
+    return resolve_value_unit([], schema_version, period)
+
+
+def resolve_value_units(rows: pd.DataFrame, reports: pd.DataFrame) -> dict[str, UnitResolution]:
+    """resolve_value_unit of many reports at once, the resolution it gives each: rows has accession, value, shares,
+    sh_prn and put_call; reports one row per accession with schema_version and period (a missing one is None). A
+    report with no rows resolves by its schema version and period alone.
+
+    The resolver judges a report by its count of priceable rows and how many of them imply a sub-dollar price, so
+    those two are counted for every report in one pass; the schema and period fallback is the resolver's own."""
+    t = _edgartools_units
+    codes, distinct = pd.factorize(rows.accession)
+    codes = np.r_[pd.Index(reports.accession).get_indexer(distinct), -1][codes]
+    priceable, values, shares = _priceable_mask(rows, strip_put_call=False)
+    priceable &= (codes >= 0) & (shares < np.inf) & (values < np.inf)
+    with np.errstate(over="ignore", divide="ignore"):
+        price = values[priceable] / shares[priceable]
+    at = codes[priceable]
+    seen = (price > 0) & (price < np.inf)
+    count = np.bincount(at[seen], minlength=len(reports))
+    low = np.bincount(at[seen & (price < t._13F_IMPLIED_PRICE_THOUSANDS_THRESHOLD)], minlength=len(reports))
+    out = {}
+    for acc, schema_version, period, n, k in zip(reports.accession, reports.schema_version, reports.period,
+                                                 count.tolist(), low.tolist()):
+        fraction = k / n if n else None
+        if (fraction is not None and fraction >= t._13F_FRAC_THOUSANDS
+                and not t._13F_FRAC_DEAD_BAND[0] < fraction < t._13F_FRAC_DEAD_BAND[1]):
+            out[acc] = UnitResolution("thousands", "implied_prices", n < t._13F_MIN_PRICEABLE_ROWS, n)
+        else:
+            fallback = _by_metadata(*(v if isinstance(v, str) else None for v in (schema_version, period)))
+            out[acc] = UnitResolution(fallback.unit, fallback.source, True, n)
+    return out
+
+
+def _priceable_mask(rows: pd.DataFrame, strip_put_call: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(priceable, value, shares): which rows a price can be read from (SH, no put or call, value and shares above
+    zero; a missing cell is not priceable), and the two number columns as floats. edgartools' resolver takes a put or
+    call of spaces for an option and the peer check takes it for none, so strip_put_call says which to follow."""
+    values = pd.to_numeric(rows.value, errors="coerce").to_numpy(float, na_value=np.nan)
+    shares = pd.to_numeric(rows.shares, errors="coerce").to_numpy(float, na_value=np.nan)
+    put_call, distinct = pd.factorize(rows.put_call)
+    blank = np.array([(str(v).strip() if strip_put_call else v) == "" for v in distinct] + [True], bool)
+    with np.errstate(invalid="ignore"):
+        priceable = ((rows.sh_prn == "SH").to_numpy(bool, na_value=False) & blank[put_call]
+                     & (values > 0) & (shares > 0))
+    return priceable, values, shares
+
+
+def _priceable(rows: pd.DataFrame) -> pd.DataFrame:
+    """The priceable share rows (_priceable_mask), with only the columns the price checks read."""
+    keep = _priceable_mask(rows, strip_put_call=True)[0]
+    return rows.loc[keep, [c for c in ("accession", "cusip", "filer_cik", "value", "shares") if c in rows.columns]]
+
+
+def _per_filer_prices(x: pd.DataFrame) -> pd.DataFrame:
+    """Median implied price (value per share, as filed) per CUSIP and filer, over priceable rows."""
     return x.assign(px=x.value / x.shares).groupby(["cusip", "filer_cik"]).px.median().reset_index()
 
 
 def consensus_prices(rows: pd.DataFrame, min_filers: int = MIN_FILERS) -> pd.Series:
     """Median implied price per CUSIP across filers, one vote per filer; only CUSIPs with at least min_filers.
     rows has filer_cik, cusip, value, shares, sh_prn, put_call, all of one period."""
-    g = _per_filer_prices(rows).groupby("cusip").px
+    g = _per_filer_prices(_priceable(rows)).groupby("cusip").px
     c = g.median()
     return c[g.size() >= min_filers]
 
 
-def _others_median(sorted_px: np.ndarray) -> np.ndarray:
-    """For each element of a sorted array, the median of the others."""
-    n = len(sorted_px)
-    i = np.arange(n)
-    if n < 2:
-        return np.full(n, np.nan)
+def _runs(*keys: np.ndarray) -> np.ndarray:
+    """Where each run of equal keys starts, in arrays sorted by those keys."""
+    change = np.zeros(len(keys[0]), bool)
+    change[:1] = True
+    for k in keys:
+        change[1:] |= k[1:] != k[:-1]
+    return np.flatnonzero(change)
 
-    def without_i(j: int) -> np.ndarray:
-        return np.where(j < i, sorted_px[min(j, n - 1)], sorted_px[min(j + 1, n - 1)])
 
-    m = n - 1
-    return without_i(m // 2) if m % 2 else (without_i(m // 2 - 1) + without_i(m // 2)) / 2
+def _medians(values: np.ndarray, start: np.ndarray, size: np.ndarray) -> np.ndarray:
+    """The median of each run of sorted values, a run being size values from start."""
+    lo, hi = start + (size - 1) // 2, start + size // 2
+    return np.where(size % 2 == 1, values[lo], (values[lo] + values[hi]) / 2)
+
+
+def _others_medians(values: np.ndarray, start: np.ndarray, size: np.ndarray) -> np.ndarray:
+    """For each element of runs of sorted values (start and size given per element), the median of the others in its
+    run; NaN in a run of one."""
+    i = np.arange(len(values)) - start
+    last = size - 1
+
+    def without_i(j: np.ndarray) -> np.ndarray:
+        return values[start + np.clip(np.where(j < i, j, j + 1), 0, last)]
+
+    m = size - 1
+    odd = without_i(m // 2)
+    even = (without_i(m // 2 - 1) + without_i(m // 2)) / 2
+    return np.where(size < 2, np.nan, np.where(m % 2 == 1, odd, even))
+
+
+def _filer_votes(cusip: np.ndarray, filer: np.ndarray, px: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One vote per filer and CUSIP, the median of its prices: (vote, vote_cusip, voter), voter giving each price's
+    vote."""
+    order = np.lexsort((px, filer, cusip))
+    first = _runs(cusip[order], filer[order])
+    count = np.diff(np.r_[first, len(order)])
+    voter = np.empty(len(order), np.int64)
+    voter[order] = np.repeat(np.arange(len(first)), count)
+    return _medians(px[order], first, count), cusip[order][first], voter
+
+
+def _others_median_by_cusip(vote: np.ndarray, vote_cusip: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """For each vote, the median of the other votes for its CUSIP (NaN when it is the only one), and how many votes
+    its CUSIP has."""
+    order = np.lexsort((vote, vote_cusip))
+    first = _runs(vote_cusip[order])
+    count = np.diff(np.r_[first, len(order)])
+    others, n_votes = np.empty(len(order)), np.empty(len(order), np.int64)
+    others[order] = _others_medians(vote[order], np.repeat(first, count), np.repeat(count, count))
+    n_votes[order] = np.repeat(count, count)
+    return others, n_votes
 
 
 def check_units(rows: pd.DataFrame) -> pd.DataFrame:
@@ -71,23 +166,34 @@ def check_units(rows: pd.DataFrame) -> pd.DataFrame:
     unless too_small or too_large). A report in thousands reads too_small with scale_guess 1000. A report whose
     median row is off but with a fifth of its compared rows not off that way reads mixed, since one multiplier
     would break its correct rows. Every accession of rows has a verdict: undetermined, with n_cmp 0, when none
-    of its rows could be compared. A filing's own vote never enters the consensus it is judged by."""
+    of its rows could be compared. A filing's own vote never enters the consensus it is judged by. A row with no
+    accession, CUSIP or filer, or whose price is not a finite number above zero, is left out of every vote and
+    comparison."""
     cols = ["accession", "n_cmp", "median_lr", "frac_low", "frac_high", "verdict", "scale_guess"]
     accessions = pd.Index(rows.accession.unique(), name="accession")
     out = pd.DataFrame({"n_cmp": 0, "median_lr": np.nan, "frac_low": np.nan, "frac_high": np.nan}, index=accessions)
-    pf = _per_filer_prices(rows).sort_values(["cusip", "px"])
-    pf["others"] = pf.groupby("cusip").px.transform(lambda s: _others_median(s.to_numpy()))
-    pf["n_others"] = pf.groupby("cusip").px.transform("size") - 1
-    pf = pf[pf.n_others >= MIN_FILERS]
-    pc = rows.put_call.fillna("").astype(str).str.strip()
-    x = rows[(rows.sh_prn == "SH") & (pc == "") & (rows.shares > 0) & (rows.value > 0)]
-    x = x.merge(pf[["cusip", "filer_cik", "others"]], on=["cusip", "filer_cik"])
-    if len(x):
-        x = x.assign(lr=np.log10((x.value / x.shares) / x.others))
-        x = x.assign(low=x.lr < -OFF, high=x.lr > OFF)
-        g = x.groupby("accession")
-        out.loc[g.size().index, ["n_cmp", "median_lr", "frac_low", "frac_high"]] = pd.DataFrame(
-            {"n_cmp": g.size(), "median_lr": g.lr.median(), "frac_low": g.low.mean(), "frac_high": g.high.mean()})
+    priceable, values, shares = _priceable_mask(rows, strip_put_call=True)
+    accession, names = pd.factorize(rows.accession)
+    cusip = pd.factorize(rows.cusip)[0]
+    filer = pd.factorize(rows.filer_cik)[0]
+    with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+        px = values / shares
+    known = priceable & (accession >= 0) & (cusip >= 0) & (filer >= 0) & np.isfinite(px) & (px > 0)
+    accession, cusip, filer = (a[known].astype(np.int32) for a in (accession, cusip, filer))
+    px = px[known]
+    vote, vote_cusip, voter = _filer_votes(cusip, filer, px)
+    others, n_votes = _others_median_by_cusip(vote, vote_cusip)
+    compared = n_votes[voter] - 1 >= MIN_FILERS
+    if compared.any():
+        lr = np.log10(px[compared] / others[voter[compared]])
+        acc = accession[compared]
+        order = np.lexsort((lr, acc))
+        acc, lr = acc[order], lr[order]
+        first = _runs(acc)
+        count = np.diff(np.r_[first, len(acc)])
+        out.loc[names[acc[first]], ["n_cmp", "median_lr", "frac_low", "frac_high"]] = np.column_stack([
+            count, _medians(lr, first, count), np.add.reduceat(lr < -OFF, first) / count,
+            np.add.reduceat(lr > OFF, first) / count])
     out["n_cmp"] = out.n_cmp.astype(int)
     out["verdict"] = "ok"
     out.loc[out.median_lr < -OFF, "verdict"] = "too_small"
