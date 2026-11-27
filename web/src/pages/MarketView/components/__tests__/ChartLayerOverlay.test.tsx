@@ -134,6 +134,19 @@ describe('ChartLayerOverlay pinned card', () => {
     expect(fake.primitives.size).toBe(0);
   });
 
+  it('closes on Esc, but not on an Esc a dialog or an IME already took', () => {
+    const fake = fakeChart();
+    mount(fake);
+    act(() => fake.click(400, 300));
+    const taken = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    taken.preventDefault();
+    act(() => { window.dispatchEvent(taken); });
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true })); });
+    expect(card()).toBeInTheDocument();
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('closes when the overlay is turned off, so a selection tool has the chart', () => {
     const fake = fakeChart();
     const open = vi.fn();

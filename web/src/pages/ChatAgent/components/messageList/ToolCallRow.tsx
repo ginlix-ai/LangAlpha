@@ -106,7 +106,6 @@ export const ToolCallRow = memo(function ToolCallRow({ item, onClick, running = 
       onClick={onClick}
       className="titem-title titem-title-button"
       title={openInTabLabel}
-      aria-label={openInTabLabel}
     >
       {title}
     </button>

@@ -29,6 +29,7 @@ import type { SharedWorkspaceEntry } from '@/types/sharedWorkspaces';
 import type { SharedNavRow } from './sharedNavRows';
 import { withCopy } from '@/i18n';
 import { MountOnceOpen } from '@/components/MountOnceOpen';
+import { useLoadMoreFocus } from './loadMoreFocus';
 import './NavigationPanel.css';
 
 // Lazy: the tree is on every page, and the panel opens only from a shared row's menu.
@@ -415,6 +416,12 @@ function NavigationPanel({
   // Identity matters here: a fresh id array is a new sortable context value,
   // and every row's useSortable re-renders on it, memo or not.
   const sortableIds = useMemo(() => workspaces.map((ws) => ws.workspace_id), [workspaces]);
+  // Load all leaves the moment it is pressed, and the workspaces it lists may
+  // still be on their way, so focus lands as soon as the row goes: on the
+  // first workspace it revealed, or on the last one, which any that arrive
+  // later follow.
+  const pressLoadAll = useLoadMoreFocus(sortableIds, !!hasMore, (list, id) =>
+    list.querySelector(id ? `[data-ws-id="${id}"]` : '[data-nav-key="load-all"]'));
 
   // One workspace section, the person's own or a shared one: a shared row is
   // never dragged and offers no pin, and decides the rest itself.
@@ -495,16 +502,21 @@ function NavigationPanel({
             return renderSection(ws, dragDisabled);
           })}
           {hasMore && (
-            <div
+            <button
+              type="button"
+              data-nav-key="load-all"
               className="nav-panel-row"
               style={{ paddingLeft: 10, justifyContent: 'center' }}
-              onClick={onLoadMore}
+              onClick={(e) => {
+                pressLoadAll(e.currentTarget.parentElement);
+                onLoadMore?.();
+              }}
             >
               <ChevronsDown className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                 {t('nav.loadAll')}
               </span>
-            </div>
+            </button>
           )}
           {!!sharedWorkspaces?.length && (
             <SharedGroup entries={sharedWorkspaces} onOpenPeople={openPeople} renderSection={renderSection} />

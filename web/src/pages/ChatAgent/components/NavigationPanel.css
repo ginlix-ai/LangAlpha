@@ -20,7 +20,8 @@
   gap: 8px;
   padding-inline: 10px;
   cursor: pointer;
-  margin: 1px 6px;
+  --nav-row-inset: 6px;
+  margin: 1px var(--nav-row-inset);
   transition: background-color var(--motion-quick) var(--ease-out);
   min-height: 28px;
   /* The row's fill and corner, read by the actions overlay too, so the two
@@ -29,6 +30,13 @@
   --nav-row-radius: 6px;
   background-color: var(--nav-row-fill);
   border-radius: var(--nav-row-radius);
+}
+
+/* A row that is a button spans the panel as the div rows do, where a button
+   would otherwise shrink to its content. */
+button.nav-panel-row {
+  width: calc(100% - 2 * var(--nav-row-inset));
+  text-align: start;
 }
 
 /* The row a right-click menu is open for keeps its hover tint: the menu is

@@ -294,7 +294,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
               {creationStep === 'done' ? t('workspace.workspaceReady') : t('workspace.uploadingFiles')}
             </h2>
             {canClose && (
-              <button className="cwm-close-btn" onClick={handleOpenWorkspace}>
+              <button className="cwm-close-btn" onClick={handleOpenWorkspace} aria-label={t('common.close')}>
                 <X className="h-5 w-5" />
               </button>
             )}
@@ -385,7 +385,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
         {/* Header */}
         <div className="cwm-header">
           <h2 data-bracket="title" className="cwm-title">{t('workspace.createNewWorkspace')}</h2>
-          <button className="cwm-close-btn" disabled={!canClose} onClick={resetAndClose}>
+          <button className="cwm-close-btn" disabled={!canClose} onClick={resetAndClose} aria-label={t('common.close')}>
             <X className="h-5 w-5" />
           </button>
         </div>

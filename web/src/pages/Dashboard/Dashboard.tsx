@@ -28,6 +28,7 @@ import './widgets/index';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useSavedDashboards } from '@/lib/dashboards';
 import { Loader } from '@/components/ui/loader';
+import { isUnclaimedEscape } from '@/lib/ime';
 import { DashboardSwitcher } from './components/DashboardSwitcher';
 import { usePreferences } from '@/hooks/usePreferences';
 import { queryKeys } from '@/lib/queryKeys';
@@ -87,7 +88,7 @@ function DashboardPage({ switcher, notice }: DashboardPageProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && editMode) setEditMode(false);
+      if (isUnclaimedEscape(e) && editMode) setEditMode(false);
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);

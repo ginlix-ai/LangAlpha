@@ -5,6 +5,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Info } from 'lucide-react';
 import type { DueSummary } from '@/pages/ChatAgent/hooks/useNextSummaryHint';
+import { focusIsLost } from '@/lib/inputModality';
 import { userSessionStorage } from '@/lib/userStorage';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverAnchor, PopoverContent } from './popover';
@@ -353,8 +354,7 @@ export function NoticePopover({ notice, anchorRef, blocked = false, align = 'end
           // the control it is about, not opened by one, so it goes there here.
           onCloseAutoFocus={(e) => {
             e.preventDefault();
-            if (document.activeElement && document.activeElement !== document.body) return;
-            anchorRef.current?.focus();
+            if (focusIsLost()) anchorRef.current?.focus();
           }}
           // Escape answers it only from inside it. Radix hears Escape on the
           // whole page, where it is the draft's (shutting the @ or / list),

@@ -55,6 +55,7 @@ import { useComputer } from '../hooks/useComputers';
 import { colleagueName, threadStanding } from '@/lib/sharedThreads';
 import type { SharedThreadInfo } from '@/types/sharedWorkspaces';
 import { SharedThreadTrailing, SharedWorkspaceMenuItems, type SharedNavRow } from './sharedNavRows';
+import { useLoadMoreFocus } from './loadMoreFocus';
 
 export interface ThreadEntry {
   thread_id: string;
@@ -719,6 +720,8 @@ function WorkspaceTreeRowImpl({
   // membership or order actually changes, not on every panel render.
   const threadOrderSignature = [...pendingForks.map((f) => f.key), ...threads.map((th) => th.thread_id)].join('|');
   const threadsLoading = threadsData?.loading || false;
+  const pressShowMore = useLoadMoreFocus(threads.map((th) => th.thread_id), threadsLoading, (section, id) =>
+    section.querySelector(`[data-nav-key="${id ? `thread:${id}:title` : 'show-more'}"]`));
   const isRenaming = rename.active;
   // The options menu isn't offered on Home (shared, immutable), mirroring
   // the gallery hiding its card menu there. New-thread stays available
@@ -938,16 +941,22 @@ function WorkspaceTreeRowImpl({
           {/* Show more: the next page of threads for this workspace */}
           {onLoadMoreThreads && typeof threadsData?.total === 'number'
             && threads.length < threadsData.total && !threadsLoading && (
-            <div
+            <button
+              type="button"
+              data-nav-key="show-more"
               className="nav-panel-row"
               style={{ paddingLeft: 44 }}
-              onClick={(e) => { e.stopPropagation(); onLoadMoreThreads(wsId); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                pressShowMore(e.currentTarget.closest('[data-ws-id]'));
+                onLoadMoreThreads(wsId);
+              }}
             >
               <ChevronsDown className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                 {t('nav.showMore')}
               </span>
-            </div>
+            </button>
           )}
         </kit.Collapse>
       </>)}

@@ -1,6 +1,7 @@
 import * as React from "react"
 import * as ToastPrimitives from "@radix-ui/react-toast"
 import { X } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import { aboveDialogs } from "@/hooks/useDialogA11y"
@@ -81,8 +82,10 @@ function ToastClose({
   className,
   ...props
 }: React.ComponentProps<typeof ToastPrimitives.Close>) {
+  const { t } = useTranslation()
   return (
     <ToastPrimitives.Close
+      aria-label={t("common.close")}
       className={cn(
         "shrink-0 rounded-md p-1 text-(--color-text-tertiary) transition hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
         className
