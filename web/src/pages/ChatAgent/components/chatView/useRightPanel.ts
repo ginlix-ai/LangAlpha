@@ -301,16 +301,26 @@ export function useRightPanel({
   useEffect(() => {
     if (!isMobile) return;
     const onPopState = () => {
-      if (panelHistoryPushedRef.current) {
-        panelHistoryPushedRef.current = false;
+      if (!panelHistoryPushedRef.current) return;
+      // Closing unmounts the Files panel and its drafts, so the gesture asks as
+      // the other exits do. The gesture has already popped the sentinel, so
+      // while the ask is open the sentinel goes back: a declined ask keeps the
+      // panel with a back entry to close it, where otherwise the next back
+      // would leave the page. An accepted one pops it again on the way out.
+      panelHistoryPushedRef.current = false;
+      let left = false;
+      leaveFiles(() => {
+        left = true;
         setRightPanelType(null);
         setDetailToolCallId(null);
         setPreviewData(null);
-      }
+        popPanelHistory();
+      });
+      if (!left) pushPanelHistory();
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [isMobile]);
+  }, [isMobile, leaveFiles, pushPanelHistory, popPanelHistory]);
 
   // Clean up sentinel on unmount (e.g. navigating away with panel still open).
   // Use replaceState to silently neutralize the sentinel instead of history.back(),

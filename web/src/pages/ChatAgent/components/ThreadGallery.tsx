@@ -575,14 +575,16 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
    */
   const handleToggleFilePanel = useCallback(() => {
     if (showFilePanel) {
-      setShowFilePanel(false);
+      // Closing unmounts the panel and the drafts it holds, so it asks as the
+      // panel's own close does.
+      leaveFiles(() => setShowFilePanel(false));
     } else {
       // The card is the workspace's own files; a sibling shown before the
       // panel closed was reached through a link.
       setPanelOverride(null);
       openFilePanel();
     }
-  }, [showFilePanel, openFilePanel, setPanelOverride]);
+  }, [showFilePanel, openFilePanel, setPanelOverride, leaveFiles]);
 
   /**
    * Handle drag panel width

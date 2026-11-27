@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 
@@ -14,7 +14,7 @@ import type { RouteLeaveGuard } from '../../../contexts/RouteLeaveGuardContext';
 
 const setFilePanelWorkspaceId = vi.fn();
 
-function open(panel: { filePanelWorkspaceId?: string | null } = {}) {
+function open(panel: { filePanelWorkspaceId?: string | null; isMobile?: boolean } = {}) {
   const { result } = renderHook(() => useRightPanel({
     isMobile: false,
     workspaceId: 'ws',
@@ -102,5 +102,58 @@ describe('opening a chat link with a draft open', () => {
     act(() => result.current.handleOpenFileFromChat('results/a.md', OTHER_WS));
     expect(guard).toHaveBeenCalledTimes(1);
     expect(setFilePanelWorkspaceId).not.toHaveBeenCalledWith(OTHER_WS);
+  });
+});
+
+// On mobile the back gesture closes the panel by popping the sentinel the
+// panel pushed, which is gone by the time the handler asks.
+describe('the mobile back gesture with a draft open', () => {
+  let pushState: ReturnType<typeof vi.spyOn>;
+  let back: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    pushState = vi.spyOn(window.history, 'pushState').mockImplementation(() => {});
+    back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    pushState.mockRestore();
+    back.mockRestore();
+  });
+  const goBack = () => act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
+
+  it('holds the panel on a no and puts the sentinel back', () => {
+    answer(false);
+    const result = open({ isMobile: true });
+    expect(pushState).toHaveBeenCalledTimes(1);
+    goBack();
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(result.current.rightPanelType).toBe('file');
+    expect(pushState).toHaveBeenCalledTimes(2);
+    expect(pushState.mock.lastCall?.[0]).toMatchObject({ _panelSentinel: true });
+    // The sentinel is armed again, so the next back asks again.
+    goBack();
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(result.current.rightPanelType).toBe('file');
+  });
+
+  it('closes once the ask is accepted', () => {
+    answer(true);
+    const result = open({ isMobile: true });
+    goBack();
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(result.current.rightPanelType).toBeNull();
+    expect(pushState).toHaveBeenCalledTimes(1);
+    expect(back).not.toHaveBeenCalled();
+  });
+
+  it('pops the restored sentinel when a held ask is accepted later', () => {
+    let leave: (() => void) | null = null;
+    guard.mockImplementation((go) => { leave = go; });
+    const result = open({ isMobile: true });
+    goBack();
+    expect(result.current.rightPanelType).toBe('file');
+    expect(pushState).toHaveBeenCalledTimes(2);
+    act(() => leave?.());
+    expect(result.current.rightPanelType).toBeNull();
+    expect(back).toHaveBeenCalledTimes(1);
   });
 });
