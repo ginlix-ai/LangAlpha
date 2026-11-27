@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import asyncio
 
-from fastapi import Depends, Header, HTTPException, Query, Request
+from fastapi import Depends, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.config.settings import get_sse_keepalive_interval
@@ -46,6 +46,7 @@ from src.server.dependencies.principal import (
     Principal,
     ReadUserId,
     RunPrincipal,
+    RunUserId,
     stamp_origin,
 )
 from src.server.services.platform_client import quota_service_unavailable
@@ -1465,6 +1466,21 @@ async def cancel_thread(
     if principal.computer_id is not None:
         return await cancel_workflow(thread_id, target, by="agent")
     return await cancel_workflow(thread_id, target)
+
+
+@router.post("/{thread_id}/steers/{request_key}/send-now")
+async def send_steer_now(
+    thread_id: str,
+    request_key: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,64}$")],
+    x_user_id: RunUserId,
+):
+    """Send a queued message now: a command the agent waits on moves to the
+    background, however busy it is, and nothing is stopped. ``sent_now`` is
+    false once the message was read or settled, which leaves nothing to do."""
+    await thread_access(thread_id, x_user_id)
+    from src.server.services.runs.admission import send_steer_now as mark_send_now
+
+    return {"sent_now": await mark_send_now(thread_id, request_key, x_user_id)}
 
 
 @router.post("/{thread_id}/summarize", status_code=200)

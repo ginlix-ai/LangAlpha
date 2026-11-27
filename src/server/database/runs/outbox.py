@@ -2011,6 +2011,9 @@ def _steer_sql(template: str, alias: str = "o") -> str:
 # run ends (to resume it), so the chain alone does not tell them apart.
 _TARGET_SQL = "COALESCE({a}.payload->>'target', 'thread')"
 
+# A steer its sender marked Send now (``send_steer_now``).
+_SEND_NOW_SQL = "COALESCE(({a}.payload->>'send_now')::boolean, false)"
+
 
 def steer_ordering_key(thread_id: str, task_id: Optional[str] = None) -> str:
     """A steer's chain: the thread's own, apart from its report-backs so a
@@ -2717,6 +2720,126 @@ async def pending_steer_senders(
                 {"okey": steer_ordering_key(thread_id), "run_id": run_id},
             )
             return [str(row[0]) for row in await cur.fetchall()]
+
+
+# Past every id at a time: a read mark with no id is that whole instant.
+_LAST_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+# A task steer waiting on the thread that ``%(run_id)s`` has not already
+# failed to resume its task with: that run gets no second try at it.
+_RESUMABLE_BY_RUN_SQL = "COALESCE(o.payload->>'resume_refused_by', '') <> %(run_id)s::text"
+
+
+def _steer_waits_sql(owner: Tuple[str, str], target: str, *, also: str = "TRUE") -> str:
+    """A steer for ``target`` waits under ``%(okey)s`` that the owner would
+    take (``_TAKEABLE_STEER_SQL`` and ``also``) while it may still hold one
+    (``hold_jobs``): nothing declines one it may take, and one it may not
+    would end every wait until it stops. With ``%(now_only)s``, only one
+    marked Send now counts."""
+    return f"""(EXISTS ({_owner_sql(owner)}) AND EXISTS (
+        SELECT 1 FROM hook_outbox o
+        WHERE o.ordering_key = %(okey)s
+          AND {_steer_sql(_TAKEABLE_STEER_SQL)}
+          AND {_steer_sql(_TARGET_SQL)} = '{target}'
+          AND {also}
+          AND (NOT %(now_only)s OR {_steer_sql(_SEND_NOW_SQL)})))"""
+
+
+async def run_inbox_arrived(
+    thread_id: str,
+    run_id: str,
+    *,
+    steers: bool,
+    reports_since: Optional[datetime],
+    reports_since_id: Optional[str] = None,
+    resumes: bool = False,
+    now_only: bool = False,
+) -> bool:
+    """Whether ``run_id``'s next model call has something new to take in:
+    a steer it would take (``_steer_waits_sql``), with ``resumes`` a task
+    steer it would resume (``list_resumable_task_steers``), or a report past
+    ``reports_since``, the run's last read of its reports (None: none count),
+    in the listing's order (after ``reports_since_id`` at that time, if given),
+    since one that read left (one its executor keeps, one owed elsewhere)
+    would otherwise end every wait after it. Reports read as
+    ``list_steerable_report_jobs`` reads them."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT (%(steers)s AND {_steer_waits_sql(("run", run_id), "thread")})
+                  OR (%(resumes)s AND {_steer_waits_sql(
+                      ("run", run_id), "task", also=_RESUMABLE_BY_RUN_SQL)})
+                  OR (%(since)s::timestamptz IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM hook_outbox
+                    WHERE ((ordering_key = %(thread_id)s
+                            AND hook_type IN {_THREAD_REPORT_TYPES_SQL})
+                           OR (ordering_key = ANY(%(alert_keys)s)
+                               AND hook_type IN {_ALERT_TYPES_SQL}))
+                      AND {_STEERABLE_REPORT_SQL}
+                      AND (created_at, hook_outbox_id)
+                          > (%(since)s::timestamptz, COALESCE(%(since_id)s::uuid, '{_LAST_UUID}'::uuid))))
+                """,
+                {
+                    "okey": steer_ordering_key(thread_id),
+                    "run_id": run_id,
+                    "owner": run_id,
+                    "thread_id": str(thread_id),
+                    "alert_keys": alert_ordering_keys(thread_id),
+                    "steers": steers,
+                    "resumes": resumes,
+                    "since": reports_since,
+                    "since_id": reports_since_id,
+                    "now_only": now_only,
+                },
+            )
+            row = await cur.fetchone()
+            return bool(row and row[0])
+
+
+async def task_steer_arrived(
+    thread_id: str, task_id: str, task_run_id: str, *, now_only: bool = False
+) -> bool:
+    """Whether a steer the task's run would take (``take_task``) waits
+    (``_steer_waits_sql``)."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT {_steer_waits_sql(("task", task_run_id), "task")}
+                """,
+                {
+                    "okey": steer_ordering_key(thread_id, task_id),
+                    "run_id": None,
+                    "owner": task_run_id,
+                    "now_only": now_only,
+                },
+            )
+            row = await cur.fetchone()
+            return bool(row and row[0])
+
+
+async def send_steer_now(
+    *, ordering_key: str, idempotency_key: str, user_id: str
+) -> bool:
+    """Mark the user's steer Send now, while it still waits to be read;
+    whether one was. A command the agent waits on is then moved to the
+    background however busy it is (``run_inbox_arrived``)."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE hook_outbox o
+                SET payload = o.payload || '{{"send_now": true}}'::jsonb
+                WHERE o.ordering_key = %s
+                  AND o.idempotency_key = %s
+                  AND o.payload->>'user_id' = %s
+                  AND {_steer_sql(_LIVE_STEER_SQL)}
+                RETURNING o.hook_outbox_id
+                """,
+                (ordering_key, idempotency_key, user_id),
+            )
+            return await cur.fetchone() is not None
 
 
 async def has_live_hand_off(ptc_thread_id: str, home_thread_id: str) -> bool:
@@ -3673,8 +3796,7 @@ async def list_resumable_task_steers(
                 WHERE o.ordering_key = %(okey)s
                   AND {_steer_sql(_TAKEABLE_STEER_SQL)}
                   AND {_steer_sql(_TARGET_SQL)} = 'task'
-                  AND COALESCE(o.payload->>'resume_refused_by', '')
-                      <> %(run_id)s::text
+                  AND {_RESUMABLE_BY_RUN_SQL}
                 ORDER BY o.created_at, o.hook_outbox_id
                 LIMIT %(limit)s
                 """,

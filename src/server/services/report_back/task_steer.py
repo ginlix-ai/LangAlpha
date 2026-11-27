@@ -56,6 +56,20 @@ def task_steer_key(thread_id: str, task_id: str, input_id: str) -> str:
     return f"steer:{thread_id}:{task_id}:{input_id}"
 
 
+async def send_task_message_now(
+    thread_id: str, task_id: str, input_id: str, user_id: str
+) -> bool:
+    """Mark the user's own queued message to a task Send now; false once the
+    task read or settled it."""
+    from src.server.database.runs import outbox as outbox_db
+
+    return await outbox_db.send_steer_now(
+        ordering_key=outbox_db.steer_ordering_key(thread_id, task_id),
+        idempotency_key=task_steer_key(thread_id, task_id, input_id),
+        user_id=user_id,
+    )
+
+
 def task_steer_payload(
     *,
     content: str,

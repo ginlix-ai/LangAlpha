@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport
 from ptc_agent.agent.transcript.sender import MEMBER_SENDER_KEY, MemberSender
@@ -57,6 +58,10 @@ from src.server.services.report_back.notify_turn import NotOwed, ReportPipeline
 from src.server.services.wakeups import inline as wakeup_inline
 
 logger = logging.getLogger(__name__)
+
+# Reports one take lists, oldest first; a read that fills it leaves the rest
+# for the next.
+_REPORTS_PER_READ = 10
 
 # Each alert type's two steps on this road, by hook type: what its job
 # offers a live turn, and the delivery stamp ahead of the confirm. Resolved
@@ -84,6 +89,16 @@ class SteeredReportInbox:
     """The server's report inbox for a thread's live turns. Never raises: a
     failed read or write leaves the reports to their executors."""
 
+    # The runs it read reports for last, by when it began each read. Kept no
+    # longer than a run's live calls need it, and only by this worker's run
+    # itself: a run's take and its tool calls run in one process.
+    _READS_KEPT = 32
+
+    def __init__(self) -> None:
+        # Per run, the last report its read listed: a time, and the id at
+        # that time when a full page ended there.
+        self._reports_read_at: dict[str, tuple[datetime, str | None]] = {}
+
     async def take(
         self, thread_id: str, run_id: str, *, kinds: Sequence[str] = ALL_KINDS
     ) -> list[SteeredReport]:
@@ -94,25 +109,86 @@ class SteeredReportInbox:
         steers = await _take_steers(thread_id, run_id) if "steer" in kinds else []
         return reports + steers
 
+    def _note_report_read(self, run_id: str, mark: tuple[datetime, str | None]) -> None:
+        self._reports_read_at.pop(run_id, None)
+        self._reports_read_at[run_id] = mark
+        while len(self._reports_read_at) > self._READS_KEPT:
+            self._reports_read_at.pop(next(iter(self._reports_read_at)))
+
     def render_group(self, kind: str, contents: list[str]) -> str:
         """The one block the reports of ``kind`` one model call takes in read as."""
         return _GROUP_BLOCKS[kind](contents)
 
+    async def arrived(
+        self,
+        thread_id: str,
+        run_id: str,
+        *,
+        kinds: Sequence[str] = ALL_KINDS,
+        now_only: bool = False,
+    ) -> bool:
+        """Whether something ``take`` would hand the run has arrived since it
+        last read (``run_inbox_arrived``). A report counts once created after
+        the run's last read of them here, which saw every one older that it
+        left; a run that has read none here watches its steers (and task
+        steers to resume) alone. With ``now_only``, only a steer sent with
+        Send now counts. A failed read is nothing."""
+        from src.server.database.runs import outbox as outbox_db
+
+        read_at, read_id = (
+            self._reports_read_at.get(run_id, (None, None))
+            if "report" in kinds and not now_only
+            else (None, None)
+        )
+        resumes = "resume" in kinds
+        if "steer" not in kinds and not resumes and read_at is None:
+            return False
+        try:
+            return await outbox_db.run_inbox_arrived(
+                thread_id,
+                run_id,
+                steers="steer" in kinds,
+                reports_since=read_at,
+                reports_since_id=read_id,
+                resumes=resumes,
+                now_only=now_only,
+            )
+        except Exception:
+            # Read every 2 s by every waiting call: an outage is loud elsewhere.
+            logger.debug(
+                f"[REPORT_STEER] Reading what arrived for run {run_id} failed",
+                exc_info=True,
+            )
+            return False
+
     async def _take_reports(self, thread_id: str, run_id: str) -> list[SteeredReport]:
         from src.server.database.runs import outbox as outbox_db
 
+        # A second early, for the server's clock against the database's.
+        began = datetime.now(UTC) - timedelta(seconds=1)
         try:
-            jobs = await outbox_db.list_steerable_report_jobs(thread_id)
+            jobs = await outbox_db.list_steerable_report_jobs(
+                thread_id, limit=_REPORTS_PER_READ
+            )
         except Exception:
             logger.warning(
                 f"[REPORT_STEER] Listing reports owed to {thread_id} failed",
                 exc_info=True,
             )
             return []
+        decisions = await asyncio.gather(*(_decide(job, thread_id) for job in jobs))
+        # Only a read that listed them saw them: one that failed leaves the
+        # run's waits watching for every report it has not seen. A full page
+        # saw only through its last, so those past it still count, unless it
+        # kept every one for later: the next read lists the same page, and a
+        # report it never reaches would end every wait for nothing.
+        mark: tuple[datetime, str | None] = (began, None)
+        if len(jobs) >= _REPORTS_PER_READ and any(d is not None for d in decisions):
+            mark = (jobs[-1]["created_at"], str(jobs[-1]["hook_outbox_id"]))
+        self._note_report_read(run_id, mark)
         if not jobs:
             return []
 
-        decisions = await asyncio.gather(*(_decide(job, thread_id) for job in jobs))
         offers = [d for d in decisions if isinstance(d, SteeredReport)]
         unowed = [
             str(job["hook_outbox_id"])
@@ -236,6 +312,24 @@ class SteeredReportInbox:
             )
             return []
         return [_taken(job) for job in jobs if str(job["hook_outbox_id"]) in held]
+
+    async def task_arrived(
+        self, thread_id: str, task_id: str, task_run_id: str, *, now_only: bool = False
+    ) -> bool:
+        """Whether a steer ``take_task`` would hold for ``task_run_id`` waits,
+        with ``now_only`` one sent with Send now. A failed read is nothing."""
+        from src.server.database.runs import outbox as outbox_db
+
+        try:
+            return await outbox_db.task_steer_arrived(
+                thread_id, task_id, task_run_id, now_only=now_only
+            )
+        except Exception:
+            logger.debug(
+                f"[TASK_STEER] Reading steers waiting for task {task_id} failed",
+                exc_info=True,
+            )
+            return False
 
     async def confirm_task(self, task_run_id: str, job_ids: list[str]) -> None:
         from src.server.database.runs import outbox as outbox_db
