@@ -139,12 +139,9 @@ class PTCSandbox:
         self._tool_refresh_lock = asyncio.Lock()
         self._download_semaphore = asyncio.Semaphore(4)
 
-        # Per-port sessions for preview servers (port → (session_id, cmd_id))
-        self._preview_sessions: dict[int, tuple[str, str]] = {}
-        # The workspace that started each locally tracked preview. A computer
-        # serves several workspaces, so a sibling must not inherit or replace
-        # the process merely because it asked for the same port.
-        self._preview_owners: dict[int, str] = {}
+        # The preview session this process started on each port, for its logs
+        # and its stop. Whose a port is, the machine's session list says.
+        self._preview_sessions: dict[int, str] = {}
         # Per-port locks to serialize start_and_get_preview_url (avoids races)
         self._preview_locks: dict[int, asyncio.Lock] = {}
 
@@ -1083,7 +1080,7 @@ class PTCSandbox:
         try:
             if self.runtime:
                 # Clean up preview sessions; deleting the sandbox ends the rest
-                for sid in dict.fromkeys(sid for sid, _ in self._preview_sessions.values()):
+                for sid in dict.fromkeys(self._preview_sessions.values()):
                     try:
                         await self._runtime_call(
                             self.runtime.delete_session, sid,
@@ -1092,7 +1089,6 @@ class PTCSandbox:
                     except Exception:
                         logger.debug("Failed to delete session", session_id=sid)
                 self._preview_sessions.clear()
-                self._preview_owners.clear()
 
                 if self._kept_for_salvage:
                     logger.info(

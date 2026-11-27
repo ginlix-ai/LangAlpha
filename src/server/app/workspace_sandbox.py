@@ -50,7 +50,7 @@ from src.server.services.workspace_manager import WorkspaceManager
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT, WorkspaceLayout
 from ptc_agent.core.sandbox import PTCSandbox
 from ptc_agent.core.sandbox.execution import app_command
-from ptc_agent.core.sandbox.preview_probe import head_preview
+from ptc_agent.core.sandbox.preview_probe import app_opens, head_preview
 from ptc_agent.core.sandbox.runtime import (
     PreviewPortInUse,
     RuntimeState,
@@ -751,7 +751,7 @@ async def check_preview_health(
             resp = await head_preview(
                 client, preview_link.url, preview_link.auth_headers
             )
-            reachable = 200 <= resp.status_code < 400
+            reachable = app_opens(resp.status_code)
     except NotImplementedError:
         raise HTTPException(
             status_code=501, detail="Preview health checks not supported"

@@ -93,10 +93,9 @@ class TestStartPreviewServer:
         assert cmd_id == "cmd-001"
         assert any(sid.startswith("preview-8080-") for sid in created_sessions)
         assert 8080 in sandbox._preview_sessions
-        session_id, stored_cmd_id = sandbox._preview_sessions[8080]
+        session_id = sandbox._preview_sessions[8080]
         assert session_id in created_sessions
         assert session_id.startswith("preview-8080-")
-        assert stored_cmd_id == "cmd-001"
 
     async def test_replaces_existing_session_on_same_port(self, sandbox):
         """Starting on a port that already has a session tears down the old one."""
@@ -124,17 +123,14 @@ class TestStartPreviewServer:
         assert cmd_id_1 == "cmd-001"
         assert 8080 in sandbox._preview_sessions
 
-        first_session = sandbox._preview_sessions[8080][0]
+        first_session = sandbox._preview_sessions[8080]
         # Second start on the same port
         cmd_id_2 = await sandbox.start_preview_server("python -m http.server 8080", 8080)
         assert cmd_id_2 == "cmd-002"
 
         # Old session should have been deleted, and the replacement is distinct.
         assert first_session in deleted_sessions
-        assert sandbox._preview_sessions[8080][0] != first_session
-        # New session entry should replace the old one
-        _, stored_cmd_id = sandbox._preview_sessions[8080]
-        assert stored_cmd_id == "cmd-002"
+        assert sandbox._preview_sessions[8080] != first_session
 
     async def test_multiple_ports_get_separate_sessions(self, sandbox):
         """Different ports get different sessions."""
@@ -159,9 +155,9 @@ class TestStartPreviewServer:
         assert any(sid.startswith("preview-8080-") for sid in created_sessions)
         assert 3000 in sandbox._preview_sessions
         assert 8080 in sandbox._preview_sessions
-        assert sandbox._preview_sessions[3000][0] in created_sessions
-        assert sandbox._preview_sessions[8080][0] in created_sessions
-        assert sandbox._preview_sessions[3000][0] != sandbox._preview_sessions[8080][0]
+        assert sandbox._preview_sessions[3000] in created_sessions
+        assert sandbox._preview_sessions[8080] in created_sessions
+        assert sandbox._preview_sessions[3000] != sandbox._preview_sessions[8080]
 
 
 class TestStopPreviewServer:
@@ -187,7 +183,7 @@ class TestStopPreviewServer:
         await sandbox.start_preview_server("python -m http.server 8080", 8080)
         assert 8080 in sandbox._preview_sessions
 
-        session_id = sandbox._preview_sessions[8080][0]
+        session_id = sandbox._preview_sessions[8080]
         result = await sandbox.stop_preview_server(8080)
 
         assert result is True
@@ -211,9 +207,9 @@ class TestGetPreviewServerLogs:
         async def fake_session_execute(session_id, command):
             return "cmd-001"
 
-        async def fake_session_command_logs(session_id, cmd_id):
+        async def fake_session_logs(session_id):
             return SessionCommandResult(
-                cmd_id=cmd_id,
+                cmd_id="cmd-001",
                 exit_code=None,  # still running
                 stdout="Serving HTTP on 0.0.0.0 port 8080\n",
                 stderr="",
@@ -221,7 +217,7 @@ class TestGetPreviewServerLogs:
 
         sandbox.runtime.create_session = fake_create_session
         sandbox.runtime.session_execute = fake_session_execute
-        sandbox.runtime.session_command_logs = fake_session_command_logs
+        sandbox.runtime.session_logs = fake_session_logs
 
         await sandbox.start_preview_server("python -m http.server 8080", 8080)
 
@@ -249,9 +245,9 @@ class TestGetPreviewServerLogs:
         async def fake_session_execute(session_id, command):
             return "cmd-001"
 
-        async def fake_session_command_logs(session_id, cmd_id):
+        async def fake_session_logs(session_id):
             return SessionCommandResult(
-                cmd_id=cmd_id,
+                cmd_id="cmd-001",
                 exit_code=1,
                 stdout="",
                 stderr="Address already in use",
@@ -259,7 +255,7 @@ class TestGetPreviewServerLogs:
 
         sandbox.runtime.create_session = fake_create_session
         sandbox.runtime.session_execute = fake_session_execute
-        sandbox.runtime.session_command_logs = fake_session_command_logs
+        sandbox.runtime.session_logs = fake_session_logs
 
         await sandbox.start_preview_server("python -m http.server 8080", 8080)
 

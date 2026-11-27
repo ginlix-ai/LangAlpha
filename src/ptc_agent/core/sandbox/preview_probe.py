@@ -11,6 +11,34 @@ import httpx
 
 _MAX_HOPS = 5
 
+#: What a server that is up answers a HEAD it does not take: 501 from
+#: Python's ``BaseHTTPRequestHandler`` with no ``do_HEAD``, 405 from a route
+#: that names its methods.
+_HEAD_REFUSED = frozenset({405, 501})
+
+#: What the gateway in front of a port answers when nothing there replies.
+_GATEWAY_FAILURES = frozenset({502, 503, 504})
+
+
+def app_answered(status: int) -> bool:
+    """Whether a probe's status came from an app listening on the port.
+
+    Any status but a gateway failure is the app replying, an error included:
+    an app read as down is restarted, which would throw away the state of one
+    that answers 500 on every open.
+    """
+    return status not in _GATEWAY_FAILURES
+
+
+def app_opens(status: int) -> bool:
+    """Whether a URL handed to a browser opens the app.
+
+    Stricter than ``app_answered``: a 4xx may be the provider refusing the
+    URL's credential. A refused HEAD is still the app's own answer, since the
+    provider admits a request before the app sees it.
+    """
+    return 200 <= status < 400 or status in _HEAD_REFUSED
+
 
 def is_loopback_url(url: str) -> bool:
     """Whether *url* names this host's loopback.

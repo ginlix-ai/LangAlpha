@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from ptc_agent.core.sandbox.preview_probe import head_preview
+from ptc_agent.core.sandbox.preview_probe import app_answered, app_opens, head_preview
 
 _HEADERS = {"e2b-traffic-access-token": "tok-1"}
 
@@ -58,3 +58,27 @@ async def test_a_redirect_loop_ends():
 
     assert response.status_code == 302
     assert len(seen) == 6
+
+
+@pytest.mark.parametrize(
+    ("status", "answered", "opens"),
+    [
+        (200, True, True),
+        (302, True, True),
+        # The app is up; the root is just not a page.
+        (404, True, False),
+        # A server with no HEAD handler is up: Python's BaseHTTPRequestHandler
+        # answers 501, a route that names its methods 405.
+        (405, True, True),
+        (501, True, True),
+        # An app that errors is still up; restarting it would lose its state.
+        (500, True, False),
+        # The gateway found nothing listening.
+        (502, False, False),
+        (503, False, False),
+        (504, False, False),
+    ],
+)
+def test_a_refused_head_is_the_app_answering(status, answered, opens):
+    assert app_answered(status) is answered
+    assert app_opens(status) is opens
