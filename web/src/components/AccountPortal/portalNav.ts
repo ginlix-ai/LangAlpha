@@ -18,7 +18,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from 'lucide-react';
-import { readNavGroups, type PortalNavGroup } from './portalMessages';
+import { readNavGroups, type PortalNavGroup, type PortalNavItem } from './portalMessages';
 import { useStorageUser, userLocalStorage } from '@/lib/userStorage';
 
 // The account portal's navigation as it last listed it, so the rail draws its
@@ -73,4 +73,17 @@ const ICONS: Record<string, LucideIcon> = {
 
 export function portalNavIcon(name: string): LucideIcon {
   return Object.hasOwn(ICONS, name) ? ICONS[name] : Circle;
+}
+
+/** A portal page as Settings' search and the command palette offer it. */
+export interface PortalSearchPage {
+  item: PortalNavItem;
+  /** Its organization's name, or null for one of the account's own. */
+  group: string | null;
+}
+
+/** The portal's pages one by one, so a search finds the pages that replace
+ *  Settings' own Plan and Integrations sections once they are listed. */
+export function portalSearchPages(nav: PortalNavGroup[] | null): PortalSearchPage[] {
+  return (nav ?? []).flatMap((group) => group.items.map((item) => ({ item, group: group.label })));
 }

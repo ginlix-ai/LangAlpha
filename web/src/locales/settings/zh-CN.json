@@ -601,5 +601,9 @@
   "computers": {
     "list": "你的计算机",
     "loadFailed": "无法加载你的计算机。"
+  },
+  "portal": {
+    "unavailable": "账户页面无法在此处打开。",
+    "openInNewTab": "在新标签页中打开"
   }
 }

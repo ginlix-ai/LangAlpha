@@ -511,5 +511,9 @@
   "computers": {
     "list": "Your computers",
     "loadFailed": "Couldn't load your computers."
+  },
+  "portal": {
+    "unavailable": "Your account pages could not open here.",
+    "openInNewTab": "Open in a new tab"
   }
 }

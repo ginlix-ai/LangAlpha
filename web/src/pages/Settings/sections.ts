@@ -19,6 +19,7 @@ import {
 import { isPlatformMode } from '@/config/hostMode';
 import { canDesktopSettings } from '@/lib/desktop';
 import { TRADING_PERMISSION_ANCHOR } from '@/lib/tradingPermission';
+import { readPortalPage } from '@/components/AccountPortal/portalPaths';
 
 interface SectionMeta {
   labelKey: string;
@@ -31,6 +32,9 @@ interface SectionMeta {
   desktopOnly?: boolean;
   /** What a hosted server's operator decides, so only a self-hosted build shows it. */
   selfHostedOnly?: boolean;
+  /** Only a way out to the account portal: once the portal has listed its own
+   *  pages, which then open inside Settings, they take its place. */
+  portalLinkOut?: boolean;
 }
 
 /**
@@ -41,7 +45,7 @@ interface SectionMeta {
 export const SECTIONS = {
   account: { labelKey: 'settings:section.account', descKey: 'settings:definition.account', icon: CircleUser },
   preferences: { labelKey: 'settings:section.preferences', descKey: 'settings:definition.preferences', icon: PieChart },
-  plan: { labelKey: 'settings:section.plan', descKey: 'settings:definition.plan', icon: CreditCard, platformOnly: true },
+  plan: { labelKey: 'settings:section.plan', descKey: 'settings:definition.plan', icon: CreditCard, platformOnly: true, portalLinkOut: true },
   general: { labelKey: 'settings:section.general', descKey: 'settings:definition.general', icon: SlidersHorizontal },
   appearance: { labelKey: 'settings:section.appearance', descKey: 'settings:definition.appearance', icon: Palette },
   chat: { labelKey: 'settings:section.chat', descKey: 'settings:definition.chat', icon: MessageSquare },
@@ -53,12 +57,19 @@ export const SECTIONS = {
   computers: { labelKey: 'settings:section.computers', descKey: 'settings:definition.computers', icon: Server },
   model: { labelKey: 'settings:section.model', descKey: 'settings:definition.model', icon: Cpu },
   server: { labelKey: 'settings:section.server', descKey: 'settings:definition.server', icon: ServerCog, selfHostedOnly: true },
-  integrations: { labelKey: 'settings:section.integrations', descKey: 'settings:definition.integrations', icon: Plug, platformOnly: true },
+  integrations: { labelKey: 'settings:section.integrations', descKey: 'settings:definition.integrations', icon: Plug, platformOnly: true, portalLinkOut: true },
   trading: { labelKey: 'settings:section.trading', descKey: 'settings:definition.trading', icon: CandlestickChart },
   experiments: { labelKey: 'settings:section.experiments', descKey: 'settings:definition.experiments', icon: FlaskConical },
 } satisfies Record<string, SectionMeta>;
 
 export type Section = keyof typeof SECTIONS;
+
+/** Whether the section is a way out to the account portal, which the
+ *  portal's own pages replace once it has listed them. */
+export function isPortalLinkOut(section: Section): boolean {
+  const meta: SectionMeta = SECTIONS[section];
+  return meta.portalLinkOut === true;
+}
 
 /** Whether this build draws the section. */
 export function sectionShown(section: Section): boolean {
@@ -67,8 +78,16 @@ export function sectionShown(section: Section): boolean {
   return isPlatformMode ? !meta.selfHostedOnly : !meta.platformOnly;
 }
 
-export const GROUPS: readonly { labelKey: string; sections: readonly Section[] }[] = [
-  { labelKey: 'settings:group.account', sections: ['account', 'preferences', 'plan'] },
+/** Whether the section is offered in Settings' rail, its search and the
+ *  command palette: not one the portal's pages replace once they are listed. */
+export function sectionOffered(section: Section, portalListed: boolean): boolean {
+  return sectionShown(section) && !(portalListed && isPortalLinkOut(section));
+}
+
+/** The rail's groups. `portalAfter` is where the account portal's pages for
+ *  the account itself join the group, and the portal's other groups follow it. */
+export const GROUPS: readonly { labelKey: string; sections: readonly Section[]; portalAfter?: Section }[] = [
+  { labelKey: 'settings:group.account', sections: ['account', 'preferences', 'plan'], portalAfter: 'preferences' },
   { labelKey: 'settings:group.app', sections: ['general', 'appearance', 'chat', 'artifacts', 'desktop'] },
   { labelKey: 'settings:group.agent', sections: ['agent', 'computers', 'model', 'server', 'integrations', 'trading'] },
   { labelKey: 'settings:group.labs', sections: ['experiments'] },
@@ -232,4 +251,21 @@ function asSection(param: string | null): Section | null {
  */
 export function readSection(params: URLSearchParams, hash: string): Section {
   return [settingAt(hash)?.section, asSection(params.get('tab'))].find((s) => s && sectionShown(s)) ?? 'account';
+}
+
+/**
+ * What Settings shows, read from its address once: a section of its own, or a
+ * page of the account portal (`?tab=console&page=`). `away` is a portal page
+ * where its pages do not open in Settings (a phone, the desktop app), which
+ * goes to the portal itself at the same page.
+ */
+export type SettingsView =
+  | { kind: 'section'; section: Section }
+  | { kind: 'portal'; page: string }
+  | { kind: 'away'; page: string };
+
+export function readSettingsView(params: URLSearchParams, hash: string, portalHere: boolean): SettingsView {
+  const page = readPortalPage(params);
+  if (page !== null) return portalHere ? { kind: 'portal', page } : { kind: 'away', page };
+  return { kind: 'section', section: readSection(params, hash) };
 }
