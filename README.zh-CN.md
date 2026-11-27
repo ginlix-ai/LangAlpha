@@ -18,7 +18,7 @@
   <a href="#全栈架构"><strong>全栈架构</strong></a> ·
   <a href="#安全"><strong>安全</strong></a>
   <br />
-  <a href="README.md">English</a> · 简体中文 · <a href="README.ja-JP.md">日本語</a>
+  <a href="README.md">English</a> · 简体中文 · <a href="README.ja-JP.md">日本語</a> · <a href="README.tr.md">Türkçe</a>
 </p>
 
 <p align="center">
