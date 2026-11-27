@@ -575,14 +575,57 @@
   min-height: 0;
   height: 100%;
 }
+/* A wait shows only once a read outlasts an entrance: what arrives at once
+   goes straight from the last view to itself, with no placeholder between. */
+.drive-loading {
+  display: flex;
+  justify-content: center;
+  padding: 48px 16px;
+  animation: drive-fade-in var(--motion-enter) var(--ease-out) var(--motion-enter) both;
+}
+/* What a pane shows arrives with a short fade rather than a cut. */
+.drive-viewer,
+.drive-html-frame.is-shown,
+.drive-file-view {
+  animation: drive-fade-in var(--motion-quick) var(--ease-out) backwards;
+}
+/* A fade holds its start through a delay and lets go once it ends: held after
+   it, the pane would stay its own layer for as long as it is open. */
+@keyframes drive-fade-in {
+  from { opacity: 0; }
+}
+.drive-file-view {
+  height: 100%;
+  min-height: 0;
+}
+.drive-file-main.is-fill > .drive-file-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.drive-html {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.drive-html > .drive-loading {
+  position: absolute;
+  inset: 0 0 auto;
+}
 .drive-html-frame {
   flex: 1;
   width: 100%;
   height: 100%;
   border: 0;
-  /* A page is drawn on paper until it paints a ground of its own, as a browser would. */
+  /* A page is drawn on paper until it paints a ground of its own, as a browser
+     would; until its document has loaded the frame is not shown at all, so the
+     blank paper never flashes over a dark page. */
   background-color: var(--color-sheet-paper);
+  visibility: hidden;
 }
+.drive-html-frame.is-shown { visibility: visible; }
 .drive-file-empty {
   display: flex;
   flex-direction: column;

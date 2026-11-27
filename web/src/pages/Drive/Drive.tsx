@@ -20,7 +20,7 @@ import { DriveTrash } from './components/DriveTrash';
 import { UploadTray } from './components/UploadTray';
 import { DriveProvider } from './DriveProvider';
 import { useDriveBody } from './driveBody';
-import { driveLinkPath, followMove, isWithinKey, linkedFile, parentOf } from './drivePaths';
+import { driveLinkPath, drivePathKey, followMove, isWithinKey, linkedFile, parentOf } from './drivePaths';
 import { fileAddress, memoState, resolveFileView } from './memoMarks';
 import { useDriveActions } from './useDriveActions';
 import { useDriveEditor } from './useDriveEditor';
@@ -64,7 +64,11 @@ function Drive() {
   });
 
   const list = useDriveList(space, dir);
-  const entry = useDriveEntry(space, file);
+  // The file as its folder's listing has it, matched as the server matches names.
+  // Only a listing still fresh: the change feed marks one stale when a file in
+  // it changes, and a stale seed would read and offer to edit an old version.
+  const listed = file && !list.isStale ? list.data?.find((e) => drivePathKey(e.path) === drivePathKey(file)) : undefined;
+  const entry = useDriveEntry(space, file, listed);
   const fileEntry = entry.data?.kind === 'file' ? entry.data : undefined;
   // The address as the open file reads it; what it names and the file does
   // not have (a version on a plain file, the head as a version, a tab it has

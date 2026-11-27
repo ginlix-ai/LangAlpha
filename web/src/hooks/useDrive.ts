@@ -69,11 +69,17 @@ export function useDriveFolders(space: string | null, enabled: boolean) {
   });
 }
 
-export function useDriveEntry(space: string | null, path: string | null) {
+/**
+ * One entry by its path. `seed` is the same entry as a listing already read
+ * it: shown until the entry's own read lands, so an opened file's header and
+ * marks are whole on the first frame rather than filling in under the reader.
+ */
+export function useDriveEntry(space: string | null, path: string | null, seed?: DriveEntry) {
   return useQuery({
     queryKey: queryKeys.drive.entry(space ?? '', path ?? ''),
     queryFn: () => getEntry(space!, path!),
     enabled: !!space && !!path,
+    placeholderData: seed,
     staleTime: 15_000,
     retry: retryUnlessClientError,
   });

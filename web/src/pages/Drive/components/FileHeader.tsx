@@ -25,7 +25,7 @@ import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
 import { EntryName } from './EntryName';
 import { MemoChip } from './MemoBadges';
-import { BackButton, ICON_BUTTON } from './PaneFrame';
+import { BackButton, ICON_BUTTON, PaneAction } from './PaneFrame';
 
 /** The save's quiet mark beside the editor's buttons. */
 function useSaveMark(editor: DriveEditor): string {
@@ -43,13 +43,17 @@ function useSaveMark(editor: DriveEditor): string {
  * size), then what can be done: edit, the entry's menu; or, while editing,
  * the save, beside which a memo asks what changed. Under it, a memo's band.
  */
-export function FileHeader({ path, entry, mobile, editor, canEdit, html, children }: {
+export function FileHeader({ path, entry, mobile, editor, edit, html, children }: {
   path: string;
   entry: DriveEntry | undefined;
   mobile: boolean;
   editor: DriveEditor;
-  /** A text file at its head, loaded with its hash. */
-  canEdit: boolean;
+  /**
+   * Edit, offered for a text file at its head from the first frame, so it never
+   * arrives late and shifts the actions; `ready` once its text is read with
+   * the hash an edit is saved over.
+   */
+  edit: 'none' | 'waiting' | 'ready';
   /** An HTML file at its head: whether its source is shown, and the switch. */
   html: { source: boolean; toggle: () => void } | null;
   /** Under the name row, inside the header: a memo's status and views. */
@@ -115,12 +119,17 @@ export function FileHeader({ path, entry, mobile, editor, canEdit, html, childre
             ) : (
               <>
                 {html && (
-                  <HeaderButton variant="ghost" icon={html.source ? Eye : Code2} onClick={html.toggle}>
-                    {html.source ? t('drive:file.page') : t('drive:file.source')}
-                  </HeaderButton>
+                  <PaneAction
+                    variant="ghost"
+                    icon={html.source ? Eye : Code2}
+                    label={html.source ? t('drive:file.page') : t('drive:file.source')}
+                    compact={mobile}
+                    onClick={html.toggle}
+                  />
                 )}
-                {canEdit && (
-                  <HeaderButton icon={Pencil} onClick={editor.start}>{t('drive:actions.edit')}</HeaderButton>
+                {edit !== 'none' && (
+                  // On a phone the name needs the row: the action keeps its icon.
+                  <PaneAction icon={Pencil} label={t('drive:actions.edit')} compact={mobile} onClick={editor.start} disabled={edit === 'waiting'} />
                 )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>

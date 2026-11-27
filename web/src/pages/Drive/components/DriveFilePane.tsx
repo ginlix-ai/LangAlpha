@@ -210,6 +210,7 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
     main = <MemoAuthors entry={entry} onPick={(seq) => goTo({ view: 'changes', version: seq })} />;
   }
 
+  const editable = view === 'document' && isText && docVersion === null && !head.isError;
   return (
     <section
       className="drive-file"
@@ -226,7 +227,7 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
         entry={entry}
         mobile={mobile}
         editor={editor}
-        canEdit={view === 'document' && isText && docVersion === null && !!head.data?.version}
+        edit={!editable ? 'none' : head.data?.version ? 'ready' : 'waiting'}
         html={view === 'document' && isHtml && docVersion === null ? { source: htmlSource, toggle: () => setHtmlSource((s) => !s) } : null}
       >
         {mark && entry && (
@@ -246,7 +247,10 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
       </FileHeader>
       {bars}
       <div className="drive-file-body">
-        <div className={cn('drive-file-main', fill && 'is-fill')}>{main}</div>
+        <div className={cn('drive-file-main', fill && 'is-fill')}>
+          {/* A new view fades in over the one it replaces rather than cutting to it. */}
+          <div key={view} className="drive-file-view">{main}</div>
+        </div>
       </div>
     </section>
   );
