@@ -343,7 +343,7 @@ FEATURES: dict[str, FeatureSpec] = {
             "without the sidebar."
         ),
         enabled=True,
-        gate=FeatureGate.OPT_IN,
+        gate=FeatureGate.OPT_OUT,
         category=FeatureCategory.LAYOUT,
         preview=True,
         guide=FeatureGuide(
