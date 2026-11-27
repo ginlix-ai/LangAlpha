@@ -20,6 +20,10 @@ const AT_END = 4;
 // NEAR_BOTTOM_PX in utils/scrollHelpers.ts: a glide trailing the end is within it.
 const NEAR_END = 120;
 const QUESTION = 'And what changed in the second quarter?';
+const PARA = 'Margins held through the quarter while revenue grew on the new segment and guidance stayed where it was. ';
+
+/** A reply of `n` three-sentence paragraphs, one chunk each. */
+const paragraphs = (n) => Array.from({ length: n }, () => sseEvents.messageChunk(`${PARA.repeat(3)}\n\n`));
 
 /** Two settled turns, so the thread opens with history above the composer. */
 function historyReplay() {
@@ -284,6 +288,27 @@ function subagentTurn() {
   return events;
 }
 
+/** Two Tasks the main agent spawns, each writing a transcript longer than the view. */
+function twoSubagentsTurn() {
+  const tasks = [['filings', 'Review the filings', 'Finding'], ['guidance', 'Check the guidance', 'Guide note']];
+  const events = [];
+  for (const [id, description] of tasks) {
+    events.push(
+      sseEvents.toolCalls([{ name: 'Task', args: { description, prompt: description }, id: `toolu_${id}` }]),
+      sseEvents.finishToolCalls(),
+      { event: 'artifact', data: { thread_id: TH, artifact_type: 'task', tool_call_id: `toolu_${id}`, payload: { task_id: id, action: 'spawned', description, type: 'research' } } },
+    );
+  }
+  for (const [id, , line] of tasks) {
+    for (let i = 0; i < 40; i++) {
+      const event = sseEvents.messageChunk(`${line} ${i + 1}: the filings point the same way on margin, mix and the data-center share.\n\n`, 'text');
+      events.push({ ...event, data: { ...event.data, agent: `task:${id}` } });
+    }
+  }
+  events.push(sseEvents.messageChunk('Both underway.'), sseEvents.finishStop());
+  return events;
+}
+
 /** The open subagent transcript's scroller, found by its text. */
 const SUBAGENT_SCROLLER = `[...document.querySelectorAll('.overflow-auto')].find((el) => el.clientHeight > 0 && el.textContent.includes('Finding 1:'))`;
 
@@ -295,9 +320,7 @@ test.describe('a count opened at the end of a live turn', () => {
     await resetMockServer();
     await openThread(page);
     await page.setViewportSize({ width: 1280, height: 720 });
-    const para = 'Margins held through the quarter while revenue grew on the new segment and guidance stayed where it was. ';
-    const events = [];
-    for (let i = 0; i < 14; i++) events.push(sseEvents.messageChunk(`${para.repeat(3)}\n\n`));
+    const events = paragraphs(14);
     for (let i = 0; i < 6; i++) {
       events.push(sseEvents.toolCalls([{ name: 'Grep', args: { pattern: `term${i}`, path: 'data' }, id: `g${i}` }]));
       events.push({ ...sseEvents.finishToolCalls(), delayAfter: 120 });
@@ -307,9 +330,9 @@ test.describe('a count opened at the end of a live turn', () => {
     events.push(sseEvents.finishToolCalls());
     // In flight until the count is open.
     events.push({ ...sseEvents.toolCallResult('w1', 'Fetched'), holdUntil: 'opened' });
-    for (let i = 0; i < 6; i++) events.push({ ...sseEvents.messageChunk(`${para.repeat(3)}\n\n`), delayAfter: 300 });
+    for (let i = 0; i < 6; i++) events.push({ ...sseEvents.messageChunk(`${PARA.repeat(3)}\n\n`), delayAfter: 300 });
     // More of the reply once the reader has come back to it.
-    for (let i = 0; i < 4; i++) events.push({ ...sseEvents.messageChunk(`${para.repeat(3)}\n\n`), delayAfter: 300, ...(i === 0 ? { holdUntil: 'rejoined' } : {}) });
+    for (let i = 0; i < 4; i++) events.push({ ...sseEvents.messageChunk(`${PARA.repeat(3)}\n\n`), delayAfter: 300, ...(i === 0 ? { holdUntil: 'rejoined' } : {}) });
     events.push({ ...sseEvents.finishStop(), holdUntil: 'followed' }, sseEvents.creditUsage());
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events, delay: 20 });
     await send(page, 'Check margins');
@@ -363,9 +386,7 @@ test.describe('a count opened at the end of a live turn', () => {
     await resetMockServer();
     await openThread(page);
     await page.setViewportSize({ width: 1280, height: 720 });
-    const para = 'Margins held through the quarter while revenue grew on the new segment and guidance stayed where it was. ';
-    const events = [];
-    for (let i = 0; i < 14; i++) events.push(sseEvents.messageChunk(`${para.repeat(3)}\n\n`));
+    const events = paragraphs(14);
     for (let i = 0; i < 6; i++) {
       events.push(sseEvents.toolCalls([{ name: 'Grep', args: { pattern: `term${i}`, path: 'data' }, id: `g${i}` }]));
       events.push({ ...sseEvents.finishToolCalls(), delayAfter: 120 });
@@ -374,7 +395,7 @@ test.describe('a count opened at the end of a live turn', () => {
     events.push(sseEvents.toolCalls([{ name: 'WebFetch', args: { url: 'https://one.example.com' }, id: 'w1' }]));
     events.push(sseEvents.finishToolCalls());
     events.push({ ...sseEvents.toolCallResult('w1', 'Fetched'), holdUntil: 'opened' });
-    for (let i = 0; i < 6; i++) events.push(sseEvents.messageChunk(`Later ${i}. ${para.repeat(3)}\n\n`));
+    for (let i = 0; i < 6; i++) events.push(sseEvents.messageChunk(`Later ${i}. ${PARA.repeat(3)}\n\n`));
     events.push({ ...sseEvents.finishStop(), holdUntil: 'landed' }, sseEvents.creditUsage());
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events, delay: 20 });
     await send(page, 'Check margins');
@@ -478,5 +499,85 @@ test.describe('subagent follow', () => {
       const vp = new Function(`return ${find}`)();
       return vp.scrollHeight - vp.scrollTop - vp.clientHeight;
     }, SUBAGENT_SCROLLER), { timeout: 15000 }).toBeLessThanOrEqual(AT_END);
+  });
+
+  // The subagent pane once took over the main transcript's elements, with the
+  // floor a pinned send holds open below its message. Sent under a long turn,
+  // that floor ran thousands of px past the subagent's transcript, and the
+  // pane opened at its bottom: blank above the status bar until a reload.
+  test('opens on its own transcript after a send pinned under a long turn', async ({ page }) => {
+    await resetMockServer();
+    await openThread(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [...paragraphs(30), sseEvents.finishStop()], delay: 5 });
+    await send(page, 'How did the quarter go?');
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible({ timeout: 15000 });
+
+    await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: subagentTurn(), delay: 5 });
+    await page.locator('textarea').fill('Review the filings');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect(page.getByText('Review underway.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /Review the filings/ }).first().click();
+
+    // Before the subagent writes anything, its prompt is the whole transcript.
+    await expect(page.getByText('From main agent')).toBeInViewport();
+    // And once it has, the follow rides its end, not the end of a leftover floor.
+    await expect(page.getByText('Finding 40:', { exact: false })).toBeInViewport({ timeout: 15000 });
+  });
+
+  // Each pane is its own element, so the main transcript comes back new from a
+  // subagent tab, and its place is the one saved on the way out.
+  test('puts the main transcript back where the reader left it', async ({ page }) => {
+    await resetMockServer();
+    await openThread(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [...paragraphs(30), sseEvents.finishStop()], delay: 5 });
+    await send(page, 'How did the quarter go?');
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible({ timeout: 15000 });
+    await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: subagentTurn(), delay: 5 });
+    await page.locator('textarea').fill('Review the filings');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible({ timeout: 20000 });
+
+    // Up in the long turn, far from both ends.
+    const left = await viewport(page).evaluate((vp) => {
+      vp.scrollTop = 400;
+      return { top: vp.scrollTop, end: vp.scrollHeight - vp.clientHeight };
+    });
+    expect(left.end - left.top).toBeGreaterThan(1000);
+    await page.waitForTimeout(300);
+    await page.getByRole('complementary').getByTitle('Review the filings').click();
+    await expect(page.getByText('From main agent')).toBeVisible();
+
+    await page.getByRole('complementary').getByTitle('Lead Agent').click();
+    await expect.poll(() => viewport(page).evaluate((vp) => vp.scrollTop)).toBeCloseTo(left.top, -1);
+  });
+
+  // Each subagent tab keeps its place across a visit to another.
+  test('puts a subagent transcript back where the reader left it after another subagent', async ({ page }) => {
+    await resetMockServer();
+    await openThread(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: twoSubagentsTurn(), delay: 5 });
+    await send(page, 'Review the filings and the guidance');
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible({ timeout: 20000 });
+    const sidebar = page.getByRole('complementary');
+    const scrollerOf = (marker) => `[...document.querySelectorAll('main .overflow-auto')].find((el) => el.clientHeight > 0 && el.textContent.includes('${marker}'))`;
+
+    await sidebar.getByTitle('Review the filings').click();
+    await expect(page.getByText('Finding 40:', { exact: false })).toBeVisible();
+    const left = await page.evaluate((find) => {
+      const vp = new Function(`return ${find}`)();
+      vp.scrollTop = 300;
+      return { top: vp.scrollTop, end: vp.scrollHeight - vp.clientHeight };
+    }, scrollerOf('Finding 1:'));
+    expect(left.end - left.top).toBeGreaterThan(500);
+    await page.waitForTimeout(300);
+
+    await sidebar.getByTitle('Check the guidance').click();
+    await expect(page.getByText('Guide note 40:', { exact: false })).toBeVisible();
+    await sidebar.getByTitle('Review the filings').click();
+    await expect(page.getByText('Finding 1:', { exact: false })).toBeAttached();
+    await expect.poll(() => page.evaluate((find) => new Function(`return ${find}`)().scrollTop, scrollerOf('Finding 1:'))).toBeCloseTo(left.top, -1);
   });
 });

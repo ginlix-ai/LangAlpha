@@ -1808,8 +1808,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 agentName={isHome ? t('agents.chiefOfStaff') : t('agents.analyst')}
                 onAddContext={handleAddContext}
               />
+              {/* Keyed so the main transcript and a subagent's never share elements:
+                  the follows and the pinned send's floor write to them outside
+                  React, and a reused element keeps what they wrote. Every other tab,
+                  a workflow run's included, shares one: their follow is re-made per
+                  tab (useStreamFollow's `view`), and a key that changed between them
+                  would run it once on the tab left behind, spending the next tab's
+                  saved place there. */}
               {activeAgentId === 'main' ? (
-                <ScrollArea ref={scrollAreaRef} className={`h-full w-full${!isMobile && !rightPanelType ? ' chat-scroll-hide-scrollbar' : ''}`}>
+                <ScrollArea key="main" ref={scrollAreaRef} className={`h-full w-full${!isMobile && !rightPanelType ? ' chat-scroll-hide-scrollbar' : ''}`}>
                   {/* The floor a pinned send holds open (chatView/turnPin); a transition would
                       hand the pin last frame's floor. A thread opened mid-way sits at the
                       bottom under a skeleton, and back on top while a pin holds room. */}
@@ -1893,7 +1900,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               ) : activeAgent && activeAgent.type === WORKFLOW_TASK_TYPE ? (
                 // Workflow run detail — a run has no transcript of its own;
                 // its progress console replaces the generic subagent layout.
-                <ScrollArea ref={subagentScrollRoot} className="h-full w-full">
+                <ScrollArea key="subagent" ref={subagentScrollRoot} className="h-full w-full">
                   <div className={`${isMobile ? 'px-3 pt-3' : 'px-6 pt-4'} ${TRANSCRIPT_BOTTOM_PAD} flex justify-center`}>
                     <div className="w-full max-w-3xl">
                       <WorkflowRunDetail
@@ -1913,7 +1920,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   </div>
                 </ScrollArea>
               ) : activeAgent ? (
-                <ScrollArea ref={subagentScrollRoot} className="h-full w-full">
+                <ScrollArea key="subagent" ref={subagentScrollRoot} className="h-full w-full">
                   <div className={`${isMobile ? 'px-3 pt-3' : 'px-6 pt-4'} ${TRANSCRIPT_BOTTOM_PAD} flex justify-center`}>
                     <div className="w-full max-w-3xl space-y-2.5">
                       {/* Task description as header */}
