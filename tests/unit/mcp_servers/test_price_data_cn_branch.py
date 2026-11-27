@@ -268,5 +268,5 @@ class TestCnDailyBranch:
                 patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=FetchResult(ginlix_rows))):
             result = await mod.get_stock_data("AAPL", interval="1day")
 
-        assert_ok_envelope(result, symbol="AAPL", source="ginlix-data", count=2)
+        assert_ok_envelope(result, symbol="AAPL", source="langalpha-data", count=2)
         daily.assert_not_awaited()

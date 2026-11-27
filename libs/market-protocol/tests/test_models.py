@@ -42,7 +42,7 @@ def _header(**overrides):
         "instrument_key": "AAPL.XNAS",
         "schema": "ohlcv-1h",
         "price_treatment": PriceTreatment.SPLIT_ADJUSTED,
-        "publisher": "ginlix-data",
+        "publisher": "langalpha-data",
         "tier": Tier.REALTIME,
         "price_currency": "USD",
         "display_decimals": 2,

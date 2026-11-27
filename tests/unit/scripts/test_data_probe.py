@@ -706,6 +706,18 @@ def test_merge_keeps_the_verdicts_of_providers_the_run_did_not_measure():
     assert cell.routable_names() == ["tushare"]
 
 
+def test_a_run_refuses_to_merge_into_a_ruleset_naming_ginlix_data(tmp_path):
+    from scripts.data_probe.store import load_for_merge, save_ruleset
+
+    key = CellKey(market="us", asset_class="equity", surface=Surface.DAILY)
+    path = tmp_path / "data_routing.yaml"
+    save_ruleset(Ruleset(generated_at=NOW, cells=[Cell(key=key, probed_at=NOW, providers=[
+        ProbedProvider(name="ginlix-data", coverage_hit=1, coverage_total=1),
+    ])]), path)
+    with pytest.raises(SystemExit, match="renamed langalpha-data"):
+        load_for_merge(path)
+
+
 def test_save_writes_through_a_symlink_and_keeps_the_file_readable(tmp_path: Path):
     import os
     import stat

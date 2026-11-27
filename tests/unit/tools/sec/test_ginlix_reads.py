@@ -123,8 +123,8 @@ class Ginlix:
 
 def use(monkeypatch, ginlix):
     """Configures ginlix-data as the process's, or none."""
-    monkeypatch.setattr(settings, "GINLIX_DATA_URL", "http://data.test" if ginlix else "")
-    monkeypatch.setattr(settings, "GINLIX_DATA_SEC_ENABLED", True)
+    monkeypatch.setattr(settings, "LANGALPHA_DATA_URL", "http://data.test" if ginlix else "")
+    monkeypatch.setattr(settings, "LANGALPHA_DATA_SEC_ENABLED", True)
     monkeypatch.setattr(sec_filings, "_client", client_answering(ginlix.handle) if ginlix else None)
 
 
@@ -240,7 +240,7 @@ def test_without_an_answer_from_ginlix_data_the_company_and_labels_come_from_edg
 
 
 def test_with_its_sec_reads_switched_off_ginlix_data_is_never_asked(ginlix, monkeypatch):
-    monkeypatch.setattr(settings, "GINLIX_DATA_SEC_ENABLED", False)
+    monkeypatch.setattr(settings, "LANGALPHA_DATA_SEC_ENABLED", False)
     edgar_company(monkeypatch, rows=[{"accession_number": "a"}])
     monkeypatch.setattr(edgar, "companyfacts_labels", lambda cik: {("a", "10-K"): (2020, "FY")})
 

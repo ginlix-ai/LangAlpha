@@ -10,7 +10,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from src.config.settings import AUTH_SERVICE_URL, HOST_MODE
+from src.config.settings import PLATFORM_SERVICE_URL, HOST_MODE
 from src.server.utils.http_client import get_http_client
 from src.server.services.shared_workspaces.holder import refuse_holder
 
@@ -58,7 +58,7 @@ SERVICE_UNAVAILABLE_RETRY_AFTER = 15  # seconds
 
 def platform_gating_active() -> bool:
     """True when platform scope/quota gates should run (not OSS and an auth URL set)."""
-    return HOST_MODE != "oss" and bool(AUTH_SERVICE_URL)
+    return HOST_MODE != "oss" and bool(PLATFORM_SERVICE_URL)
 
 
 def service_headers(user_id: Optional[str] = None) -> dict:
@@ -140,7 +140,7 @@ async def call_validate(
     if surface:
         body["surface"] = surface
 
-    url = f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/validate"
+    url = f"{PLATFORM_SERVICE_URL}/api/auth/validate"
     reason = "unknown"
     delays = _VALIDATE_RETRY_DELAYS if strict else ()
     give_up_at = time.monotonic() + _VALIDATE_RETRY_WINDOW

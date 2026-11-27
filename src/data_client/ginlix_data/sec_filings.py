@@ -223,11 +223,11 @@ _lock = threading.Lock()
 def sec_filings_client() -> SecFilingsClient | None:
     """The process's client, or None when no ginlix-data is configured or its SEC reads are switched off."""
     global _client
-    from src.config.settings import GINLIX_DATA_SEC_ENABLED, GINLIX_DATA_URL
+    from src.config.settings import LANGALPHA_DATA_SEC_ENABLED, LANGALPHA_DATA_URL
 
-    if not (GINLIX_DATA_URL and GINLIX_DATA_SEC_ENABLED):
+    if not (LANGALPHA_DATA_URL and LANGALPHA_DATA_SEC_ENABLED):
         return None
     with _lock:
         if _client is None:
-            _client = SecFilingsClient(GINLIX_DATA_URL, os.getenv("INTERNAL_SERVICE_TOKEN", ""))
+            _client = SecFilingsClient(LANGALPHA_DATA_URL, os.getenv("INTERNAL_SERVICE_TOKEN", ""))
         return _client

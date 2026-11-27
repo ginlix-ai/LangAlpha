@@ -263,7 +263,7 @@ redis:
 # once per request.
 market_data:
   providers:
-    - name: ginlix-data
+    - name: langalpha-data
       markets: [us]          # US equities only
     - name: tushare
       markets: [cn]          # A-share daily bars (qfq-adjusted), served by ginlix-data
@@ -283,7 +283,7 @@ market_data:
 # Ordered news provider chain — sequential fallback (no market routing).
 news_data:
   providers:
-    - name: ginlix-data
+    - name: langalpha-data
     - name: fmp
     - name: yfinance
 
@@ -304,7 +304,7 @@ news_poll:
       limit: 50
     - provider: tushare    # CN market feed (news:tushare:general:<limit>), served only to
       limit: 50            # zh-locale users opted into the a_share_pack feature; needs
-                           # GINLIX_DATA_URL, and is skipped at startup without it
+                           # LANGALPHA_DATA_URL, and is skipped at startup without it
 
 # Order reconciliation: asks each connected brokerage what became of an order
 # the host stopped watching, so a lost answer settles and a working order

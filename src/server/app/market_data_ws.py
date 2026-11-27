@@ -9,8 +9,8 @@ on their symbol subscriptions.
 WS ticks are also written into the Redis OHLCV cache so that REST
 reads always reflect near-real-time data (WS-fed cache).
 
-The entire router is only registered when ``GINLIX_DATA_ENABLED`` is
-true (i.e. ``GINLIX_DATA_WS_URL`` is set) — see ``setup.py``.
+The entire router is only registered when ``LANGALPHA_DATA_ENABLED`` is
+true (i.e. ``LANGALPHA_DATA_WS_URL`` is set) — see ``setup.py``.
 """
 
 import asyncio
@@ -56,7 +56,7 @@ _WS_INTERVAL_TO_CACHE: dict[str, str] = {
 }
 
 _WS_CACHE_TTL = 30  # seconds — longer TTL survives brief WS hiccups
-_WS_SOURCE = "ginlix-data"  # must match config.yaml provider name
+_WS_SOURCE = "langalpha-data"  # must match config.yaml provider name
 
 # ---------------------------------------------------------------------------
 # Throttled tick buffer — avoids flooding Redis with one write per tick

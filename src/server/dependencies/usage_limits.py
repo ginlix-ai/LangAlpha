@@ -3,7 +3,7 @@ FastAPI dependencies for usage limit enforcement.
 
 Gate hierarchy:
   HOST_MODE ("oss" | "platform")        — master switch; OSS mode skips all gates.
-  AUTH_SERVICE_URL                       — platform quota service; guards
+  PLATFORM_SERVICE_URL                  — platform quota service; guards
                                            credit/workspace limits and access tier
                                            checks.  Can be absent even when
                                            HOST_MODE is "platform" (partial deploy).
@@ -24,7 +24,7 @@ from typing import Annotated, Optional, get_args
 
 from fastapi import Depends, HTTPException
 
-from src.config.settings import AUTH_SERVICE_URL, HOST_MODE
+from src.config.settings import HOST_MODE, PLATFORM_SERVICE_URL
 from src.server.models.computer import ResourceTierId
 from src.server.services import membership, platform_client
 from src.server.utils.api import get_current_user_id
@@ -200,7 +200,7 @@ async def chat_limit_for(user_id: str) -> ChatAuthResult:
     # Platform access tier — only when quota service is available and user
     # has no own-key path (BYOK or OAuth already grants access).
     tier: Optional[int] = -1
-    if HOST_MODE != "oss" and AUTH_SERVICE_URL and not is_byok and not has_oauth:
+    if HOST_MODE != "oss" and PLATFORM_SERVICE_URL and not is_byok and not has_oauth:
         tier = await membership.access_tier(user_id)
 
     return ChatAuthResult(

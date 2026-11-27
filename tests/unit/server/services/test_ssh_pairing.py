@@ -1101,6 +1101,7 @@ def test_a_loopback_base_makes_a_command_for_this_machine_only(base, local):
         ("https://langalpha.example.com/", "https://langalpha.example.com"),
         ("http://192.168.1.20:8000", "http://192.168.1.20:8000"),
         ("", "http://127.0.0.1:8000"),
+        ("http://localhost:8000", "http://127.0.0.1:8000"),
     ],
 )
 def test_a_base_only_containers_resolve_gives_way_to_the_browsers(

@@ -681,7 +681,7 @@ async def post_notification_turn(
     """
     import aiohttp
 
-    self_base_url = os.environ.get("GINLIXFLOW_BASE_URL", "http://localhost:8000")
+    from src.config.env import SERVER_LOOPBACK_URL
     service_token = os.environ.get("INTERNAL_SERVICE_TOKEN", "")
 
     # With auth enabled, the endpoint rejects an unauthenticated background
@@ -704,7 +704,7 @@ async def post_notification_turn(
         "X-User-Id": user_id,
         "X-Dispatch": "background",
     }
-    url = f"{self_base_url}/api/v1/threads/{thread_id}/{route}"
+    url = f"{SERVER_LOOPBACK_URL}/api/v1/threads/{thread_id}/{route}"
 
     deadline = asyncio.get_running_loop().time() + wait_cap
     backoff = 1.0

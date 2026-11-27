@@ -26,7 +26,7 @@ contract; this file is the market-data MCP specialisation of it.
     "timezone": "Asia/Hong_Kong",  # IANA tz of timestamp strings, when known
     "count": 3,                    # plain int — total records in `data`
     "data": [...],                 # THE record payload — always this key
-    "source": "ginlix-data",       # provider that served the request
+    "source": "langalpha-data",    # provider that served the request
     # tool-specific echo keys (period, data_type, ...) may follow
 }
 ```
@@ -56,7 +56,7 @@ Rules:
   (`make_response(truncated=...)`), absent on a complete read. A cut read keeps
   the end its reader wants and the docstring names the end lost: price and rate
   history keeps the newest rows, a calendar keeps the start of its window and
-  loses the latest dates. Reads that walk several pages or calls (ginlix-data
+  loses the latest dates. Reads that walk several pages or calls (LangAlpha Data
   cursors, FMP's 90-day and 4,000-row windows) walk from the kept end so the cap
   always falls on the other, and drop a row identical to one already read. A
   vendor refusal part-way through such a walk fails the read: `truncated` means

@@ -244,10 +244,10 @@ class TestMarketDataProvider:
 
     def test_source_names(self):
         provider = MarketDataProvider([
-            ProviderEntry("ginlix-data", FakeSource(), {"us"}),
+            ProviderEntry("langalpha-data", FakeSource(), {"us"}),
             ProviderEntry("fmp", FakeSource(), {"all"}),
         ])
-        assert provider.source_names == ["ginlix-data", "fmp"]
+        assert provider.source_names == ["langalpha-data", "fmp"]
 
     @pytest.mark.asyncio
     async def test_get_daily_passthrough(self):
@@ -366,9 +366,9 @@ class TestMarketDataProvider:
     async def test_a_ginlix_data_index_reads_delayed_and_its_stocks_realtime(self):
         """ginlix-data's index feed is the 15-minute delayed one; its US stocks
         are not."""
-        gd = SnapshotSource("ginlix-data", {"GSPC": {"symbol": "GSPC", "price": 5000.0},
+        gd = SnapshotSource("langalpha-data", {"GSPC": {"symbol": "GSPC", "price": 5000.0},
                                             "AAPL": {"symbol": "AAPL", "price": 190.0}})
-        provider = MarketDataProvider([ProviderEntry("ginlix-data", gd, {"us"})])
+        provider = MarketDataProvider([ProviderEntry("langalpha-data", gd, {"us"})])
         index = await provider.get_snapshots(["GSPC"], asset_type="indices")
         stock = await provider.get_snapshots(["AAPL"])
         assert (index[0]["tier"], stock[0]["tier"]) == ("delayed_15m", "realtime")
@@ -733,7 +733,7 @@ class TestCapabilityRouting:
         yf = FakeSource("yf")
         fmp = FakeSource("fmp")
         provider = MarketDataProvider([
-            ProviderEntry("ginlix-data", ginlix, {"us"}),
+            ProviderEntry("langalpha-data", ginlix, {"us"}),
             ProviderEntry("yfinance", yf, set(), intraday_markets={"non-us"}),
             ProviderEntry("fmp", fmp, {"all"}),
             ProviderEntry("yfinance", yf, {"all"}),
@@ -751,7 +751,7 @@ class TestCapabilityRouting:
     async def test_us_intraday_routing_unchanged(self):
         provider, ginlix, yf, fmp = self._chain()
         _, source, _ = await provider.get_intraday_with_source("AAPL", interval="1hour")
-        assert source == "ginlix-data"
+        assert source == "langalpha-data"
         assert not yf.calls and not fmp.calls
 
     @pytest.mark.asyncio
@@ -787,7 +787,7 @@ class TestCapabilityRouting:
 
     def test_source_names_deduplicated_in_order(self):
         provider, *_ = self._chain()
-        assert provider.source_names == ["ginlix-data", "yfinance", "fmp"]
+        assert provider.source_names == ["langalpha-data", "yfinance", "fmp"]
 
     def test_source_names_for_intraday_prefers_yfinance_over_catch_all(self):
         """Non-US intraday: the priority slot puts yfinance ahead of fmp."""
@@ -799,7 +799,7 @@ class TestCapabilityRouting:
         appears once in its catch-all position (last), not ahead of fmp."""
         provider, *_ = self._chain()
         names = provider.source_names_for("AAPL", "snapshot")
-        assert names == ["ginlix-data", "fmp", "yfinance"]
+        assert names == ["langalpha-data", "fmp", "yfinance"]
         assert names.count("yfinance") == 1
 
     def test_non_us_token_never_matches_us(self):
@@ -891,13 +891,13 @@ class TestMarketStatusRouting:
         status, and a name listed twice keeps its first chain position."""
         src = FakeSource("x")
         provider = MarketDataProvider([
-            ProviderEntry("ginlix-data", src, {"us"}),
+            ProviderEntry("langalpha-data", src, {"us"}),
             ProviderEntry("tushare", src, {"cn"}, intraday_markets=set(), snapshot_markets={"cn"}),
             ProviderEntry("yfinance", src, set(), intraday_markets={"non-us"}),
             ProviderEntry("fmp", src, {"all"}),
             ProviderEntry("yfinance", src, {"all"}),
         ])
-        assert provider.source_names_for_market("us") == ["ginlix-data", "yfinance", "fmp"]
+        assert provider.source_names_for_market("us") == ["langalpha-data", "yfinance", "fmp"]
         assert provider.source_names_for_market("cn") == ["tushare", "yfinance", "fmp"]
         assert provider.source_names_for_market("hk") == ["yfinance", "fmp"]
 
@@ -951,7 +951,12 @@ def _table(cells: dict[str, list[str]]):
     from datetime import datetime, timezone
 
     from market_protocol.routing import (
-        Cell, CellKey, ProbedProvider, Ruleset, RoutingTable, Surface,
+        Cell,
+        CellKey,
+        ProbedProvider,
+        RoutingTable,
+        Ruleset,
+        Surface,
     )
 
     built = []
@@ -1034,6 +1039,25 @@ class TestRuleSetRouting:
             ProviderEntry("yfinance", yf, {"all"}),
         ], routing=routing)
         return provider, ts, yf, fmp
+
+    def test_a_ruleset_naming_ginlix_data_is_refused(self, tmp_path):
+        from src.data_client.registry import refuse_renamed_providers
+
+        path = tmp_path / "data_routing.yaml"
+        with pytest.raises(ValueError, match="names ginlix-data, renamed langalpha-data"):
+            refuse_renamed_providers(_table({"us/equity/daily": ["ginlix-data", "fmp"]}).ruleset, path)
+        refuse_renamed_providers(_table({"us/equity/daily": ["langalpha-data", "fmp"]}).ruleset, path)
+
+    def test_the_boot_check_reads_the_deployment_ruleset(self, tmp_path, monkeypatch):
+        from scripts.data_probe.store import save_ruleset
+        from src.data_client.registry import RULESET_PATH_ENV, read_routing_ruleset
+
+        path = tmp_path / "data_routing.yaml"
+        monkeypatch.setenv(RULESET_PATH_ENV, str(path))
+        read_routing_ruleset()
+        save_ruleset(_table({"us/equity/daily": ["ginlix-data", "fmp"]}).ruleset, path)
+        with pytest.raises(ValueError, match="names ginlix-data, renamed langalpha-data. Replace the name"):
+            read_routing_ruleset()
 
     def test_config_order_without_a_ruleset(self):
         provider, *_ = self._chain()

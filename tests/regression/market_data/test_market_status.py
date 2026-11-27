@@ -36,7 +36,7 @@ def test_provider_chain_order(http):
     # ginlix-data → yfinance → fmp. Daily/snapshot routing unchanged
     # (capability overrides — see config.yaml market_data.providers).
     payload = http.get("/market-status").json()
-    assert payload["providers"] == ["ginlix-data", "yfinance", "fmp"]
+    assert payload["providers"] == ["langalpha-data", "yfinance", "fmp"]
 
 
 def test_rest_requires_auth():

@@ -8,11 +8,13 @@ the one request made carries the key alone.
 from __future__ import annotations
 
 import hashlib
+import importlib
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 
+from src.config import env
 from src.server.auth import pats
 
 PLATFORM = "https://platform.example.test"
@@ -70,7 +72,7 @@ def cache(monkeypatch) -> FakeCache:
 @pytest.fixture
 def platform(monkeypatch, cache) -> Platform:
     fake = Platform()
-    monkeypatch.setattr(pats, "AUTH_SERVICE_URL", PLATFORM)
+    monkeypatch.setattr(pats, "PLATFORM_SERVICE_URL", PLATFORM)
     monkeypatch.setattr(pats, "get_http_client", AsyncMock(return_value=fake))
     return fake
 
@@ -99,7 +101,7 @@ def test_only_the_pat_prefix_is_a_personal_access_token():
 async def test_a_server_with_no_platform_refuses_every_pat_without_asking_anyone(
     monkeypatch, cache
 ):
-    monkeypatch.setattr(pats, "AUTH_SERVICE_URL", "")
+    monkeypatch.setattr(pats, "PLATFORM_SERVICE_URL", "")
     client = AsyncMock()
     monkeypatch.setattr(pats, "get_http_client", client)
 
@@ -138,7 +140,14 @@ async def test_the_platform_is_sent_the_key_alone_and_no_service_headers(platfor
 
 @pytest.mark.asyncio
 async def test_a_trailing_slash_on_the_platform_address_is_trimmed(platform, monkeypatch):
-    monkeypatch.setattr(pats, "AUTH_SERVICE_URL", f"{PLATFORM}/")
+    try:
+        with monkeypatch.context() as m:
+            m.setenv("PLATFORM_SERVICE_URL", f"{PLATFORM}/")
+            importlib.reload(env)
+            trimmed = env.PLATFORM_SERVICE_URL
+    finally:
+        importlib.reload(env)
+    monkeypatch.setattr(pats, "PLATFORM_SERVICE_URL", trimmed)
 
     await pats.verify_pat(TOKEN)
 

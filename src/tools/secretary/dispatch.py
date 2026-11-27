@@ -358,7 +358,7 @@ async def dispatch(
     # X-Dispatch: background tells the endpoint to run the PTC workflow in a
     # background asyncio task and return JSON immediately, avoiding the
     # generator-cancelled-on-client-disconnect race.
-    self_base_url = os.environ.get("GINLIXFLOW_BASE_URL", "http://localhost:8000")
+    from src.config.env import SERVER_LOOPBACK_URL
     service_token = os.environ.get("INTERNAL_SERVICE_TOKEN", "")
 
     async with reserve(
@@ -425,7 +425,7 @@ async def dispatch(
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{self_base_url}/api/v1/threads/{thread_id}/messages",
+                    f"{SERVER_LOOPBACK_URL}/api/v1/threads/{thread_id}/messages",
                     json={
                         "messages": [{"role": "user", "content": question}],
                         "workspace_id": workspace_id,

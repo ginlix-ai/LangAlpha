@@ -36,11 +36,24 @@ class TestMarketDataConfig:
     def test_with_providers(self):
         cfg = MarketDataConfig(providers=[
             MarketDataProviderConfig(name="fmp", markets=["all"]),
-            MarketDataProviderConfig(name="ginlix-data", markets=["us"]),
+            MarketDataProviderConfig(name="langalpha-data", markets=["us"]),
         ])
         assert len(cfg.providers) == 2
         assert cfg.providers[0].name == "fmp"
         assert cfg.providers[1].markets == ["us"]
+
+
+class TestRenamedProviderName:
+    def test_a_provider_list_naming_ginlix_data_fails_and_names_the_new_name(self):
+        with pytest.raises(ValidationError, match="'ginlix-data' was renamed to 'langalpha-data'"):
+            MarketDataConfig(providers=[{"name": "ginlix-data", "markets": ["us"]}])
+
+    def test_a_news_feed_naming_ginlix_data_fails(self):
+        from src.config.models import NewsPollFeedConfig
+
+        with pytest.raises(ValidationError, match="'ginlix-data' was renamed"):
+            NewsPollFeedConfig(provider="ginlix-data")
+        assert NewsPollFeedConfig(provider=None).provider is None
 
 
 class TestNewsDataConfig:
@@ -125,13 +138,13 @@ class TestInfrastructureConfigComplete:
             },
             "market_data": {
                 "providers": [
-                    {"name": "ginlix-data", "markets": ["us"]},
+                    {"name": "langalpha-data", "markets": ["us"]},
                     {"name": "fmp", "markets": ["all"]},
                 ],
             },
             "news_data": {
                 "providers": [
-                    {"name": "ginlix-data"},
+                    {"name": "langalpha-data"},
                     {"name": "fmp"},
                 ],
             },
@@ -141,7 +154,7 @@ class TestInfrastructureConfigComplete:
         assert cfg.workflow_timeout == 1600
         assert cfg.background_execution.subagent_collector_timeout == 60
         assert len(cfg.market_data.providers) == 2
-        assert cfg.market_data.providers[0].name == "ginlix-data"
+        assert cfg.market_data.providers[0].name == "langalpha-data"
         assert len(cfg.news_data.providers) == 2
 
 

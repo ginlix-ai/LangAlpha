@@ -381,7 +381,7 @@ async def test_a_gone_workspace_gets_no_grant():
 async def test_workspace_files_spend_the_renders_budget(monkeypatch):
     # Each file is capped on its own, and all of them together with what the
     # render fetched from the internet.
-    monkeypatch.setattr("src.config.env.PDF_RENDER_INTERNAL_BASE", "http://127.0.0.1:8000")
+    monkeypatch.setattr("src.config.env.SERVER_LOOPBACK_URL", "http://127.0.0.1:8000")
     base = f"{wr._FILES_ORIGIN}/api/v1/wsfiles/g/v1.tok/"
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=b"x" * 600))
@@ -410,7 +410,7 @@ async def test_workspace_files_spend_the_renders_budget(monkeypatch):
 
 
 def test_internal_url_maps_only_what_sits_under_the_grant(monkeypatch):
-    monkeypatch.setattr("src.config.env.PDF_RENDER_INTERNAL_BASE", "http://127.0.0.1:8000")
+    monkeypatch.setattr("src.config.env.SERVER_LOOPBACK_URL", "http://127.0.0.1:8000")
     base = f"{wr._FILES_ORIGIN}/api/v1/wsfiles/g/v1.tok/"
 
     assert (

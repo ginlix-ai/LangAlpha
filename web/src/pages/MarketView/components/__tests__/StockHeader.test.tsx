@@ -20,7 +20,7 @@ const baseInputs: StockQuoteInputs = {
   realTimePrice: null,
   quoteData: null,
   snapshot: null,
-  marketStatus: { providers: ['ginlix-data', 'yfinance', 'fmp'] } as Record<string, unknown>,
+  marketStatus: { providers: ['langalpha-data', 'yfinance', 'fmp'] } as Record<string, unknown>,
   wsStatus: 'disconnected',
 };
 
@@ -69,12 +69,12 @@ describe('StockHeader source tooltip', () => {
         wsDataLevel="second"
       />,
     );
-    expect(screen.getByText(/Quote: Ginlix Data/)).toBeInTheDocument();
+    expect(screen.getByText(/Quote: LangAlpha Data/)).toBeInTheDocument();
   });
 
   it('falls back to the enabled-provider list when the row has no source', () => {
     render(<Header inputs={{ snapshot: snap(null) }} />);
-    expect(screen.getByText(/Quote: Ginlix Data, Yahoo Finance, FMP/)).toBeInTheDocument();
+    expect(screen.getByText(/Quote: LangAlpha Data, Yahoo Finance, FMP/)).toBeInTheDocument();
   });
 
   it('opens from a tab stop the lines describe, not only under a hovering pointer', () => {

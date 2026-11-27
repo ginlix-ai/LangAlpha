@@ -16,7 +16,7 @@ from typing import Any, Callable, Coroutine, Optional
 
 import websockets
 
-from src.config.settings import GINLIX_DATA_WS_URL
+from src.config.settings import LANGALPHA_DATA_WS_URL
 from src.data_client.ginlix_data.symbols import stock_ticker
 from market_protocol import AssetClass, OhlcvBar, to_canonical
 
@@ -258,8 +258,8 @@ class MarketDataFeed:
 
     async def start(self) -> None:
         """Start the connection manager. Idempotent — a running loop is kept."""
-        if not GINLIX_DATA_WS_URL:
-            logger.warning("[Feed] GINLIX_DATA_WS_URL not set — WS disabled")
+        if not LANGALPHA_DATA_WS_URL:
+            logger.warning("[Feed] LANGALPHA_DATA_WS_URL not set — WS disabled")
             return
         if self._connection_task and not self._connection_task.done():
             return
@@ -409,7 +409,7 @@ class MarketDataFeed:
     async def _connect_and_receive(self) -> None:
         """Connect to ginlix-data WS and process messages."""
         url = (
-            f"{GINLIX_DATA_WS_URL}/ws/v1/data/aggregates/{self._market}"
+            f"{LANGALPHA_DATA_WS_URL}/ws/v1/data/aggregates/{self._market}"
             f"?interval={self._interval}&tier={self._tier}"
         )
         headers = {}

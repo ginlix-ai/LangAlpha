@@ -40,8 +40,8 @@ def _platform(*, teams=True, gating=True, cache=None, client=None):
     stack.enter_context(patch("src.server.services.membership.is_feature_enabled_system", lambda key: teams))
     stack.enter_context(patch(f"{LIMITS}.HOST_MODE", "platform" if gating else "oss"))
     stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform" if gating else "oss"))
-    stack.enter_context(patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"))
-    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch(f"{LIMITS}.PLATFORM_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"))
     stack.enter_context(patch("src.server.services.platform_client.get_http_client", return_value=client or AsyncMock()))
     stack.enter_context(
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache or AsyncMock())

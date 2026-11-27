@@ -56,7 +56,7 @@ def _index_quote(ticker: str, session: dict[str, Any], as_of: int | None) -> tup
 def normalize_series(rows: list[dict], *, ref: InstrumentRef, schema: str) -> Series:
     """Normalize ginlix-data bars (epoch-ms ``time`` already UTC) to a Series."""
     return build_series(
-        rows, ref=ref, schema=schema, publisher="ginlix-data",
+        rows, ref=ref, schema=schema, publisher="langalpha-data",
         ts_of=lambda row: int(row["time"]) if row.get("time") else 0,
     )
 

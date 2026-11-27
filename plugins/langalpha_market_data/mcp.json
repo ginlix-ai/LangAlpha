@@ -11,7 +11,7 @@
       ],
       "env": {
         "FMP_API_KEY": "${FMP_API_KEY}",
-        "GINLIX_DATA_URL": "${GINLIX_DATA_URL}"
+        "LANGALPHA_DATA_URL": "${LANGALPHA_DATA_URL}"
       }
     },
     "fundamentals": {
@@ -24,7 +24,7 @@
       ],
       "env": {
         "FMP_API_KEY": "${FMP_API_KEY}",
-        "GINLIX_DATA_URL": "${GINLIX_DATA_URL}"
+        "LANGALPHA_DATA_URL": "${LANGALPHA_DATA_URL}"
       }
     },
     "macro": {
@@ -48,7 +48,7 @@
         "plugins/langalpha_market_data/options_mcp_server.py"
       ],
       "env": {
-        "GINLIX_DATA_URL": "${GINLIX_DATA_URL}"
+        "LANGALPHA_DATA_URL": "${LANGALPHA_DATA_URL}"
       }
     }
   }

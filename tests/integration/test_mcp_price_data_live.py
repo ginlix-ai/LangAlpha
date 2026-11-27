@@ -1,7 +1,7 @@
 """Integration tests for price_data_mcp_server — hits real APIs.
 
 Run with:  uv run python -m pytest tests/integration/ -m integration -v
-Requires:  FMP_API_KEY (for OHLCV), GINLIX_DATA_URL (for short data)
+Requires:  FMP_API_KEY (for OHLCV), LANGALPHA_DATA_URL (for short data)
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 _has_fmp = bool(os.getenv("FMP_API_KEY"))
-_has_ginlix = bool(os.getenv("GINLIX_DATA_URL"))
+_has_ginlix = bool(os.getenv("LANGALPHA_DATA_URL"))
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +113,10 @@ async def _init_ginlix():
     # Try the normal ensure() path first (reads token file)
     if not await client.ensure():
         # Fall back to env-var-based initialization
-        url = os.getenv("GINLIX_DATA_URL", "")
+        url = os.getenv("LANGALPHA_DATA_URL", "")
         token = os.getenv("INTERNAL_SERVICE_TOKEN", "")
         if not url:
-            pytest.skip("GINLIX_DATA_URL not set")
+            pytest.skip("LANGALPHA_DATA_URL not set")
         headers: dict[str, str] = {}
         if token:
             headers["X-Service-Token"] = token
@@ -127,13 +127,13 @@ async def _init_ginlix():
     return mod
 
 
-@pytest.mark.skipif(not _has_ginlix, reason="GINLIX_DATA_URL not set")
+@pytest.mark.skipif(not _has_ginlix, reason="LANGALPHA_DATA_URL not set")
 class TestGetShortDataLive:
     async def test_both(self):
         mod = await _init_ginlix()
         result = await mod.get_short_data("AAPL")
         assert "error" not in result, result.get("error")
-        assert result["source"] == "ginlix-data"
+        assert result["source"] == "langalpha-data"
         assert result["data_type"] == "both"
         # Sections live under the standard `data` payload (a dict of lists).
         data = result["data"]

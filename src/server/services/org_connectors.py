@@ -196,7 +196,7 @@ async def shared_credential(
 
     import httpx
 
-    from src.config.settings import AUTH_SERVICE_URL
+    from src.config.settings import PLATFORM_SERVICE_URL
     from src.server.utils.egress_guard import RESERVED_HEADERS
     from src.server.utils.http_client import get_http_client
 
@@ -216,7 +216,7 @@ async def shared_credential(
     try:
         resp = await asyncio.wait_for(
             client.post(
-                f"{AUTH_SERVICE_URL.rstrip('/')}{CREDENTIAL_PATH}",
+                f"{PLATFORM_SERVICE_URL}{CREDENTIAL_PATH}",
                 json=body,
                 headers={"X-User-Id": user_id, "X-Connector-Credential-Token": token},
                 timeout=httpx.Timeout(

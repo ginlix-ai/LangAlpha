@@ -94,7 +94,7 @@ class _AuthService:
         client = httpx.AsyncClient(transport=httpx.MockTransport(self))
         return (
             patch("src.server.utils.http_client.get_http_client", AsyncMock(return_value=client)),
-            patch("src.config.settings.AUTH_SERVICE_URL", AUTH_URL),
+            patch("src.config.settings.PLATFORM_SERVICE_URL", AUTH_URL),
             patch(
                 "src.server.services.platform_client.platform_gating_active",
                 return_value=True,

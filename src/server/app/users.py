@@ -137,7 +137,7 @@ class CliAuthResponse(BaseModel):
 async def get_cli_auth():
     """How the ``la`` CLI signs in to this server. Public: the CLI asks before
     it holds any credential."""
-    from src.config.env import AUTH_SERVICE_URL, OAUTH_CLI_CLIENT_ID, OAUTH_RESOURCE_ISSUER
+    from src.config.env import PLATFORM_SERVICE_URL, OAUTH_CLI_CLIENT_ID, OAUTH_RESOURCE_ISSUER
     from src.config.settings import HOST_MODE
     from src.server.auth.oauth_resource import oauth_resource_enabled
     from src.server.services.cli_tokens import SCOPES
@@ -147,8 +147,8 @@ async def get_cli_auth():
         auth_required=HOST_MODE != "oss",
         issuer=OAUTH_RESOURCE_ISSUER if signs_in else None,
         client_id=OAUTH_CLI_CLIENT_ID if signs_in else None,
-        scopes=[] if AUTH_SERVICE_URL else list(SCOPES),
-        personal_access_tokens=bool(AUTH_SERVICE_URL),
+        scopes=[] if PLATFORM_SERVICE_URL else list(SCOPES),
+        personal_access_tokens=bool(PLATFORM_SERVICE_URL),
     )
 
 

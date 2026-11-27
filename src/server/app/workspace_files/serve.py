@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Header, HTTPException, Query
 
-from src.config.env import PDF_RENDER_INTERNAL_BASE
+from src.config.env import SERVER_LOOPBACK_URL
 from src.server.preview_proxy.page_bridge import (
     Variant,
     bridge_for,
@@ -343,7 +343,7 @@ async def render_workspace_file_pdf(
 
     from src.server.services import pdf_render
 
-    base = PDF_RENDER_INTERNAL_BASE.rstrip("/")
+    base = SERVER_LOOPBACK_URL
     if not serve_base.startswith(base):
         serve_base = f"{base}/{serve_base.lstrip('/')}"
     # Percent-encode the path (UTF-8) so metacharacters (#, ?, space) and

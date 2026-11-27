@@ -12,7 +12,7 @@ from typing import Literal
 import httpx
 from fastapi import APIRouter, Header, Query, Response
 
-from src.config.env import GINLIX_DATA_ENABLED
+from src.config.env import LANGALPHA_DATA_ENABLED
 from src.data_client.ginlix_data.logos import fetch_logo
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ async def get_ticker_logo(
     format: Literal["webp", "png"] | None = Query(None),
     if_none_match: str | None = Header(None),
 ) -> Response:
-    if not GINLIX_DATA_ENABLED:
+    if not LANGALPHA_DATA_ENABLED:
         return Response(status_code=404, headers={"Cache-Control": "public, max-age=86400"})
     try:
         upstream = await fetch_logo(symbol, size=size, format=format, if_none_match=if_none_match)

@@ -33,12 +33,12 @@ describe('InlineStockPriceCard freshness line', () => {
     render(
       <InlineStockPriceCard
         artifact={artifact({
-          source: 'ginlix-data',
+          source: 'langalpha-data',
           freshness: {
             label: 'live',
             measured: true,
             lag_s: 4,
-            source: 'ginlix-data',
+            source: 'langalpha-data',
             interval: '5min',
             actual_latest: LAST_BAR_MS,
           },
@@ -46,7 +46,7 @@ describe('InlineStockPriceCard freshness line', () => {
       />,
     );
 
-    expect(screen.queryByText(/Ginlix Data/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/LangAlpha Data/)).not.toBeInTheDocument();
     expect(screen.queryByText(/last bar/i)).not.toBeInTheDocument();
   });
 

@@ -28,12 +28,14 @@ import importlib
 import logging
 import os
 import re
+import signal
 import certifi
 
 os.environ["SSL_CERT_FILE"] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -67,6 +69,7 @@ from src.server.utils.request_client import RequestClientMiddleware
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.utils.api import caller_of
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
+from src.config.env import RenamedSettingError
 from src.server.services.preview_base import (
     PreviewProxyConfigurationError,
     check_preview_proxy_config,
@@ -218,8 +221,96 @@ def _log_container_hardening() -> None:
 # ============================================================================
 # Lifespan Context Manager
 # ============================================================================
+async def _close_db_pools() -> None:
+    """Close the writer-guard, checkpointer and database pools.
+
+    Shutdown calls it after BTM shutdown; a startup refused after the pools
+    opened calls it too, since their workers keep the process from exiting.
+    """
+    # 6c. Close the writer-guard pool AFTER BTM shutdown: the final
+    # finalizes run on pinned guard sessions checked out of this pool.
+    try:
+        from src.server.services.writer_guard import close_writer_pool
+
+        await close_writer_pool()
+    except Exception as e:
+        logger.warning(f"Error closing writer-guard pool: {e}")
+
+    # 6d. Close the checkpointer pool AFTER BTM shutdown, for the same reason
+    # as 6b/6c: cancelling a live run flushes its checkpoint on the way out.
+    # Closing first left that flush — and the history projection behind it —
+    # retrying against a dead pool and falling back to a slow listing, which
+    # dragged graceful shutdown past the deploy's grace period.
+    if checkpointer is not None:
+        try:
+            from src.server.utils.checkpointer import close_checkpointer_pool
+
+            logger.info("Closing PTC Agent checkpointer pool...")
+            await close_checkpointer_pool(checkpointer)
+            logger.info("PTC Agent checkpointer pool closed")
+        except Exception as e:
+            logger.warning(f"Error closing PTC Agent checkpointer pool: {e}")
+
+    # 7. Close database pools, and the session folder holds share
+    try:
+        from src.server.database.session_lock import close_shared_lock_session
+
+        await close_shared_lock_session()
+    except Exception as e:
+        logger.warning(f"Error closing shared lock session: {e}")
+
+    try:
+        from src.server.database.pool import get_or_create_pool
+
+        conv_pool = get_or_create_pool()
+        if not conv_pool.closed:
+            logger.info("Closing conversation database pool...")
+            await conv_pool.close()
+            logger.info("Conversation database pool closed successfully")
+    except Exception as e:
+        logger.warning(f"Error closing conversation database pool: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Run the server; a startup that fails once the database pools are open
+    closes them, so the process exits instead of waiting on their workers.
+
+    Under several workers a refusal at launch also stops the supervisor
+    (server.py), which would otherwise start a new worker in its place for ever.
+    """
+    started = False
+    try:
+        async with _lifespan(app):
+            if refusals := os.environ.get("LANGALPHA_STARTUP_REFUSALS"):
+                Path(f"{refusals}.ready").touch()
+            started = True
+            yield
+    except BaseException as exc:
+        if not started:
+            await _close_db_pools()
+            if isinstance(exc, Exception):
+                _stop_supervisor(exc)
+        raise
+
+
+def _stop_supervisor(exc: Exception) -> None:
+    """Under several workers, a refusal before any worker started records why
+    and stops the supervisor (server.py), which exits non-zero with it, as one
+    worker would. A worker refused once others serve is left to uvicorn to
+    start again, since its failure may be its own."""
+    refusals = os.environ.get("LANGALPHA_STARTUP_REFUSALS")
+    if not refusals or os.path.exists(f"{refusals}.ready"):
+        return
+    try:
+        with open(refusals, "a") as f:
+            f.write(f"{type(exc).__name__}: {exc}\n")
+    finally:
+        os.kill(os.getppid(), signal.SIGTERM)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
     """Initialize resources when server starts, cleanup when stops."""
     global \
         agent_config, \
@@ -255,6 +346,13 @@ async def lifespan(app: FastAPI):
     # orphaned browser subprocesses will accumulate until cgroup exhausts.
     _log_container_hardening()
 
+    # Where each URL setting came from, and the URL settings a managed
+    # deployment cannot run on, checked before anything opens: a refusal once
+    # the pools are open leaves the process waiting on their tasks.
+    from src.config.urls import check_at_boot
+
+    check_at_boot()
+
     # Security warnings (one-time, startup only)
     from src.config.env import HOST_MODE
 
@@ -270,6 +368,12 @@ async def lifespan(app: FastAPI):
             "User API keys are encrypted with a publicly known key. "
             "Set a unique BYOK_ENCRYPTION_KEY (openssl rand -hex 32)."
         )
+
+    # A routing ruleset under a renamed provider fails the boot here, before
+    # the pools open, rather than at the first uncached market-data read.
+    from src.data_client.registry import read_routing_ruleset
+
+    read_routing_ruleset()
 
     # Initialize and open conversation database pool
     from src.server.database.pool import get_or_create_pool
@@ -602,6 +706,10 @@ async def lifespan(app: FastAPI):
         # The same kind of gate: private computers with nowhere to serve
         # their previews would hand out only dead links.
         raise
+    except RenamedSettingError:
+        # A config file still naming a renamed setting would load with that
+        # value missing.
+        raise
     except Exception as e:
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
@@ -611,8 +719,11 @@ async def lifespan(app: FastAPI):
     # one of its computers as too small.
     if agent_config is not None:
         from src.server.services.claude_code.hosted import check_sandbox_tiers
+        from src.server.services.egress.reachability import check_sandbox_urls
 
         check_sandbox_tiers(agent_config.sandbox)
+        # Whether the provider's sandboxes can dial the addresses minted for them.
+        check_sandbox_urls(agent_config.sandbox)
 
     setup_settings.start()
 
@@ -718,7 +829,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to start {name}: {e}")
 
-    # Start MarketDataFeed (shared upstream WS to ginlix-data)
+    # Start MarketDataFeed (shared upstream WS to LangAlpha Data)
     try:
         from src.server.services.market_data_feed import (
             DEFAULT_WS_FEEDS,
@@ -1195,48 +1306,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error draining activity writes: {e}")
 
-    # 6c. Close the writer-guard pool AFTER BTM shutdown: the final
-    # finalizes run on pinned guard sessions checked out of this pool.
-    try:
-        from src.server.services.writer_guard import close_writer_pool
-
-        await close_writer_pool()
-    except Exception as e:
-        logger.warning(f"Error closing writer-guard pool: {e}")
-
-    # 6d. Close the checkpointer pool AFTER BTM shutdown, for the same reason
-    # as 6b/6c: cancelling a live run flushes its checkpoint on the way out.
-    # Closing first left that flush — and the history projection behind it —
-    # retrying against a dead pool and falling back to a slow listing, which
-    # dragged graceful shutdown past the deploy's grace period.
-    if checkpointer is not None:
-        try:
-            from src.server.utils.checkpointer import close_checkpointer_pool
-
-            logger.info("Closing PTC Agent checkpointer pool...")
-            await close_checkpointer_pool(checkpointer)
-            logger.info("PTC Agent checkpointer pool closed")
-        except Exception as e:
-            logger.warning(f"Error closing PTC Agent checkpointer pool: {e}")
-
-    # 7. Close database pools, and the session folder holds share
-    try:
-        from src.server.database.session_lock import close_shared_lock_session
-
-        await close_shared_lock_session()
-    except Exception as e:
-        logger.warning(f"Error closing shared lock session: {e}")
-
-    try:
-        from src.server.database.pool import get_or_create_pool
-
-        conv_pool = get_or_create_pool()
-        if not conv_pool.closed:
-            logger.info("Closing conversation database pool...")
-            await conv_pool.close()
-            logger.info("Conversation database pool closed successfully")
-    except Exception as e:
-        logger.warning(f"Error closing conversation database pool: {e}")
+    # 6c-7. The writer-guard, checkpointer and database pools, AFTER BTM
+    # shutdown (see _close_db_pools).
+    await _close_db_pools()
 
     # 8. Close the Redis pools. All three, unconditionally — the status pubsub
     # pool used to be closed only when a workspace manager existed, so some
@@ -1706,13 +1778,13 @@ from src.server.app.mcp_servers import router as mcp_servers_router
 from src.server.app.search import router as search_router
 from src.server.app.web_dist import serve_web_dist
 
-# Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
-from src.config.settings import GINLIX_DATA_ENABLED
+# The LangAlpha Data WS proxy, only when LANGALPHA_DATA_URL is set
+from src.config.settings import LANGALPHA_DATA_ENABLED
 
-if GINLIX_DATA_ENABLED:
+if LANGALPHA_DATA_ENABLED:
     from src.server.app.market_data_ws import router as market_data_ws_router
 
-    logger.info("ginlix-data WS proxy enabled")
+    logger.info("LangAlpha Data WS proxy enabled")
 else:
     # Register a minimal status endpoint so the frontend preflight check
     # gets a clean 200 instead of a noisy 404.
@@ -1724,7 +1796,7 @@ else:
     async def market_data_ws_status_disabled():
         return {"enabled": False}
 
-    logger.info("ginlix-data WS proxy disabled (GINLIX_DATA_URL not set)")
+    logger.info("LangAlpha Data WS proxy disabled (LANGALPHA_DATA_URL not set)")
 
 # The setup step exists only where the owner sets the server up in the app.
 from src.server.services.setup_settings import self_hosted

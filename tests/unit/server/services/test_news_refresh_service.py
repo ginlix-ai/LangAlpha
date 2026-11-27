@@ -260,7 +260,7 @@ class TestStart:
         from src.config.models import NewsPollConfig
         from src.server.services import news_refresh_service as mod
 
-        monkeypatch.setattr("src.config.settings.GINLIX_DATA_URL", "")
+        monkeypatch.setattr("src.config.settings.LANGALPHA_DATA_URL", "")
         monkeypatch.setattr(mod, "get_news_poll_config", lambda: NewsPollConfig(feeds=[
             NewsPollFeedConfig(provider="tickertick", limit=50),
             NewsPollFeedConfig(provider=None, limit=50),

@@ -6,11 +6,23 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
+from urllib.parse import urlsplit
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
+
+
+def _loggable(url: str) -> str:
+    """*url*'s scheme, host and port alone: its path, query, fragment and
+    credentials may each carry a secret (a Slack hook's token is its path)."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return "an unparsable URL"
+    return f"{parts.scheme}://{parts.hostname or ''}{f':{port}' if port else ''}"
 
 class WebhookClient:
     """Fires webhook events to configured URLs with optional HMAC signing."""
@@ -31,11 +43,11 @@ class WebhookClient:
                 resp = await client.post(url, content=body, headers=headers)
                 if not resp.is_success:
                     logger.warning(
-                        f"[WEBHOOK] Non-2xx response: url={url} status={resp.status_code}"
+                        f"[WEBHOOK] Non-2xx response: url={_loggable(url)} status={resp.status_code}"
                     )
                 return resp.is_success
         except Exception as e:
-            logger.error(f"[WEBHOOK] Request failed: url={url} error={e}")
+            logger.error(f"[WEBHOOK] Request failed: url={_loggable(url)} error={type(e).__name__}")
             return False
 
     async def fire_event(

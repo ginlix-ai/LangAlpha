@@ -70,7 +70,7 @@ def _job(layer=None, tool=None, df=None, tf="1day"):
 
 def _tool_answer(dates, close=200.0, **extra):
     return {"symbol": "NVDA", "interval": "1min", "currency": "USD", "timezone": "America/New_York",
-            "source": "ginlix-data", "data": [{"date": d, "open": close, "high": close + 1, "low": close - 1,
+            "source": "langalpha-data", "data": [{"date": d, "open": close, "high": close + 1, "low": close - 1,
                                                 "close": close, "volume": 1234.9} for d in dates], **extra}
 
 
@@ -93,7 +93,7 @@ def test_bars_route_answers_from_the_market_data_tool_for_the_window_the_chart_a
     # Whole shares, as the backend sends volume; the tool's currency; a long-settled tape reads closed.
     assert body["data"][0]["volume"] == 1234 and body["currency"] == "USD"
     assert body["cache"]["market_phase"] == "closed" and body["interval"] == "1min"
-    assert job.bars.mode == "tool" and job.bars.source == "ginlix-data"
+    assert job.bars.mode == "tool" and job.bars.source == "langalpha-data"
 
 
 def test_a_failed_tool_falls_back_to_the_dataframe_and_a_later_miss_loads_nothing():

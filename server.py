@@ -3,10 +3,29 @@ Server script
 """
 
 import argparse
+import contextlib
 import logging
+import sys
+import tempfile
 import uvicorn
 
 logger = logging.getLogger(__name__)
+
+
+def listen_url(host: str, port: int) -> str | None:
+    """The URL this process reaches itself at when bound to *host*:*port*, or None for port 0.
+
+    A wildcard bind is reached on loopback; any other bind on its own address.
+    """
+    if not port:
+        return None
+    if host in ("", "0.0.0.0"):
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -75,6 +94,13 @@ if __name__ == "__main__":
     # or deleted as of v4 Phase 2 (accepted residual: same-pair dispatch
     # lifecycle overlap across processes, gen-CAS-bounded last-writer-wins).
     os.environ["LANGALPHA_WORKERS"] = str(args.workers)
+    # The address this process's calls to itself dial when SERVER_LOOPBACK_URL
+    # is unset: its own listener, under a name of its own so an explicit
+    # setting always wins.
+    if listen := listen_url(args.host, args.port):
+        os.environ["LANGALPHA_LISTEN_URL"] = listen
+    else:
+        os.environ.pop("LANGALPHA_LISTEN_URL", None)
     # Prompt templates are re-read on change only where the code reloads too:
     # checking each one's mtime on every render costs a stat per template
     # per turn on the event loop.
@@ -91,6 +117,21 @@ if __name__ == "__main__":
     # hold every connect in the worker. Sized like asyncio's own executor, which
     # did the lookups before.
     os.environ.setdefault("UV_THREADPOOL_SIZE", str(min(32, (os.process_cpu_count() or 1) + 4)))
+
+    # A setting still under a renamed name fails here, in the supervisor, not in
+    # each worker it would start again and again.
+    import src.config.env  # noqa: F401
+
+    # A worker whose startup is refused before any worker started writes why
+    # here and stops this supervisor, which would otherwise replace it for ever
+    # (see the lifespan in src/server/app/setup.py); the server then exits as one
+    # worker would. --reload runs one worker whatever --workers says, and on
+    # Windows a signal to the supervisor kills it outright.
+    refusals = None
+    if args.workers > 1 and not reload and os.name == "posix":
+        fd, refusals = tempfile.mkstemp(prefix="langalpha-startup-refusals-")
+        os.close(fd)
+        os.environ["LANGALPHA_STARTUP_REFUSALS"] = refusals
 
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")
@@ -113,3 +154,14 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to start server: {str(e)}")
         exit(1)
+    finally:
+        reason = ""
+        if refusals:
+            with contextlib.suppress(FileNotFoundError), open(refusals) as f:
+                reason = f.read().strip()
+            for path in (refusals, f"{refusals}.ready"):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(path)
+    if reason:
+        logger.error(f"A worker refused to start, so the server stops: {reason}")
+        sys.exit(3)

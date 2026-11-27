@@ -46,7 +46,7 @@ async def ask():
                 (oauth_resource, "OAUTH_RESOURCE_AUDIENCES", audiences),
                 (env, "OAUTH_RESOURCE_ISSUER", issuer),
                 (env, "OAUTH_CLI_CLIENT_ID", cli_client),
-                (env, "AUTH_SERVICE_URL", platform),
+                (env, "PLATFORM_SERVICE_URL", platform),
                 (settings, "HOST_MODE", host_mode),
             ]:
                 stack.enter_context(patch.object(module, name, value))

@@ -34,7 +34,8 @@ _ET = ZoneInfo("America/New_York")
 # instead of New York midnight; a delta refresh onto a v5 envelope would
 # splice the two encodings and draw the seam day twice.
 # v7: the live series records the window it holds (``window``).
-ENVELOPE_VERSION = 7
+# v8: LangAlpha Data series are published as ``langalpha-data``.
+ENVELOPE_VERSION = 8
 _ENVELOPE_V3 = 3
 
 _SOFT_TTL_RATIO: float = get_infrastructure_config().redis.swr.soft_ttl_ratio

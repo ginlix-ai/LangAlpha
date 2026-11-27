@@ -77,7 +77,7 @@ const FMP_ONLY = {
 const NVDA_REALTIME = {
   ...NVDA_REGULAR,
   tier: 'realtime',
-  freshness: { label: 'live', measured: true, lag_s: 3, source: 'ginlix-data' },
+  freshness: { label: 'live', measured: true, lag_s: 3, source: 'langalpha-data' },
 };
 
 const TSLA_DELAYED_DECLARED = {

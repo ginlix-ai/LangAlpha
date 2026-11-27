@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
-from src.config.env import AUTH_SERVICE_URL
+from src.config.env import PLATFORM_SERVICE_URL
 from src.server.auth.jwt_bearer import auth_unavailable
 from src.server.utils.http_client import get_http_client
 from src.utils.cache.redis_cache import get_cache_client
@@ -49,7 +49,7 @@ def _refused(message: str) -> HTTPException:
 async def verify_pat(token: str) -> PatPrincipal:
     """The key's owner and live scopes; 401 when refused, 503 when the
     platform cannot answer (fails closed)."""
-    if not AUTH_SERVICE_URL:
+    if not PLATFORM_SERVICE_URL:
         raise _refused("This server does not accept personal access tokens")
     cache = get_cache_client()
     key = _cache_key(token)
@@ -73,7 +73,7 @@ def _is_answer(value: object) -> bool:
 async def _ask_platform(token: str) -> dict:
     # No service headers: /validate checks a service token before the key,
     # and would answer for the service instead.
-    url = f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/validate"
+    url = f"{PLATFORM_SERVICE_URL}/api/auth/validate"
     try:
         client = await get_http_client()
         resp = await client.post(url, headers={"X-Api-Key": token})

@@ -63,7 +63,7 @@ def _check_lineage(header: dict[str, Any], ref: InstrumentRef) -> None:
     declared = series_lineage(_PUBLISHER, ref)[0]
     if (publisher and publisher != _PUBLISHER) or (treatment and treatment != declared):
         raise ValueError(
-            f"ginlix-data served {ref.instrument_key} as {publisher}/{treatment}, "
+            f"LangAlpha Data served {ref.instrument_key} as {publisher}/{treatment}, "
             f"not {_PUBLISHER}/{declared.value}"
         )
 

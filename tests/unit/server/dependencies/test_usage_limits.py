@@ -250,8 +250,8 @@ async def test_call_validate_for_user_uses_x_service_token_header():
     with (
         patch(f"{MODULE}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("os.getenv", return_value="my-secret-token"),
     ):
@@ -282,8 +282,8 @@ async def test_call_validate_for_user_no_token_omits_service_header():
     with (
         patch(f"{MODULE}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("os.getenv", return_value=""),
     ):
@@ -301,8 +301,8 @@ async def test_call_validate_for_user_no_token_omits_service_header():
 
 @pytest.mark.asyncio
 async def test_call_validate_for_user_returns_none_when_no_auth_url():
-    """When AUTH_SERVICE_URL is unset, call_validate returns None immediately."""
-    with patch(f"{MODULE}.AUTH_SERVICE_URL", ""), patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""):
+    """When PLATFORM_SERVICE_URL is unset, call_validate returns None immediately."""
+    with patch(f"{MODULE}.PLATFORM_SERVICE_URL", ""), patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", ""):
         from src.server.services.platform_client import call_validate
 
         result = await call_validate("user-789")
@@ -320,8 +320,8 @@ async def test_call_validate_for_user_sends_check_quota_in_body():
     with (
         patch(f"{MODULE}.HOST_MODE", "platform"),
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch("src.server.services.platform_client.get_http_client", return_value=mock_client),
         patch("os.getenv", return_value="token"),
     ):
@@ -362,8 +362,8 @@ def _unreachable_service(mock_client):
     stack = ExitStack()
     stack.enter_context(patch(f"{MODULE}.HOST_MODE", "platform"))
     stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
-    stack.enter_context(patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"))
-    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"))
     stack.enter_context(patch("src.server.services.platform_client.get_http_client", return_value=mock_client))
     stack.enter_context(patch("src.server.services.platform_client._VALIDATE_RETRY_DELAYS", (0,) * _retries()))
     stack.enter_context(patch("os.getenv", return_value="token"))
@@ -521,8 +521,8 @@ def _restarting_service(refused_for: float, *, attempt_takes: float = 0.0):
     stack = ExitStack()
     stack.enter_context(patch(f"{MODULE}.HOST_MODE", "platform"))
     stack.enter_context(patch("src.server.services.platform_client.HOST_MODE", "platform"))
-    stack.enter_context(patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"))
-    stack.enter_context(patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"))
+    stack.enter_context(patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"))
     stack.enter_context(patch("src.server.services.platform_client.get_http_client", return_value=mock_client))
     stack.enter_context(patch("os.getenv", return_value="token"))
     stack.enter_context(patch("asyncio.sleep", new=AsyncMock(side_effect=sleep)))
@@ -731,8 +731,8 @@ class TestEnforceCreditLimitByok:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
@@ -759,8 +759,8 @@ class TestEnforceCreditLimitByok:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
@@ -775,8 +775,8 @@ class TestEnforceCreditLimitByok:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", mock_validate),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
@@ -804,8 +804,8 @@ class TestEnforceCreditLimitByok:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
@@ -830,8 +830,8 @@ class TestEnforceCreditLimitByok:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_credit_limit
@@ -842,8 +842,8 @@ class TestEnforceCreditLimitByok:
 
     @pytest.mark.asyncio
     async def test_no_auth_service_url_returns_immediately(self):
-        """When AUTH_SERVICE_URL is unset, enforce_credit_limit is a no-op."""
-        with patch(f"{MODULE}.AUTH_SERVICE_URL", ""), patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""):
+        """When PLATFORM_SERVICE_URL is unset, enforce_credit_limit is a no-op."""
+        with patch(f"{MODULE}.PLATFORM_SERVICE_URL", ""), patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", ""):
             from src.server.dependencies.usage_limits import enforce_credit_limit
 
             await enforce_credit_limit("user-1", byok=True)
@@ -927,8 +927,8 @@ class TestGetCapacityStatus:
 
     @pytest.mark.asyncio
     async def test_no_auth_service_url_returns_none(self):
-        """No AUTH_SERVICE_URL configured — returns None immediately."""
-        with patch(f"{MODULE}.AUTH_SERVICE_URL", ""), patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""):
+        """No PLATFORM_SERVICE_URL configured — returns None immediately."""
+        with patch(f"{MODULE}.PLATFORM_SERVICE_URL", ""), patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", ""):
             from src.server.dependencies.usage_limits import get_capacity_status
 
             assert await get_capacity_status("user-1", "spec_max") is None
@@ -940,8 +940,8 @@ class TestGetCapacityStatus:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
@@ -955,8 +955,8 @@ class TestGetCapacityStatus:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
@@ -975,8 +975,8 @@ class TestGetCapacityStatus:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
@@ -990,8 +990,8 @@ class TestGetCapacityStatus:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
@@ -1004,8 +1004,8 @@ class TestGetCapacityStatus:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value={"access_tier": 1}),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
@@ -1019,8 +1019,8 @@ class TestGetCapacityStatus:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
@@ -1033,8 +1033,8 @@ class TestGetCapacityStatus:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import get_capacity_status
@@ -1137,8 +1137,8 @@ class TestAlwaysOnEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -1155,8 +1155,8 @@ class TestAlwaysOnEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -1174,8 +1174,8 @@ class TestAlwaysOnEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -1193,8 +1193,8 @@ class TestAlwaysOnEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import always_on_entitlement_lost
@@ -1207,8 +1207,8 @@ class TestAlwaysOnEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -1242,12 +1242,12 @@ class TestEnforceCapacity:
 
     @pytest.mark.asyncio
     async def test_no_auth_service_url_is_noop(self):
-        """No AUTH_SERVICE_URL (partial deploy) — fail-open, no platform call."""
+        """No PLATFORM_SERVICE_URL (partial deploy) — fail-open, no platform call."""
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", ""),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", ""),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", ""),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", ""),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import enforce_capacity
@@ -1270,8 +1270,8 @@ class TestEnforceCapacity:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=quota_response),
         ):
             from src.server.dependencies.usage_limits import enforce_capacity
@@ -1292,8 +1292,8 @@ class TestEnforceCapacity:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -1310,8 +1310,8 @@ class TestEnforceCapacity:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import enforce_capacity
@@ -1324,8 +1324,8 @@ class TestEnforceCapacity:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -1365,8 +1365,8 @@ class TestEnforceComputerCount:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", validate),
         ):
             from src.server.dependencies.usage_limits import enforce_computer_count
@@ -1386,8 +1386,8 @@ class TestEnforceComputerCount:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -1404,8 +1404,8 @@ class TestEnforceComputerCount:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", validate),
         ):
             from src.server.dependencies.usage_limits import enforce_computer_limit
@@ -1435,8 +1435,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1458,8 +1458,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1480,8 +1480,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1501,8 +1501,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1523,8 +1523,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1544,8 +1544,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1567,8 +1567,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1603,8 +1603,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1625,8 +1625,8 @@ class TestAssertSpecAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=[scope]
             ) as scopes,
@@ -1760,8 +1760,8 @@ class TestAssertAlwaysOnAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1783,8 +1783,8 @@ class TestAssertAlwaysOnAllowed:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1842,8 +1842,8 @@ class TestRequireWorkspaceScope:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=None
             ),
@@ -1858,8 +1858,8 @@ class TestRequireWorkspaceScope:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=[]),
         ):
             from src.server.dependencies.usage_limits import require_workspace_scope
@@ -1874,8 +1874,8 @@ class TestRequireWorkspaceScope:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes",
                 new_callable=AsyncMock,
@@ -1904,8 +1904,8 @@ class TestRequireWorkspaceScope:
             with (
                 patch(f"{MODULE}.HOST_MODE", "platform"),
                 patch("src.server.services.platform_client.HOST_MODE", "platform"),
-                patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-                patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+                patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+                patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
                 patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=answer) as validate,
             ):
                 if refused:
@@ -1928,8 +1928,8 @@ class TestRequireWorkspaceScope:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as validate,
         ):
             with pytest.raises(HTTPException):
@@ -1953,8 +1953,8 @@ class TestRequireWorkspaceScope:
             with (
                 patch(f"{MODULE}.HOST_MODE", "platform"),
                 patch("src.server.services.platform_client.HOST_MODE", "platform"),
-                patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-                patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+                patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+                patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
                 patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=answer) as validate,
             ):
                 if refused:
@@ -1976,8 +1976,8 @@ class TestRequireWorkspaceScope:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as validate,
         ):
             await require_workspace_scope("user-ok", "workspace:spec:performance")
@@ -1995,7 +1995,7 @@ def _platform_scopes(scopes):
     """Patches for platform mode with the given cached scope answer."""
     return (
         patch("src.server.services.platform_client.HOST_MODE", "platform"),
-        patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
         patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=scopes),
     )
 
@@ -2277,8 +2277,8 @@ class TestSpecGrantable:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=None
             ),
@@ -2297,8 +2297,8 @@ class TestSpecGrantable:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._get_user_scopes", new_callable=AsyncMock, return_value=[]),
             patch(f"{MODULE}.enforce_capacity", new_callable=AsyncMock) as mock_cap,
         ):
@@ -2339,8 +2339,8 @@ class TestSpecEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock, return_value=None),
         ):
             from src.server.dependencies.usage_limits import spec_entitlement_lost
@@ -2353,8 +2353,8 @@ class TestSpecEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -2371,8 +2371,8 @@ class TestSpecEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -2389,8 +2389,8 @@ class TestSpecEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -2406,8 +2406,8 @@ class TestSpecEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch(
                 "src.server.services.platform_client.call_validate",
                 new_callable=AsyncMock,
@@ -2424,8 +2424,8 @@ class TestSpecEntitlementLost:
         with (
             patch(f"{MODULE}.HOST_MODE", "platform"),
             patch("src.server.services.platform_client.HOST_MODE", "platform"),
-            patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
-            patch("src.server.services.platform_client.AUTH_SERVICE_URL", "http://localhost:8003"),
+            patch(f"{MODULE}.PLATFORM_SERVICE_URL", "http://localhost:8003"),
+            patch("src.server.services.platform_client.PLATFORM_SERVICE_URL", "http://localhost:8003"),
             patch("src.server.services.platform_client.call_validate", new_callable=AsyncMock) as mock_v,
         ):
             from src.server.dependencies.usage_limits import spec_entitlement_lost

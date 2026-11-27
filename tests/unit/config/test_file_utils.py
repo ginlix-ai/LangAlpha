@@ -317,3 +317,14 @@ class TestSubstituteEnvVars:
         with patch.dict(os.environ, {"PORT": "8080"}):
             result = substitute_env_vars("http://localhost:${PORT}/api")
         assert result == "http://localhost:8080/api"
+
+
+
+def test_a_config_file_naming_a_renamed_setting_is_refused(monkeypatch):
+    from src.config.env import RenamedSettingError
+
+    monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://data.example.test")
+    with pytest.raises(RenamedSettingError, match=r"names \$\{PUBLIC_API_BASE_URL\}, which was renamed to LANGALPHA_DATA_SANDBOX_URL"):
+        substitute_env_vars("${PUBLIC_API_BASE_URL}/mcp/data/prices")
+    with pytest.raises(RenamedSettingError):
+        substitute_env_vars("$AUTH_SERVICE_URL")

@@ -27,13 +27,13 @@ def _relay(upstream):
     kind = "side_effect" if isinstance(upstream, Exception) else "return_value"
     fetch = AsyncMock(**{kind: upstream})
     return fetch, (
-        patch("src.server.app.logos.GINLIX_DATA_ENABLED", True),
+        patch("src.server.app.logos.LANGALPHA_DATA_ENABLED", True),
         patch("src.server.app.logos.fetch_logo", fetch),
     )
 
 
 async def test_without_a_data_service_answers_a_long_lived_404(client):
-    with patch("src.server.app.logos.GINLIX_DATA_ENABLED", False):
+    with patch("src.server.app.logos.LANGALPHA_DATA_ENABLED", False):
         resp = await client.get("/api/v1/market-data/logos/AAPL")
     assert resp.status_code == 404
     assert resp.headers["cache-control"] == "public, max-age=86400"
@@ -82,7 +82,7 @@ async def test_the_logo_fetch_sends_no_service_credential():
     transport = httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(404))
     with (
         patch.dict("os.environ", {"INTERNAL_SERVICE_TOKEN": "secret"}),
-        patch("src.config.settings.GINLIX_DATA_URL", "http://data.test/"),
+        patch("src.config.settings.LANGALPHA_DATA_URL", "http://data.test/"),
         patch("src.data_client.ginlix_data.logos._http", None),
         patch("src.data_client.ginlix_data.logos.httpx.AsyncClient", partial(httpx.AsyncClient, transport=transport)),
     ):

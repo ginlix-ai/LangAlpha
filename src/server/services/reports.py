@@ -6,7 +6,7 @@ links triage opens (the LangSmith trace, the Sentry issues), scrubs the
 user's text for credentials, and forwards it to the platform's
 ``POST /api/auth/reports`` with the service token, the pair billing leases
 already use. The platform adds the plan, applies the per-user limits and
-posts it to Slack. A deployment without ``AUTH_SERVICE_URL`` has nowhere to
+posts it to Slack. A deployment without ``PLATFORM_SERVICE_URL`` has nowhere to
 send reports, so the feature is off there.
 
 A report never carries the conversation: ids and links only, plus the words
@@ -24,7 +24,7 @@ from uuid import UUID, uuid5
 
 from pydantic import BaseModel, Field
 
-from src.config.settings import AUTH_SERVICE_URL, HOST_MODE
+from src.config.settings import PLATFORM_SERVICE_URL, HOST_MODE
 from src.observability.langsmith_feedback import trace_url
 from src.server.utils.secret_redactor import redact_capability_paths
 from src.server.models.report import (
@@ -46,7 +46,7 @@ _ERROR_MAX = 2000
 
 
 def reports_enabled() -> bool:
-    return HOST_MODE != "oss" and bool(AUTH_SERVICE_URL)
+    return HOST_MODE != "oss" and bool(PLATFORM_SERVICE_URL)
 
 
 @dataclass(frozen=True)
@@ -329,7 +329,7 @@ async def _post(path: str, body: dict[str, Any], report_id: str) -> PlatformResu
         # 60s, and an answer after that would land on a rolled-back dialog.
         async with asyncio.timeout(_FORWARD_TIMEOUT_S):
             resp = await (await get_http_client()).post(
-                f"{AUTH_SERVICE_URL.rstrip('/')}{path}",
+                f"{PLATFORM_SERVICE_URL}{path}",
                 json=body,
                 headers=service_headers(),
                 timeout=_FORWARD_TIMEOUT_S,
@@ -348,7 +348,7 @@ async def _post(path: str, body: dict[str, Any], report_id: str) -> PlatformResu
             return PlatformResult("not_found")
         # Any other 404 is a platform without the route, and a withdrawal must
         # not read it as a report already gone.
-        logger.error("Platform at %s has no route for %s", AUTH_SERVICE_URL, path)
+        logger.error("Platform at %s has no route for %s", PLATFORM_SERVICE_URL, path)
         return PlatformResult("unavailable")
     if code == 409:
         detail = _body(resp).get("detail")

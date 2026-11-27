@@ -24,7 +24,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 _PROVIDER_MODULES = {
     "fmp": "src.data_client.fmp.data_source",
     "yfinance": "src.data_client.yfinance.data_source",
-    "ginlix-data": "src.data_client.ginlix_data.data_source",
+    "langalpha-data": "src.data_client.ginlix_data.data_source",
 }
 
 

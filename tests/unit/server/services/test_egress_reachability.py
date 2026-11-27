@@ -19,7 +19,7 @@ def env(monkeypatch):
     server base it falls back to."""
 
     def _set(*, relay: str = "", server: str = "http://localhost:8000") -> None:
-        monkeypatch.setattr("src.config.env.EGRESS_RELAY_BASE_URL", relay)
+        monkeypatch.setattr("src.config.env.SERVER_SANDBOX_URL", relay)
         monkeypatch.setattr("src.config.env.SERVER_BASE_URL", server)
 
     return _set
@@ -76,7 +76,7 @@ class TestReachabilityWarning:
         warning = relay_reachability_warning("daytona", base)
         assert warning is not None
         assert base in warning
-        assert "EGRESS_RELAY_BASE_URL" in warning
+        assert "SERVER_SANDBOX_URL" in warning
 
     @pytest.mark.parametrize(
         "base",

@@ -63,7 +63,8 @@ _NO_DATA = {"__no_data__": True}
 # instrument_key (0700.HK) cannot negative-cache the equity read.
 # v10: ginlix-data rows carry ``last_trade_at``, and an index row the feed
 # rolled past its stamp carries no stale stamp or move.
-_QUOTE_SCHEMA_VERSION = 10
+# v11: LangAlpha Data rows carry ``source`` ``langalpha-data``.
+_QUOTE_SCHEMA_VERSION = 11
 
 
 def _closed_recently(cal: MarketCalendar, now: datetime, window: timedelta) -> bool:

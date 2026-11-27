@@ -203,7 +203,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
 
     def _load(self, stamp: tuple[int, int, int] | None) -> None:
         tokens = _load_tokens()
-        ginlix_url = tokens.get("ginlix_data_url") or os.getenv("GINLIX_DATA_URL", "")
+        ginlix_url = tokens.get("ginlix_data_url") or os.getenv("LANGALPHA_DATA_URL", "")
         access_token = tokens.get("access_token", "")
         if not (ginlix_url and access_token):
             # Nothing usable on disk: a client already built keeps the token
@@ -243,14 +243,14 @@ class GinlixMCPClient(GinlixDataV2Routes):
             except Exception:  # noqa: BLE001
                 detail = e.response.text
             detail = str(detail)[:300]  # length-cap: never relay a full upstream body
-            return {"error": f"ginlix-data error ({e.response.status_code}): {detail}"}
+            return {"error": f"LangAlpha Data error ({e.response.status_code}): {detail}"}
         return {"error": f"{action} failed ({type(e).__name__})"}
 
     async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Make a ginlix-data request, retried once on a 401 that a token
         written while it was in flight may answer."""
         if not await self.ensure():
-            raise RuntimeError("ginlix-data client not initialized")
+            raise RuntimeError("LangAlpha Data client not initialized")
         assert self._http is not None
         sent = self._http.headers.get("Authorization")
         resp = await self._http.request(method, url, **kwargs)
@@ -267,7 +267,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
         # The sandbox token already names the user; ``user_id`` is a host header.
         if not await self.ensure():
             # A transport error, so v2 callers' soft-miss handling covers it.
-            raise httpx.TransportError("ginlix-data client not configured")
+            raise httpx.TransportError("LangAlpha Data client not configured")
         return await self.request("GET", path, params=params)
 
     # -- shared helpers ------------------------------------------------------
@@ -393,7 +393,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
         (more matched than *limit*), or an error dict.
         """
         if not await self.ensure():
-            return {"error": "Options data requires ginlix-data (not configured)."}
+            return {"error": "Options data needs LangAlpha Data, which is not configured on this deployment."}
 
         page_size = min(limit, 1000)
         params: dict[str, Any] = {
@@ -437,7 +437,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
         when the page cap left the oldest bars unread), or an error dict.
         """
         if not await self.ensure():
-            return {"error": "Options data requires ginlix-data (not configured)."}
+            return {"error": "Options data needs LangAlpha Data, which is not configured on this deployment."}
 
         interval_lower = interval.lower()
         ginlix_interval = GINLIX_INTERVAL_MAP.get(interval_lower)
@@ -477,7 +477,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
         Returns a dict with ``data`` list of snapshot results, or an error dict.
         """
         if not await self.ensure():
-            return {"error": "Options data requires ginlix-data (not configured)."}
+            return {"error": "Options data needs LangAlpha Data, which is not configured on this deployment."}
 
         if isinstance(options_tickers, str):
             options_tickers = [options_tickers]
@@ -494,7 +494,7 @@ class GinlixMCPClient(GinlixDataV2Routes):
                 r for r in body.get("results", [])
                 if r.get("error") != "NOT_FOUND"
             ]
-            return {"count": len(results), "data": results, "source": "ginlix-data"}
+            return {"count": len(results), "data": results, "source": "langalpha-data"}
         except Exception as e:  # noqa: BLE001
             return self._error_dict("Options snapshot fetch", e)
 
@@ -508,9 +508,9 @@ class GinlixMCPClient(GinlixDataV2Routes):
     ) -> dict:
         """Fetch short interest and/or short volume data."""
         if not await self.ensure():
-            return {"error": "Short data requires ginlix-data (not configured)."}
+            return {"error": "Short data needs LangAlpha Data, which is not configured on this deployment."}
 
-        result: dict[str, Any] = {"symbol": symbol, "source": "ginlix-data"}
+        result: dict[str, Any] = {"symbol": symbol, "source": "langalpha-data"}
 
         if data_type in ("short_interest", "both"):
             params: dict[str, Any] = {

@@ -62,7 +62,7 @@ class _Declared(NamedTuple):
 # builder, every boundary and the snapshot stamp resolve it through
 # ``series_lineage`` / ``snapshot_tier``, so no layer re-mirrors these.
 _DECLARED: dict[str, _Declared] = {
-    "ginlix-data": _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME, Tier.REALTIME),
+    "langalpha-data": _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME, Tier.REALTIME),
     "fmp": _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME, Tier.REALTIME),
     "yfinance": _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.DELAYED_15M, Tier.DELAYED_15M),
     # CN daily is qfq (前复权): raw `daily` scaled by adj_factor/latest_factor,
@@ -83,7 +83,7 @@ _REALTIME_ON_US_TAPE_ONLY = frozenset({"fmp"})
 
 # Publishers whose intraday bars cover only the regular session: FMP's
 # ``historical-chart`` without ``extended`` and yfinance's history without
-# ``prepost``. ginlix-data's aggregates carry pre-market and after-hours bars.
+# ``prepost``. LangAlpha Data's aggregates carry pre-market and after-hours bars.
 _REGULAR_SESSION_BARS = frozenset({"fmp", "yfinance"})
 
 # Venues are keyed by :func:`declared_venue`: XNYS for the US tape, XSHG for
@@ -147,9 +147,9 @@ def snapshot_tier(
 
 
 def _delayed_index_feed(publisher: str | None, asset_class: AssetClass | None) -> bool:
-    """ginlix-data's index feed, bars and quotes alike, is the 15-minute delayed one
+    """LangAlpha Data's index feed, bars and quotes alike, is the 15-minute delayed one
     (the live index stream is delayed-only too)."""
-    return publisher == "ginlix-data" and asset_class is AssetClass.INDEX
+    return publisher == "langalpha-data" and asset_class is AssetClass.INDEX
 
 
 def publisher_lineage(

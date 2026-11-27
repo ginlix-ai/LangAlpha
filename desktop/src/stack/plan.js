@@ -250,10 +250,8 @@ function backendEnv({ layout, from, db, redisUrl, byokKey, relaySecret, ownerSec
     INTERNAL_SERVICE_TOKEN: serviceToken,
     SERVER_BASE_URL: origin,
     PUBLIC_APP_URL: origin,
-    // The server's calls to itself, each defaulting to a port this one is not on.
-    GINLIXFLOW_BASE_URL: origin,
-    PDF_RENDER_INTERNAL_BASE: origin,
-    EGRESS_RELAY_LOOPBACK_URL: origin,
+    // The server's calls to itself, which default to a port this one is not on.
+    SERVER_LOOPBACK_URL: origin,
     LANGALPHA_GRACEFUL_SHUTDOWN_SECONDS: String(SERVER_STREAM_GRACE_SECONDS),
     LANGSMITH_TRACING: 'false',
     SSE_EVENT_LOG_LEVEL: 'WARNING',

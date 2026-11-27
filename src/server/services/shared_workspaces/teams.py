@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from fastapi import HTTPException
 
-from src.config.settings import AUTH_SERVICE_URL
+from src.config.settings import PLATFORM_SERVICE_URL
 from src.server.services import platform_client
 from src.server.services.account_contract import Team
 from src.server.utils.http_client import get_http_client
@@ -91,7 +91,7 @@ async def read_roster(team_id: str, org_id: str) -> Roster:
     if not platform_client.platform_gating_active() or platform_client.service_token_missing():
         raise RosterUnavailable("no auth service to ask")
     url = (
-        f"{AUTH_SERVICE_URL.rstrip('/')}/api/auth/teams/"
+        f"{PLATFORM_SERVICE_URL}/api/auth/teams/"
         f"{quote(team_id, safe='')}/roster"
     )
     try:
