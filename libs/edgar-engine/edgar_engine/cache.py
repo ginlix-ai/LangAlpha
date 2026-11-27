@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 import tempfile
+import threading
 import zlib
 from collections.abc import Callable
 from dataclasses import asdict
@@ -19,6 +20,12 @@ __all__ = ["PARSED_KINDS", "DocumentsCache", "LocalDirStore", "S3Store", "Sectio
            "SubmissionCache", "kind_of"]
 
 _MISSING_CODES = {"NoSuchKey", "404", "NotFound"}
+_DEFAULT_MAX_BYTES = 2 * 1024**3
+# Per root, [bytes the last walk found plus those put since, bytes put since], shared by every store on that root in
+# this process. A store walks again once it has put a tenth of its cap since the last walk, so writers in other
+# processes can take the root past the cap by at most that much each before one of them trims.
+_SIZES: dict[str, list[int]] = {}
+_SIZES_LOCK = threading.Lock()
 
 
 def _checked(key: str) -> str:
@@ -38,17 +45,60 @@ class Store(Protocol):
 
 
 class LocalDirStore:
-    def __init__(self, root: str | Path | None = None):
+    """A directory of files, one per key, whose cache folders (PARSED_KINDS and submissions) are kept under
+    max_bytes: a put that takes them past it deletes the files read or written longest ago (by mtime) until 90% of it
+    is left. Nothing else in the directory is counted or deleted. max_bytes defaults to the
+    EDGAR_ENGINE_CACHE_MAX_BYTES environment variable, else 2 GiB; 0 or less keeps everything."""
+
+    def __init__(self, root: str | Path | None = None, max_bytes: int | None = None):
         self.root = Path(root or os.environ.get("EDGAR_ENGINE_CACHE") or Path.home() / ".cache" / "edgar-engine")
+        if max_bytes is None:
+            max_bytes = int(os.environ.get("EDGAR_ENGINE_CACHE_MAX_BYTES") or _DEFAULT_MAX_BYTES)
+        self.max_bytes = max_bytes
 
     def _path(self, key: str) -> Path:
         return self.root / _checked(key)
 
+    def _files(self) -> list[tuple[float, int, Path]]:
+        found = []
+        for kind in (*PARSED_KINDS, SubmissionCache.kind):
+            for folder, _, names in os.walk(self.root / kind):
+                for name in names:
+                    if name.startswith("."):
+                        continue
+                    path = Path(folder, name)
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    found.append((stat.st_mtime, stat.st_size, path))
+        return found
+
+    def _trim(self) -> int:
+        files = sorted(self._files())
+        total = sum(size for _, size, _ in files)
+        target = self.max_bytes * 0.9 if total > self.max_bytes else total
+        for _, size, path in files:
+            if total <= target:
+                break
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+            total -= size
+        return total
+
     def get(self, key: str) -> bytes | None:
+        path = self._path(key)
         try:
-            return self._path(key).read_bytes()
+            data = path.read_bytes()
         except FileNotFoundError:
             return None
+        try:
+            os.utime(path)
+        except OSError:
+            pass
+        return data
 
     def put(self, key: str, data: bytes) -> None:
         path = self._path(key)
@@ -61,6 +111,17 @@ class LocalDirStore:
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
+        if self.max_bytes <= 0 or kind_of(key) not in (*PARSED_KINDS, SubmissionCache.kind):
+            return
+        with _SIZES_LOCK:
+            size = _SIZES.get(str(self.root.absolute()))
+            if size is None or size[1] + len(data) > self.max_bytes // 10:
+                size = [sum(size for _, size, _ in self._files()), 0]
+            else:
+                size = [size[0] + len(data), size[1] + len(data)]
+            if size[0] > self.max_bytes:
+                size = [self._trim(), 0]
+            _SIZES[str(self.root.absolute())] = size
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)

@@ -200,6 +200,9 @@ jobs:
           version: "latest"
       - run: uv sync --locked --no-editable
       - run: uv run --locked --no-editable pytest -v --tb=short
+      # The sandbox and the server run edgartools 5.62.1, the backend's lock,
+      # which this package's own lock (a later release) never runs against.
+      - run: uv run --locked --no-editable --with edgartools==5.62.1 pytest -v --tb=short
 
   # Everything in tests/integration/ that needs only Postgres and Redis, with
   # the sandbox tests on the in-process memory provider. No secrets, so it

@@ -249,7 +249,10 @@ labels come from the filer's own XBRL facts where they exist, and otherwise from
 year end, moved to the filer's XBRL convention (a January year end is the prior fiscal year for some filers and
 the same one for others). `edgar_engine.cache` keys parsed sections and raw
 submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or
-`~/.cache/edgar-engine`) is the default, and object storage plugs in by implementing `get`, `put` and `delete`.
+`~/.cache/edgar-engine`, whose cache folders are held under 2 GiB by deleting their least recently used files,
+leaving anything else in the directory alone; `max_bytes=` or
+`EDGAR_ENGINE_CACHE_MAX_BYTES` sets another cap, and 0 removes it) is the default, and object storage plugs in by
+implementing `get`, `put` and `delete`.
 `S3Store` does so over any S3-compatible client with boto3's call shape, which you pass in, so the library
 depends on no S3 package: `SectionsCache(S3Store(boto3.client("s3", endpoint_url=...), "bucket", prefix="edgar/"))`.
 A missing object reads as absent; any other client error propagates.

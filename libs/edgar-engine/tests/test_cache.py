@@ -1,6 +1,7 @@
 import gzip
 import io
 import json
+import os
 
 import pytest
 from edgar_engine.cache import (PARSED_KINDS, DocumentsCache, LocalDirStore, S3Store, SectionsCache, StatementsCache,
@@ -47,6 +48,90 @@ def test_store_rejects_unsafe_keys(tmp_path, key):
     for call in (lambda: store.get(key), lambda: store.put(key, b""), lambda: store.delete(key)):
         with pytest.raises(ValueError):
             call()
+
+
+def _seeded(tmp_path, count=10, size=100):
+    """count files of size bytes, a0 the least recently used, written by an unbounded store."""
+    seed = LocalDirStore(tmp_path, max_bytes=0)
+    for i in range(count):
+        seed.put(f"submissions/a{i}", b"x" * size)
+        os.utime(tmp_path / "submissions" / f"a{i}", (1000 + i, 1000 + i))
+
+
+def _left(tmp_path):
+    return sorted(p.name for p in (tmp_path / "submissions").iterdir())
+
+
+def test_a_put_past_the_cap_evicts_the_least_recently_used_files_down_to_ninety_percent(tmp_path):
+    _seeded(tmp_path)
+    LocalDirStore(tmp_path, max_bytes=1000).put("submissions/new", b"x" * 100)
+    left = _left(tmp_path)
+    assert left == ["a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "new"]
+    assert sum(p.stat().st_size for p in (tmp_path / "submissions").iterdir()) <= 900
+
+
+def test_a_put_under_the_cap_evicts_nothing(tmp_path):
+    _seeded(tmp_path, count=5)
+    store = LocalDirStore(tmp_path, max_bytes=1000)
+    store.put("submissions/new", b"x" * 100)
+    store.put("submissions/newer", b"x" * 100)
+    assert len(_left(tmp_path)) == 7
+
+
+def test_a_trim_that_finds_the_directory_under_the_cap_deletes_nothing(tmp_path):
+    _seeded(tmp_path, count=9)
+    store = LocalDirStore(tmp_path, max_bytes=1000)
+    for _ in range(3):
+        store.put("submissions/b", b"x" * 50)
+    assert len(_left(tmp_path)) == 10
+
+
+def test_a_get_protects_a_file_from_eviction(tmp_path):
+    _seeded(tmp_path)
+    store = LocalDirStore(tmp_path, max_bytes=1000)
+    assert store.get("submissions/a0") == b"x" * 100
+    store.put("submissions/new", b"x" * 100)
+    assert _left(tmp_path) == ["a0", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "new"]
+
+
+def test_a_get_on_a_read_only_store_still_returns_the_data(tmp_path, monkeypatch):
+    LocalDirStore(tmp_path, max_bytes=0).put("submissions/k", b"v")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError
+
+    monkeypatch.setattr(os, "utime", refuse)
+    assert LocalDirStore(tmp_path).get("submissions/k") == b"v"
+
+
+@pytest.mark.parametrize("max_bytes", [0, -1])
+def test_a_cap_of_zero_or_less_keeps_everything(tmp_path, max_bytes):
+    store = LocalDirStore(tmp_path, max_bytes=max_bytes)
+    for i in range(5):
+        store.put(f"submissions/a{i}", b"x" * 100)
+    assert len(_left(tmp_path)) == 5
+
+
+def test_a_trim_leaves_the_temp_files_of_a_concurrent_put(tmp_path):
+    _seeded(tmp_path)
+    (tmp_path / "submissions" / ".new.tmp").write_bytes(b"x" * 500)
+    os.utime(tmp_path / "submissions" / ".new.tmp", (1, 1))
+    LocalDirStore(tmp_path, max_bytes=1000).put("submissions/new", b"x" * 100)
+    assert ".new.tmp" in [p.name for p in (tmp_path / "submissions").iterdir()]
+    assert "a0" not in _left(tmp_path)
+
+
+def test_the_cap_comes_from_the_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv("EDGAR_ENGINE_CACHE_MAX_BYTES", raising=False)
+    assert LocalDirStore(tmp_path).max_bytes == 2 * 1024**3
+    monkeypatch.setenv("EDGAR_ENGINE_CACHE_MAX_BYTES", "1000")
+    store = LocalDirStore(tmp_path)
+    assert store.max_bytes == 1000 and LocalDirStore(tmp_path, max_bytes=5).max_bytes == 5
+    _seeded(tmp_path)
+    store.put("submissions/new", b"x" * 100)
+    assert "a0" not in _left(tmp_path)
+    monkeypatch.setenv("EDGAR_ENGINE_CACHE_MAX_BYTES", "0")
+    assert LocalDirStore(tmp_path).max_bytes == 0
 
 
 class FakeS3:
@@ -275,3 +360,42 @@ def test_a_key_names_its_cache_and_the_parsed_caches_are_the_three_of_a_parsed_f
     keys = [cache._key("a") for cache in (SectionsCache, DocumentsCache, StatementsCache, SubmissionCache)]
     assert [kind_of(k) for k in keys] == ["sections", "documents", "statements", "submissions"]
     assert PARSED_KINDS == ("sections", "documents", "statements")
+
+
+def _bytes(folder):
+    return sum(p.stat().st_size for p in folder.rglob("*") if p.is_file() and not p.name.startswith("."))
+
+
+def test_files_outside_the_cache_folders_are_never_counted_or_deleted(tmp_path):
+    _seeded(tmp_path)
+    (tmp_path / "notes.txt").write_bytes(b"x" * 5000)
+    (tmp_path / "mine").mkdir()
+    (tmp_path / "mine" / "old").write_bytes(b"x" * 10)
+    os.utime(tmp_path / "mine" / "old", (1, 1))
+    store = LocalDirStore(tmp_path, max_bytes=1000)
+    store.put("submissions/new", b"x" * 100)
+    store.put("mine/more", b"x" * 900)
+    assert (tmp_path / "notes.txt").exists() and (tmp_path / "mine" / "old").exists()
+    assert (tmp_path / "mine" / "more").exists() and len(_left(tmp_path)) == 9
+
+
+def test_stores_on_one_root_share_one_size_and_walk_once(tmp_path, monkeypatch):
+    walks = []
+    files = LocalDirStore._files
+    monkeypatch.setattr(LocalDirStore, "_files", lambda self: walks.append(1) or files(self))
+    for i in range(5):
+        LocalDirStore(tmp_path, max_bytes=1000).put(f"submissions/s{i}", b"x" * 10)
+    assert len(walks) == 1
+
+
+def test_bytes_another_writer_adds_are_found_within_a_tenth_of_the_cap(tmp_path):
+    _seeded(tmp_path, count=5)
+    store = LocalDirStore(tmp_path, max_bytes=1000)
+    store.put("submissions/p0", b"x" * 50)
+    for i in range(6):
+        (tmp_path / "submissions" / f"other{i}").write_bytes(b"x" * 100)
+    store.put("submissions/p1", b"x" * 50)
+    store.put("submissions/p2", b"x" * 50)
+    assert _bytes(tmp_path) == 1250
+    store.put("submissions/p3", b"x" * 50)
+    assert _bytes(tmp_path) <= 900
