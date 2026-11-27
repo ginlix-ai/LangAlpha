@@ -35,11 +35,50 @@
   margin-left: auto;
   margin-right: auto;
 }
-/* Beside a file it is a fixed column, edge to edge. */
+/* Beside a file it is a column of the person's width (ListDivider), edge to
+   edge, and never so wide the file loses its room: a width kept from a wide
+   screen gives way on a narrow window. */
+.drive-shell {
+  --drive-list-col: min(var(--drive-list-width, 320px), max(240px, calc(100% - 480px)));
+}
 .drive-shell.has-file .drive-pane {
-  flex: 0 0 320px;
+  flex: 0 0 var(--drive-list-col);
   border-right: 1px solid var(--color-border-muted);
 }
+/* The edge between the list and the file: a 7px hit area straddling the
+   border, with a hairline that shows on hover, on focus and while dragging. */
+.drive-shell { position: relative; }
+.drive-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--drive-list-col) - 4px);
+  width: 7px;
+  cursor: col-resize;
+  z-index: 2;
+  outline: none;
+}
+.drive-divider::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.drive-divider:hover::after,
+.drive-divider:focus-visible::after,
+body.drive-resizing .drive-divider::after {
+  background: var(--color-text-quaternary);
+}
+body.drive-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+/* A frame under the pointer would take the drag's moves for itself. */
+body.drive-resizing iframe { pointer-events: none; }
 
 .drive-pane-head {
   padding: var(--page-top) var(--drive-gutter) 8px;

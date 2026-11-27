@@ -1,3 +1,4 @@
+import type React from 'react';
 import { useEffect, useEffectEvent, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -17,8 +18,10 @@ import { DriveFilePane } from './components/DriveFilePane';
 import { DriveList } from './components/DriveList';
 import { MemosView } from './components/MemosView';
 import { DriveTrash } from './components/DriveTrash';
+import { ListDivider } from './components/ListDivider';
 import { UploadTray } from './components/UploadTray';
 import { DriveProvider } from './DriveProvider';
+import { useListWidth } from './listWidth';
 import { useDriveBody } from './driveBody';
 import { driveLinkPath, drivePathKey, followMove, isWithinKey, linkedFile, parentOf } from './drivePaths';
 import { fileAddress, memoState, resolveFileView } from './memoMarks';
@@ -139,6 +142,7 @@ function Drive() {
   };
   const actions = useDriveActions(space, usage, onMoved);
   const uploads = useDriveUpload({ space, usage });
+  const listWidth = useListWidth();
 
   // The open file renamed or moved by the agent: follow it, unless an edit is open.
   // A resync names no entries: the refetch it causes settles the open file,
@@ -210,7 +214,10 @@ function Drive() {
     >
       <div className="drive-page">
         <div className="chrome-drag-strip" aria-hidden="true" />
-        <div className={cn('drive-shell', fileTakesPage && 'has-file')}>
+        <div
+          className={cn('drive-shell', fileTakesPage && 'has-file')}
+          style={{ '--drive-list-width': `${listWidth.width}px` } as React.CSSProperties}
+        >
           {loc.trash ? (
             <DriveTrash
               trashDays={current?.trash_days ?? 14}
@@ -241,6 +248,7 @@ function Drive() {
                 />}
             />
           )}
+          {fileTakesPage && !mobile && <ListDivider width={listWidth.width} onChange={listWidth.change} />}
           {showFile && space && (
             <DriveFilePane
               key={file}

@@ -1,6 +1,7 @@
 {
   "title": "Drive",
   "listLabel": "文件和文件夹",
+  "resizeList": "调整列表宽度（双击还原）",
   "crumbs": "文件夹路径",
   "crumbsFolded_other": "另外 {{count}} 个文件夹",
   "empty": "Drive 存放你和 Agent 共用的文件，在任何工作区都能读写。先上传一个文件吧。",

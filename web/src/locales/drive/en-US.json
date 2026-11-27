@@ -1,6 +1,7 @@
 {
   "title": "Drive",
   "listLabel": "Files and folders",
+  "resizeList": "Resize the list (double-click to reset)",
   "crumbs": "Folder path",
   "crumbsFolded_one": "{{count}} more folder",
   "crumbsFolded_other": "{{count}} more folders",
