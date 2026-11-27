@@ -49,6 +49,7 @@ from .availability import (
     raise_byok_key_required,
     raise_model_not_on_plan,
     raise_model_removed,
+    raise_model_required,
 )
 
 from . import logger
@@ -454,6 +455,52 @@ async def default_to_first_allowed(
     raise_no_model_allowed(policy, default)
 
 
+async def require_runnable_default(
+    config, user_id: str, model_pref: dict, slot: str, request_model: str | None,
+    *, saved_pref: dict, policy: Policy, permits: PlanTier, is_byok: bool,
+) -> None:
+    """Refuse a standalone turn that would run the deployment's default when
+    nothing the user or the server holds runs it.
+
+    Standalone, the default is a name in the server's config (a bundled build
+    ships one whether or not anyone holds its key), so a user who never chose
+    a model has none: the turn asks for one rather than failing on a missing
+    key. Only a primary turn that names no model and whose user saved none
+    (``saved_pref``, read before a rule, the plan or a Claude Code default
+    held for Home set theirs aside, since they do have one); in platform mode
+    the plan serves the default.
+    """
+    from src.config.settings import HOST_MODE
+
+    if (
+        HOST_MODE != "oss"
+        or slot != "primary"
+        or request_model
+        or config.llm is None
+        or saved_default_model(saved_pref, slot)
+    ):
+        return
+    from .clients import DeploymentRoute, credential_route
+
+    default = slot_model(config.llm, slot)
+    byok_cache: dict[str, dict | None] = {}
+    route = await credential_route(
+        user_id, default, is_byok=is_byok, policy=policy,
+        _pref_cache=model_pref, _byok_cache=byok_cache,
+    )
+    # Only a catalog model nothing of the user's serves. A sign-in or Claude
+    # Code default has refusals of its own that say what to reconnect or set
+    # up, and an unknown name is the deployment's misconfiguration.
+    if not isinstance(route, DeploymentRoute):
+        return
+    if not await _serves(
+        user_id, default, model_pref,
+        policy=policy, permits=permits, is_byok=is_byok, byok_cache=byok_cache,
+    ):
+        logger.info(f"[CHAT] No runnable default for user={user_id}: {default} has no key or server")
+        raise_model_required(default)
+
+
 def apply_policy_to_roles(
     config, model_pref: dict, selection: ModelSelection, slot: str, *, policy: Policy,
 ) -> None:
@@ -761,6 +808,11 @@ async def resolve_llm_config(
             config, user_id, model_pref, slot, request_model,
             policy=policy, permits=permits, is_byok=is_byok,
         )
+        if user_facing:
+            await require_runnable_default(
+                config, user_id, model_pref, slot, request_model,
+                saved_pref=saved_pref, policy=policy, permits=permits, is_byok=is_byok,
+            )
         selection = select_model(config, model_pref, slot, request_model)
         apply_policy_to_roles(config, model_pref, selection, slot, policy=policy)
         if shared and is_claude_code_model(selection.effective_model):

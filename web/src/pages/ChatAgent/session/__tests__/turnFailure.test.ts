@@ -36,6 +36,16 @@ describe('readTurnFailure', () => {
     expect(failure({ type: 'model_removed', message: 'Gone.', link: { url: '/settings', label: 'Settings' } }).reread).toBe('preferences');
   });
 
+  it('words a turn with no model to run in the reader\'s language, with the way to choose one', () => {
+    const link = { url: '/settings?tab=model', label: 'Choose a model' };
+    expect(failure({ type: 'model_required', message: 'Choose a model to chat with.', link }, { status: 400 })).toEqual({
+      banner: { message: 'chat.modelRequired', links: [{ ...link, labelKey: 'chat.errorLinkChooseModel' }] },
+      answered: true,
+      holdsDraft: false,
+      reread: null,
+    });
+  });
+
   it("gives a bare failure no banner, and the server's words when it has some", () => {
     expect(failure(undefined, { status: 500 })).toEqual({ banner: null, answered: false, holdsDraft: false, reread: null });
     expect(failure({ message: 'Try later.' }, { status: 500 }).banner).toBe('Try later.');

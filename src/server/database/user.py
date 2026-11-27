@@ -701,12 +701,28 @@ async def lock_user_preferences(user_id: str, *, conn) -> Optional[Dict[str, Any
         return dict(row) if row else None
 
 
+#: Model settings that live in ``other_preference``: the legacy copies of the
+#: moved keys, and the model-adjacent keys that stay there by design (the web's
+#: ``MODEL_PREF_KEYS`` names the same split).
+_KEPT_MODEL_KEYS: frozenset[str] = frozenset(MOVED_MODEL_KEYS) | {
+    "starred_models",
+    "hidden_quick_access_models",
+    "favorites_starred_only",
+    "claude_code_plan_out",
+    "search_provider",
+    "search_depth",
+}
+
+
 async def delete_user_preferences(user_id: str, *, keep_overrides: Collection[str] = ()) -> bool:
     """
-    Delete all preferences for a user, except the ``feature_overrides`` named
-    in ``keep_overrides`` and the account setup stamp (``ACCOUNT_SETUP_KEY``),
-    which only the server writes: a reset clears what the user chose, not a
-    record of what their account has done.
+    Delete a user's preferences, except their model settings, the
+    ``feature_overrides`` named in ``keep_overrides`` and the account setup
+    stamp (``ACCOUNT_SETUP_KEY``). The reset sits with the investing profile, so
+    it clears what the user told the agent about investing and leaves the
+    models their turns run on: wiping those fell back to a deployment default
+    the user may hold no key for. Grants and the stamp are the server's, a
+    record of what their account has done rather than a choice.
 
     Returns:
         True if a row was deleted, False if no preferences existed
@@ -715,22 +731,28 @@ async def delete_user_preferences(user_id: str, *, keep_overrides: Collection[st
         async with conn.cursor(row_factory=dict_row) as cur:
             await lock_user_profile(cur, user_id)
             await cur.execute(
-                "DELETE FROM user_preferences WHERE user_id = %s RETURNING other_preference",
+                "DELETE FROM user_preferences WHERE user_id = %s"
+                " RETURNING other_preference, model_preference",
                 (user_id,),
             )
             deleted = cur.rowcount > 0
             row = await cur.fetchone() if deleted else None
             other = (row or {}).get("other_preference")
             other = other if isinstance(other, dict) else {}
+            model = (row or {}).get("model_preference")
+            model = model if isinstance(model, dict) else {}
             overrides = other.get("feature_overrides")
             kept = {k: v for k, v in overrides.items() if k in keep_overrides} if isinstance(overrides, dict) else {}
-            saved: dict[str, Any] = {"feature_overrides": kept} if kept else {}
+            saved: dict[str, Any] = {k: v for k, v in other.items() if k in _KEPT_MODEL_KEYS}
+            if kept:
+                saved["feature_overrides"] = kept
             if other.get(ACCOUNT_SETUP_KEY) is not None:
                 saved[ACCOUNT_SETUP_KEY] = other[ACCOUNT_SETUP_KEY]
-            if saved:
+            if saved or model:
                 await cur.execute(
-                    "INSERT INTO user_preferences (user_id, other_preference) VALUES (%s, %s)",
-                    (user_id, Json(saved)),
+                    "INSERT INTO user_preferences (user_id, other_preference, model_preference)"
+                    " VALUES (%s, %s, %s)",
+                    (user_id, Json(saved), Json(model)),
                 )
             logger.info(f"[user_db] delete_user_preferences user_id={user_id} deleted={deleted}")
             return deleted

@@ -46,6 +46,24 @@ def on_subscription(entry: Mapping | None) -> bool:
     return bool(entry) and entry.get("provider") in SUBSCRIPTIONS
 
 
+def raise_model_required(model_name: str) -> NoReturn:
+    """Refuse a turn that named no model when the user has none saved and
+    nothing they or the server hold runs the deployment's default
+    (``model_name``). Standalone, that default is only a name in the server's
+    config, so it is no choice at all; the user picks one in Settings."""
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": "Choose a model to chat with. You have no default model yet.",
+            "type": "model_required",
+            "model": model_name,
+            "link": {"url": "/settings?tab=model", "label": "Choose a model"},
+        },
+    )
+
+
 def raise_byok_key_required(model_name: str) -> None:
     """Raise a user-facing HTTPException pointing the user to Settings.
 

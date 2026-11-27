@@ -350,6 +350,37 @@ async def test_delete_user_preferences_keeps_the_overrides_it_is_told_to(user_mo
     assert "INSERT INTO user_preferences" in sql
     assert params[0] == "user-1"
     assert params[1].obj == {"feature_overrides": {"claude_oauth": True}}
+    assert params[2].obj == {}
+
+
+@pytest.mark.asyncio
+async def test_delete_user_preferences_keeps_model_settings(user_mock_db, mock_cursor):
+    """Reset clears the investing profile, never the models turns run on."""
+    from src.server.database.user import delete_user_preferences
+
+    mock_cursor.rowcount = 1
+    model = {"preferred_model": "deepseek-flash", "custom_providers": [{"name": "mine"}]}
+    mock_cursor.fetchone.return_value = {
+        "other_preference": {
+            "theme": "dark",
+            "starred_models": ["deepseek-flash"],
+            "claude_code_plan_out": "credits",
+            "search_provider": "tavily",
+            "preferred_background_model": "legacy-copy",
+        },
+        "model_preference": model,
+    }
+
+    assert await delete_user_preferences("user-1") is True
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "INSERT INTO user_preferences" in sql
+    assert params[1].obj == {
+        "starred_models": ["deepseek-flash"],
+        "claude_code_plan_out": "credits",
+        "search_provider": "tavily",
+        "preferred_background_model": "legacy-copy",
+    }
+    assert params[2].obj == model
 
 
 @pytest.mark.asyncio

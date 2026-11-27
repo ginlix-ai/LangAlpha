@@ -4,6 +4,9 @@ Server-specific test fixtures.
 Provides per-router test clients for isolated route testing.
 """
 
+from unittest.mock import AsyncMock
+
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -116,3 +119,14 @@ async def skills_client():
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _default_model_runs(monkeypatch):
+    """``resolve_llm_config`` tests stand in a deployment default no key
+    backs, for a server that runs its own default, so its refusal of one it
+    cannot run (``require_runnable_default``) is left out of them. Tests of
+    the refusal import the function itself, which this leaves alone."""
+    monkeypatch.setattr(
+        "src.server.services.llm.config.require_runnable_default", AsyncMock(return_value=None)
+    )

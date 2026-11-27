@@ -281,7 +281,6 @@
       "planOutNote": "When your Claude plan runs out, Claude Code turns wait for it to reset, unless you choose otherwise in Settings. Nothing runs on another model.",
       "subTitle": "Connect your subscription or key",
       "subLead": "Pick one now. You can add more in Settings.",
-      "saveDefaultFailed": "It's connected, but it couldn't be made your default. You can pick it on the next step.",
       "claudeCodeUnavailableTitle": "Claude Code isn't available to you",
       "claudeCodeUnavailableLead": "Your account can't use Claude Code here, so there's no setup token to add. Change your answers to use other models.",
       "withApiKey": "Continue with an API key"

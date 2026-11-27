@@ -27,6 +27,14 @@ export interface TurnFailure {
   reread: 'rules' | 'preferences' | 'claude_code' | null;
 }
 
+/** Link refusals the server words in English that this app words in the
+ *  reader's language: the link's label, and the message where it is fixed. */
+const WORDED_LINK_REFUSALS: Partial<Record<string, { labelKey: string; messageKey?: string }>> = {
+  oauth_reauth_required: { labelKey: 'chat.errorLinkReconnect' },
+  oauth_plan_no_api_access: { labelKey: 'chat.errorLinkAddApiKey' },
+  model_required: { labelKey: 'chat.errorLinkChooseModel', messageKey: 'chat.modelRequired' },
+};
+
 export function readTurnFailure(err: unknown, { t, standing, workspaceId }: {
   t: Translate;
   standing: AccountStanding;
@@ -68,15 +76,11 @@ export function readTurnFailure(err: unknown, { t, standing, workspaceId }: {
   }
   if (errorInfo?.link) {
     const link = errorInfo.link as PageLinkSpec;
+    const ours = typeof errorInfo.type === 'string' ? WORDED_LINK_REFUSALS[errorInfo.type] : undefined;
     return answer(
       {
-        message: (errorInfo.message as string) || message || 'An error occurred.',
-        // The server words the link in English; these we can translate.
-        links: [
-          errorInfo.type === 'oauth_reauth_required' ? { ...link, labelKey: 'chat.errorLinkReconnect' }
-            : errorInfo.type === 'oauth_plan_no_api_access' ? { ...link, labelKey: 'chat.errorLinkAddApiKey' }
-              : link,
-        ],
+        message: ours?.messageKey ? t(ours.messageKey) : (errorInfo.message as string) || message || 'An error occurred.',
+        links: [ours ? { ...link, labelKey: ours.labelKey } : link],
       },
       true,
       // The server scrubbed stale model names from the saved preferences:

@@ -16,6 +16,7 @@ import {
   MODEL_PREF_KEYS,
   BACKGROUND_AUTO,
   backgroundDefaultChoice,
+  runnableDeploymentDefaults,
   slotDefaultModel,
   modelPrefs,
   modelProfile,
@@ -134,6 +135,25 @@ describe('splitPreferenceWrite', () => {
     for (const key of ['starred_models', 'search_provider', 'search_depth']) {
       expect(MODEL_PREF_KEYS.has(key)).toBe(false);
     }
+  });
+});
+
+describe('runnableDeploymentDefaults', () => {
+  const published = { default_model: 'deploy-default', background_model: 'deploy-bg', fetch_model: 'deploy-fetch' };
+
+  it('keeps a Default model something runs', () => {
+    expect(runnableDeploymentDefaults(published, () => true)).toEqual(published);
+  });
+
+  it('drops one nothing runs, so an account that chose none has no default', () => {
+    const runnable = runnableDeploymentDefaults(published, () => false);
+    expect(slotDefaultModel({}, runnable, 'default')).toBeNull();
+    // Background work runs on the deployment's Background model either way.
+    expect(slotDefaultModel({}, runnable, 'background')).toBe('deploy-bg');
+  });
+
+  it("never touches the user's own choice", () => {
+    expect(slotDefaultModel({ preferred_model: 'mine' }, runnableDeploymentDefaults(published, () => false), 'default')).toBe('mine');
   });
 });
 

@@ -1136,6 +1136,8 @@
     "errorLinkViewUsage": "查看用量",
     "errorLinkReconnect": "重新连接",
     "errorLinkAddApiKey": "添加 API 密钥",
+    "errorLinkChooseModel": "选择模型",
+    "modelRequired": "请先选择一个用于对话的模型，你还没有设置默认模型。",
     "errorUpstreamHeadlineModel": "{{model}} 返回错误",
     "errorUpstreamHeadlineModelStatus": "{{model}} 返回错误 ({{status}})",
     "errorAttemptedModels": "还尝试了：",
