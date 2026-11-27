@@ -3216,10 +3216,10 @@ export function useChatMessages(
 
   /** A fork whose checkpoint read failed puts back the transcript it cut,
    *  and an edit's text. */
-  const abandonForkPreflight = (cut: ForkCut, error: string) => {
+  const abandonForkPreflight = (cut: ForkCut) => {
     setIsLoading(false);
     setMessages([...cut.transcript]);
-    setMessageError(error);
+    setMessageError(t('chat.requestFailed'));
     if (cut.draft) returnEditDraft(cut.draft);
     historyWindow.release();
     releaseStreamOwnership();
@@ -3634,7 +3634,7 @@ export function useChatMessages(
     }
     // Only a resume has no edit checkpoint, and its answer has no message bubble.
     if (!turn.edit_checkpoint_id) {
-      abandonForkPreflight(cut, 'Failed to process request');
+      abandonForkPreflight(cut);
       return;
     }
     await streamFromCheckpoint(forkRequest(text, turn.edit_checkpoint_id, turnIndex, { keepFullContext }), msgIndex, cut.transcript, modelOptions, { cut, shown });
@@ -3657,7 +3657,7 @@ export function useChatMessages(
     // them; this guards every other caller.
     const editTarget = transcript[msgIndex];
     if (isSteeringUserMessage(editTarget)) {
-      setMessageError("Steering messages can't be edited");
+      setMessageError(t('chat.steeringNotEditable'));
       return;
     }
 
@@ -3707,13 +3707,13 @@ export function useChatMessages(
 
     const turnsData = await getTurnCheckpoints();
     if (!turnsData) {
-      abandonForkPreflight(cut, 'Failed to process request');
+      abandonForkPreflight(cut);
       return;
     }
     await streamEdit(newContent, turnIndex, msgIndex, cut, turnsData, modelOptions, keepFullContext, { userId: edited.id, assistantId });
   // The slot helpers reach only refs and threadId.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages]);
+  }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages, t]);
 
   /**
    * Regenerate an assistant response: truncate the assistant message,
@@ -3770,7 +3770,7 @@ export function useChatMessages(
 
     const turnsData = await getTurnCheckpoints();
     if (!turnsData) {
-      abandonForkPreflight(cut, 'Failed to process request');
+      abandonForkPreflight(cut);
       return;
     }
     const userIndex = projected.findLastIndex(
@@ -3784,7 +3784,7 @@ export function useChatMessages(
       return;
     }
     if (!userMessage) {
-      abandonForkPreflight(cut, 'Failed to process request');
+      abandonForkPreflight(cut);
       return;
     }
     // No checkpoint holds the turn's message to replay. The reply's own Retry
@@ -3798,7 +3798,7 @@ export function useChatMessages(
     // Otherwise only its text is known here, which is the whole of it only
     // when it carried no attachment, chart selection or widget.
     if (carriesContext(userMessage)) {
-      abandonForkPreflight(cut, 'Failed to process request');
+      abandonForkPreflight(cut);
       return;
     }
     // The message goes again in its own place, as an edit that keeps its text,
@@ -3806,7 +3806,7 @@ export function useChatMessages(
     await streamEdit(userMessage.content, turnIndex, userIndex, cut, turnsData, modelOptions, keepFullContext, { userId: userMessage.id, assistantId });
   // Same as handleEditMessage: the slot helpers reach only refs and threadId.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages]);
+  }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages, t]);
 
   /**
    * Retry the last failed turn as a new attempt on the same turn (v4 attempt

@@ -180,6 +180,14 @@ const scrollWidthOf = (el: HTMLElement): number => el.scrollWidth;
  */
 const PRICE_LINE_RESET = { priceLineColor: '', title: '' } as const;
 
+/** Why the chart has no bars to show, each with its own copy. A failed read
+ *  shows ours, never the transport's text ("Network Error", a status code). */
+const CHART_ERROR_COPY = {
+  intraday: 'marketView:chart.errorIntraday',
+  notFound: 'marketView:chart.errorNotFound',
+  load: 'marketView:chart.errorLoad',
+} as const;
+
 const MarketChart = React.memo(function MarketChart({
   symbol,
   interval = '1day',
@@ -239,8 +247,7 @@ const MarketChart = React.memo(function MarketChart({
 
   const [loading, setLoading] = useState<boolean>(true);
   const [scrollLoading, setScrollLoading] = useState<boolean>(false);
-  // A server message shows as sent; a fallback of ours is a catalog key so it follows the language.
-  const [error, setError] = useState<{ text: string } | { kind: 'intraday' | 'notFound' | 'load' } | null>(null);
+  const [error, setError] = useState<keyof typeof CHART_ERROR_COPY | null>(null);
   const [_lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
   const [rsiValue, setRsiValue] = useState<string | null>(null);
 
@@ -1499,9 +1506,7 @@ const MarketChart = React.memo(function MarketChart({
           // asked for is sent again on the next poll tick.
           loadFailed();
           clearChartSeries();
-          setError(result?.error
-            ? { text: result.error }
-            : { kind: interval !== '1day' ? 'intraday' : 'notFound' });
+          setError(result?.error ? 'load' : interval !== '1day' ? 'intraday' : 'notFound');
           if (typeof onStockMeta === 'function') onStockMeta(null);
         }
       } catch (err: unknown) {
@@ -1513,7 +1518,7 @@ const MarketChart = React.memo(function MarketChart({
         }
         console.error('Failed to load stock data:', err);
         clearChartSeries();
-        setError(err instanceof Error ? { text: err.message } : { kind: 'load' });
+        setError('load');
       } finally {
         if (!abortController.signal.aborted) {
           setLoading(false);
@@ -2165,12 +2170,7 @@ const MarketChart = React.memo(function MarketChart({
           {error && (
             <div className="chart-error">
               <div className="chart-error-title">{t('marketView:chart.errorTitle')}</div>
-              <div>
-                {'text' in error ? error.text
-                  : error.kind === 'intraday' ? t('marketView:chart.errorIntraday')
-                  : error.kind === 'notFound' ? t('marketView:chart.errorNotFound')
-                  : t('marketView:chart.errorLoad')}
-              </div>
+              <div>{t(CHART_ERROR_COPY[error])}</div>
             </div>
           )}
 

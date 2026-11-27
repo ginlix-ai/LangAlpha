@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Edit2 } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
 import {
@@ -23,6 +24,8 @@ interface RenameThreadModalProps {
  * Bottom-sheet on mobile, centered on desktop.
  */
 function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenaming, error }: RenameThreadModalProps) {
+  const { t } = useTranslation();
+  const titleInputId = useId();
   const [newTitle, setNewTitle] = useState('');
 
   // Reset form when modal opens/closes or currentTitle changes
@@ -59,21 +62,22 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
             <Edit2 className="h-5 w-5" style={{ color: 'var(--color-accent-primary)' }} />
           </div>
           <DialogTitle className="text-xl font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-            Rename Thread
+            {t('thread.renameThread')}
           </DialogTitle>
         </div>
 
         {/* Form */}
         <form onSubmit={handleSubmit}>
           <div className="mb-4">
-            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>
-              Thread Title
+            <label htmlFor={titleInputId} className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>
+              {t('nav.threadTitle')}
             </label>
             <Input
+              id={titleInputId}
               type="text"
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
-              placeholder="Enter thread title"
+              placeholder={t('thread.titlePlaceholder')}
               maxLength={255}
               disabled={isRenaming}
               className="w-full"
@@ -85,7 +89,7 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
               autoFocus
             />
             <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
-              {newTitle.length}/255 characters
+              {t('thread.titleLength', { length: newTitle.length, max: 255 })}
             </p>
           </div>
 
@@ -107,7 +111,7 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
               className="px-4 py-2 rounded-md text-sm font-medium transition-colors hover:bg-foreground/10 disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ color: 'var(--color-text-primary)' }}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
             <button
               type="submit"
@@ -118,7 +122,7 @@ function RenameThreadModal({ isOpen, currentTitle, onConfirm, onCancel, isRenami
                 color: 'var(--color-btn-primary-text)',
               }}
             >
-              {isRenaming ? 'Renaming...' : 'Rename'}
+              {isRenaming ? t('thread.renaming') : t('nav.renameThread')}
             </button>
           </div>
         </form>

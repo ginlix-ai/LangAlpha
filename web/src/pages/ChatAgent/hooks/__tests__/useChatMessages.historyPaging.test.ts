@@ -759,7 +759,7 @@ describe('useChatMessages – paging older history', () => {
     await act(async () => {
       await result.current.handleRegenerate('history-assistant-70');
     });
-    expect(result.current.messageError).toBe('Failed to process request');
+    expect(result.current.messageError).toBe('chat.requestFailed');
     expect(result.current.olderHistory.snapshot.status).toBe('idle');
     await act(async () => {
       await result.current.olderHistory.load();

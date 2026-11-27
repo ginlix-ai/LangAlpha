@@ -113,12 +113,12 @@ test.describe('SharedChat page', () => {
 
     await page.goto(`/s/${TOKEN}`);
 
-    // The glyph loader should be visible while waiting for metadata
-    // (Loader renders role="status" with aria-label "Loading"). `exact` matters:
-    // the route is lazy now, so its Suspense fallback (PageLoading, named
-    // "Loading...") would satisfy a substring match and pass this test even if
-    // the metadata spinner never rendered.
-    const spinner = page.getByRole('status', { name: 'Loading', exact: true });
+    // The glyph loader should be visible while waiting for metadata. Both it
+    // and the lazy route's Suspense fallback (PageLoading) are a status named
+    // "Loading...", so the name alone would pass this test even if the
+    // metadata spinner never rendered; only the Loader names itself with
+    // aria-label, while PageLoading takes its name from its text.
+    const spinner = page.getByRole('status', { name: 'Loading...', exact: true }).and(page.locator('[aria-label]'));
     await expect(spinner).toBeVisible({ timeout: 3000 });
   });
 

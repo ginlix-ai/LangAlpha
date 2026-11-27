@@ -1,7 +1,14 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '@/hooks/useLocale';
 import { currencySymbol } from '@/lib/bars';
+import { createDateFormatter } from '@/lib/format';
 import type { ValueStore } from '@/lib/valueStore';
 import './CrosshairTooltip.css';
+
+// Chart times encode venue wall clock as fake UTC, so they are read back in
+// UTC: a browser-local read shifts the date for users away from the venue.
+const barDate = createDateFormatter({ month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 
 interface TooltipData {
   time: number;
@@ -35,6 +42,8 @@ interface CrosshairTooltipProps {
 }
 
 function CrosshairTooltip({ visible, x, y, data, containerWidth, containerHeight, currency, decimals }: CrosshairTooltipProps) {
+  const { t } = useTranslation();
+  const locale = useLocale();
   if (!visible || !data) return null;
 
   const isUp = data.close >= data.open;
@@ -56,32 +65,24 @@ function CrosshairTooltip({ visible, x, y, data, containerWidth, containerHeight
     return String(v);
   };
 
-  const formatDate = (ts: number | null | undefined): string => {
-    if (!ts) return '';
-    const d = new Date(ts * 1000);
-    // Chart times encode venue wall clock as fake UTC — read them back in UTC.
-    // A browser-local read shifts the date for users away from the venue.
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
-  };
-
   return (
     <div
       className="crosshair-tooltip"
       style={{ left: clampedX, top: clampedY }}
     >
-      <div className="crosshair-tooltip-date">{formatDate(data.time)}</div>
+      <div className="crosshair-tooltip-date">{data.time ? barDate(data.time * 1000, locale) : ''}</div>
       <div className="crosshair-tooltip-grid">
-        <span className="crosshair-tooltip-label">O</span>
+        <span className="crosshair-tooltip-label">{t('marketView:quote.open')}</span>
         <span style={{ color: dirColor }}>{formatPrice(data.open)}</span>
-        <span className="crosshair-tooltip-label">H</span>
+        <span className="crosshair-tooltip-label">{t('marketView:quote.high')}</span>
         <span style={{ color: dirColor }}>{formatPrice(data.high)}</span>
-        <span className="crosshair-tooltip-label">L</span>
+        <span className="crosshair-tooltip-label">{t('marketView:quote.low')}</span>
         <span style={{ color: dirColor }}>{formatPrice(data.low)}</span>
-        <span className="crosshair-tooltip-label">C</span>
+        <span className="crosshair-tooltip-label">{t('marketView:quote.close')}</span>
         <span style={{ color: dirColor }}>{formatPrice(data.close)}</span>
       </div>
       <div className="crosshair-tooltip-row">
-        <span className="crosshair-tooltip-label">Vol</span>
+        <span className="crosshair-tooltip-label">{t('marketView:quote.volume')}</span>
         <span>{formatVol(data.volume)}</span>
       </div>
       {data.maValues && Object.keys(data.maValues).length > 0 && (

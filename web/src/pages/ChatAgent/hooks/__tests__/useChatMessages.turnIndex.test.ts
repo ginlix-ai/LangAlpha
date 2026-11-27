@@ -686,7 +686,7 @@ describe('useChatMessages – /turns entries named by turn_index', () => {
       await result.current.handleRegenerate(assistantId);
     });
     expect(mockSendStream.mock.calls.length).toBe(sends);
-    expect(result.current.messageError).toBe('Failed to process request');
+    expect(result.current.messageError).toBe('chat.requestFailed');
     expect(result.current.messages.filter((m) => m.role === 'assistant')).toHaveLength(3);
   });
 

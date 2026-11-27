@@ -21,6 +21,7 @@ import { useNavigate, useParams, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
+import { apiErrorReason } from '@/api/errors';
 import { patchThreadTitle } from '@/lib/threadListCache';
 import { threadGalleryQuery } from '../utils/threadGalleryQuery';
 import { useWorkspace } from '../../../hooks/useWorkspace';
@@ -491,10 +492,9 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
 
       // Close modal
       setRenameModal({ isOpen: false, thread: null });
-    } catch (err: any) { // TODO: type properly
+    } catch (err: unknown) {
       console.error('Error renaming thread:', err);
-      const errorMessage = err.response?.data?.detail || err.message || t('thread.failedRenameThread');
-      setRenameError(errorMessage);
+      setRenameError(apiErrorReason(err) ?? t('thread.failedRenameThread'));
       // Keep modal open so user can see the error
     } finally {
       setIsRenaming(false);
