@@ -4,6 +4,7 @@ import path from 'path'
 import { criticalPathGroups } from './scripts/chunking.ts'
 import { copyNamespaces } from './scripts/vite-plugins/copyNamespaces.ts'
 import { framePolicy } from './scripts/vite-plugins/framePolicy.ts'
+import { accountPortalOrigin } from './src/lib/framePolicy.ts'
 import { authPreconnect } from './scripts/vite-plugins/authPreconnect.ts'
 import { localePreload } from './scripts/locale-preload.ts'
 import { monacoVersionDefine } from './scripts/monaco-version.ts'
@@ -22,6 +23,7 @@ export default defineConfig(({ command, mode }) => {
   // Only honor a well-formed port; a non-numeric VITE_HMR_CLIENT_PORT would
   // otherwise yield NaN and silently break the HMR socket.
   const hmrClientPort = Number(env.VITE_HMR_CLIENT_PORT)
+  const portalOrigin = accountPortalOrigin(env.VITE_HOST_MODE, env.VITE_PLATFORM_URL)
   const hasHmrClientPort = Number.isFinite(hmrClientPort) && hmrClientPort > 0
   // Extra Host headers the dev server accepts, for tunnels (ngrok, Cloudflare)
   // that front it under their own hostname. Comma-separated — kept in .env so a
@@ -43,7 +45,9 @@ export default defineConfig(({ command, mode }) => {
       copyNamespaces(path.resolve(import.meta.dirname, 'src/locales')),
       // Read from the same variable the API client is built with, so the policy
       // names the origin the app's API frames really load from.
-      framePolicy(env.VITE_API_BASE_URL),
+      // The account portal's pages open framed in Settings, so an absolute
+      // portal joins the frame policy; a path-shaped one is the app's own origin.
+      framePolicy(env.VITE_API_BASE_URL, portalOrigin ? [portalOrigin] : []),
       authPreconnect(env.VITE_HOST_MODE, env.VITE_SUPABASE_URL),
       // Read with the SENTRY_ prefix, which never reaches the client the way
       // VITE_ does: the token stays in the build.

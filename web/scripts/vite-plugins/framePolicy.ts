@@ -15,20 +15,20 @@ import { appFrameSrc } from '../../src/lib/framePolicy.ts';
 const MARKER = /<!--\s*frame-policy\b[^>]*-->/;
 
 /** index.html with its marker replaced by the policy. */
-export function withFramePolicy(html: string, apiBase: string | undefined): string {
+export function withFramePolicy(html: string, apiBase: string | undefined, extraOrigins: readonly string[] = []): string {
   if (!MARKER.test(html)) throw new Error('index.html is missing its <!-- frame-policy --> marker');
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${appFrameSrc(apiBase)}" />`;
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${appFrameSrc(apiBase, extraOrigins)}" />`;
   return html.replace(MARKER, meta);
 }
 
-export function framePolicy(apiBase: string | undefined): Plugin {
+export function framePolicy(apiBase: string | undefined, extraOrigins: readonly string[] = []): Plugin {
   return {
     name: 'la-frame-policy',
     // The app's entry only: the preview pages (`*-preview.html`) frame
     // nothing, carry no marker and are never built.
     transformIndexHtml: {
       order: 'pre',
-      handler: (html, ctx) => (basename(ctx.filename) === 'index.html' ? withFramePolicy(html, apiBase) : html),
+      handler: (html, ctx) => (basename(ctx.filename) === 'index.html' ? withFramePolicy(html, apiBase, extraOrigins) : html),
     },
   };
 }
