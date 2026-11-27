@@ -4,7 +4,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { editor } from 'monaco-editor';
 import { queryKeys } from '@/lib/queryKeys';
 import { FileViewer } from '@/pages/ChatAgent/components/filePanel/FileViewer';
-import { DocumentLoadingFallback } from '@/pages/ChatAgent/components/filePanel/fallbacks';
 import type { FileBody as Body } from '@/pages/ChatAgent/components/filePanel/fileBody';
 import type { FileError } from '@/pages/ChatAgent/components/filePanel/fileErrors';
 import { WorkspaceProvider } from '@/pages/ChatAgent/contexts/WorkspaceContext';
@@ -12,6 +11,8 @@ import type { OpenFileHandler } from '@/pages/ChatAgent/utils/fileLocation';
 import type { DriveEntry } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
 import { DriveHtml } from './DriveHtml';
+import { DriveLoading } from './DriveLoading';
+import { ExtractedText, type TextSource } from './ExtractedText';
 import { PaneProblem } from './PaneProblem';
 
 const CodeEditor = React.lazy(() => import('@/pages/ChatAgent/components/viewers/CodeEditor'));
@@ -44,6 +45,8 @@ export type BodyView =
     /** The version shown in place of the head, which a download takes. */
     seq: number | null;
   }
+  /** A Word file, shown as the text the server reads out of it; `source` names the bytes it should come from. */
+  | { kind: 'extract'; entry: DriveEntry; seq: number; sha: string; source: TextSource }
   | { kind: 'loading' }
   | { kind: 'failure'; name: string; gone: boolean; onRetry: () => void }
   /** The version the URL names is not kept (expired or cleared). */
@@ -60,7 +63,7 @@ function Editor({ name, value, original, compare, modelPath, editorRef, onChange
 }) {
   return (
     <div className="drive-editor">
-      <Suspense fallback={<DocumentLoadingFallback />}>
+      <Suspense fallback={<DriveLoading />}>
         <CodeEditor
           value={value}
           onChange={onChange}
@@ -101,7 +104,18 @@ export function FileBody({ view, imageLoader, onOpenLink }: {
     case 'html':
       return <DriveHtml content={view.content} name={view.name} source={view.source} />;
     case 'loading':
-      return <DocumentLoadingFallback />;
+      return <DriveLoading />;
+    case 'extract':
+      return (
+        <ExtractedText
+          entryId={view.entry.id}
+          name={view.entry.name}
+          seq={view.seq}
+          sha={view.sha}
+          source={view.source}
+          onDownload={() => void actions.download(view.entry, view.seq === view.entry.version ? null : view.seq)}
+        />
+      );
     case 'failure':
       return <PaneProblem line={view.gone ? t('drive:errors.missing', { name: view.name }) : t('drive:errors.loadFailed')} onRetry={view.gone ? undefined : view.onRetry} />;
     case 'versionGone':
@@ -109,13 +123,15 @@ export function FileBody({ view, imageLoader, onOpenLink }: {
     case 'document': {
       const { entry } = view;
       const download = () => void actions.download(entry, view.seq);
+      if (view.loading) return <DriveLoading />;
       return (
+        // Mounted once the bytes are here, so the file fades in rather than cutting over the wait.
         <div className="drive-viewer">
           <WorkspaceProvider workspaceId={null} downloadFile={imageLoader} imageScope={`drive:${space}:${entry.id}`}>
             <FileViewer
               path={entry.name}
               body={view.body}
-              loading={view.loading}
+              loading={false}
               error={view.error}
               onRetry={view.onRetry}
               onDownload={download}

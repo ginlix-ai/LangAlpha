@@ -1,7 +1,10 @@
 {
   "title": "Drive",
   "listLabel": "Files and folders",
+  "resizeList": "Resize the list (double-click to reset)",
   "crumbs": "Folder path",
+  "crumbsFolded_one": "{{count}} more folder",
+  "crumbsFolded_other": "{{count}} more folders",
   "empty": "Your Drive holds files you and your agent both read and change, from any workspace. Upload a file to start.",
   "emptyFolder": "This folder is empty. Drop files here or upload them.",
   "dropHere": "Drop to upload to {{folder}}",
@@ -44,7 +47,10 @@
     "version": "v{{seq}}",
     "changed": "changed {{when}} by {{who}}",
     "source": "Source",
-    "page": "Page"
+    "page": "Page",
+    "textOnly": "Text only: the formatting, tables and images are in the download.",
+    "textCut": "The text stops here; download the file for the rest.",
+    "textNone": "This document has no text to show."
   },
   "edit": {
     "unsaved": "Unsaved changes",

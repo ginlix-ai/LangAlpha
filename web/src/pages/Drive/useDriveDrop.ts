@@ -7,6 +7,11 @@ import { collectDropped, type PickedFile } from './useDriveUpload';
 /** The drag payload of a row picked up inside the page: its path. */
 const DRAG_TYPE = 'application/x-langalpha-drive-path';
 
+/** Whether a drag carries one of the page's own rows (not files from the desktop). */
+export function carriesRow(e: React.DragEvent): boolean {
+  return e.dataTransfer.types.includes(DRAG_TYPE);
+}
+
 type Upload = (files: PickedFile[], dir: string, folders?: string[]) => void;
 type MoveInto = (entry: DriveEntry, folder: string) => Promise<unknown>;
 

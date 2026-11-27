@@ -15,6 +15,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { usePrefetchDriveList } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { formatBytes, mediumDate, relativeTime } from '@/lib/format';
@@ -26,6 +27,7 @@ import type { DriveDrop } from '../useDriveDrop';
 import { whoLabel } from '../who';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
+import { EntryName } from './EntryName';
 import { MemoChip, MemoStatus } from './MemoBadges';
 
 /** Moves keyboard focus to the row before or after the one focused. */
@@ -50,7 +52,8 @@ export function DriveRow({ entry, compact, active, drop }: {
   const { t } = useTranslation();
   const locale = useLocale();
   const now = useNow();
-  const { open, ask, trash } = useDriveContext();
+  const { space, open, ask, trash } = useDriveContext();
+  const prefetchList = usePrefetchDriveList();
   const folder = entry.kind === 'folder';
   const state = memoState(entry);
   const when = relativeTime(entry.modified_at, locale, now);
@@ -88,21 +91,34 @@ export function DriveRow({ entry, compact, active, drop }: {
             className="drive-row-main"
             onClick={() => open(entry)}
             onKeyDown={onKeyDown}
+            // A folder is read from the press, a click's length ahead of its open.
+            onPointerDown={folder && space ? (e) => { if (e.button === 0) void prefetchList(space, entry.path); } : undefined}
             {...drop.sourceProps(entry)}
             aria-current={active ? 'true' : undefined}
           >
             <EntryGlyph name={entry.name} folder={folder} className="drive-row-icon" />
             <span className="drive-row-text">
               <span className="drive-row-title">
-                <span className="drive-row-name">{entry.name}</span>
-                {state.kind === 'memo' && (
+                <EntryName name={entry.name} folder={folder} className="drive-row-name" />
+                {/* Beside a file the column is narrow: the memo's marks go under the name, which keeps the width. */}
+                {state.kind === 'memo' && !compact && (
                   <>
                     <MemoChip />
                     <MemoStatus mark={state.mark} head={entry.version} />
                   </>
                 )}
               </span>
-              {compact && <span className="drive-row-sub">{[when, who, size].filter(Boolean).join(' · ')}</span>}
+              {compact && (
+                <span className="drive-row-sub">
+                  {state.kind === 'memo' && (
+                    <span className="drive-row-marks">
+                      <MemoChip />
+                      <MemoStatus mark={state.mark} head={entry.version} />
+                    </span>
+                  )}
+                  <span className="drive-row-facts">{[when, who, size].filter(Boolean).join(' · ')}</span>
+                </span>
+              )}
             </span>
             {!compact && (
               <>

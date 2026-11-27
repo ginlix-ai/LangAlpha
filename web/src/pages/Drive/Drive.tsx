@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import type React from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { objectUrlAt } from '@/api/drive';
@@ -17,13 +18,16 @@ import { DriveFilePane } from './components/DriveFilePane';
 import { DriveList } from './components/DriveList';
 import { MemosView } from './components/MemosView';
 import { DriveTrash } from './components/DriveTrash';
+import { ListDivider } from './components/ListDivider';
 import { UploadTray } from './components/UploadTray';
 import { DriveProvider } from './DriveProvider';
+import { useListWidth } from './listWidth';
 import { useDriveBody } from './driveBody';
-import { driveLinkPath, followMove, isWithinKey, linkedFile, parentOf } from './drivePaths';
+import { driveLinkPath, drivePathKey, followMove, isWithinKey, linkedFile, parentOf } from './drivePaths';
 import { fileAddress, memoState, resolveFileView } from './memoMarks';
 import { useDriveActions } from './useDriveActions';
 import { useDriveEditor } from './useDriveEditor';
+import { useDriveMove } from './useDriveMove';
 import { useDriveUpload } from './useDriveUpload';
 import './Drive.css';
 // After Drive.css: its memo rules override shared ones of the same weight.
@@ -57,14 +61,18 @@ function Drive() {
   const space = current ? spaceRef(current) : null;
   const usage = current?.usage ?? null;
   // Beside the memo list, a file opened from it, or moved while open, keeps the list in view.
+  const placeOf = (next: DriveLocation): DriveLocation => ({ ...next, memos: next.memos ?? (!!next.file && loc.memos) });
   const hrefFor = (next: DriveLocation) => driveHref({
     space: current && current.kind !== 'personal' ? current.id : null,
-    ...next,
-    memos: next.memos ?? (!!next.file && loc.memos),
+    ...placeOf(next),
   });
 
   const list = useDriveList(space, dir);
-  const entry = useDriveEntry(space, file);
+  // The file as its folder's listing has it, matched as the server matches names.
+  // Only a listing still fresh: the change feed marks one stale when a file in
+  // it changes, and a stale seed would read and offer to edit an old version.
+  const listed = file && !list.isStale ? list.data?.find((e) => drivePathKey(e.path) === drivePathKey(file)) : undefined;
+  const entry = useDriveEntry(space, file, listed);
   const fileEntry = entry.data?.kind === 'file' ? entry.data : undefined;
   // The address as the open file reads it; what it names and the file does
   // not have (a version on a plain file, the head as a version, a tab it has
@@ -88,10 +96,11 @@ function Drive() {
     editor.close();
     then?.();
   };
+  const move = useDriveMove({ space, at: loc, mobile });
   const go = (to: DriveLocation, opts: { replace?: boolean } = {}) => {
-    const href = hrefFor(to);
-    if (editor.session && to.file !== file) leaveEditor(() => navigate(href, opts));
-    else navigate(href, opts);
+    const land = () => move(placeOf(to), hrefFor(to), opts);
+    if (editor.session && to.file !== file) leaveEditor(land);
+    else land();
   };
 
   // A page tab switched or closed asks the same, since a route change fires
@@ -106,6 +115,25 @@ function Drive() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [editor.dirty]);
 
+  // Escape puts an open file away, as it closes any other panel. Not while
+  // editing (the editor keeps its own keys), nor over a dialog or a menu,
+  // which Escape closes first.
+  const closeFile = () => go(loc.memos ? { memos: true } : { dir });
+  const onEscape = useEffectEvent(closeFile);
+  const fileOpen = !loc.trash && !!file;
+  useEffect(() => {
+    if (!fileOpen || editor.session) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], .monaco-editor')) return;
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;
+      onEscape();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fileOpen, editor.session]);
+
   const onMoved = (from: string, to: string) => {
     // Matched as the server matches names, since the URL may spell them otherwise.
     const moved = followMove(file ?? dir, from, to);
@@ -114,6 +142,7 @@ function Drive() {
   };
   const actions = useDriveActions(space, usage, onMoved);
   const uploads = useDriveUpload({ space, usage });
+  const listWidth = useListWidth();
 
   // The open file renamed or moved by the agent: follow it, unless an edit is open.
   // A resync names no entries: the refetch it causes settles the open file,
@@ -179,13 +208,16 @@ function Drive() {
       go={go}
       leaveEditor={leaveEditor}
       backTo={loc.memos ? 'memos' : 'folder'}
-      back={() => go(loc.memos ? { memos: true } : { dir: file ? parentOf(file) : dir })}
+      back={closeFile}
       trash={(target) => void trash(target)}
       open={(target) => go(target.kind === 'folder' ? { dir: target.path } : { file: target.path })}
     >
       <div className="drive-page">
         <div className="chrome-drag-strip" aria-hidden="true" />
-        <div className={cn('drive-shell', fileTakesPage && 'has-file')}>
+        <div
+          className={cn('drive-shell', fileTakesPage && 'has-file')}
+          style={{ '--drive-list-width': `${listWidth.width}px` } as React.CSSProperties}
+        >
           {loc.trash ? (
             <DriveTrash
               trashDays={current?.trash_days ?? 14}
@@ -216,6 +248,7 @@ function Drive() {
                 />}
             />
           )}
+          {fileTakesPage && !mobile && <ListDivider width={listWidth.width} onChange={listWidth.change} />}
           {showFile && space && (
             <DriveFilePane
               key={file}

@@ -276,8 +276,10 @@
   font-size: 0.8125rem;
   transition: background-color var(--motion-quick) var(--ease-out);
 }
-.drive-memos-row:hover,
-.drive-memos-row.is-active { background-color: var(--color-bg-hover); }
+.drive-memos-rows { display: flex; flex-direction: column; gap: 2px; }
+.drive-memos-row:hover { background-color: var(--color-bg-hover); }
+.drive-memos-row.is-active,
+.drive-memos-row.is-active:hover { background-color: var(--color-bg-surface); }
 .drive-memos-row.is-active .drive-row-name { font-weight: 500; }
 /* The grid item around a cell's or a heading's button, which fills it. */
 .drive-memos-slot { display: flex; min-width: 0; border-radius: inherit; }

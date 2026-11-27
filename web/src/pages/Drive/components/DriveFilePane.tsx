@@ -5,6 +5,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
 import { apiErrorStatus } from '@/api/errors';
 import { HeaderButton } from '@/components/mcp/McpPrimitives';
+import { useDriveEntry } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { relativeTime } from '@/lib/format';
@@ -14,7 +15,7 @@ import type { FileError } from '@/pages/ChatAgent/components/filePanel/fileError
 import type { OpenFileHandler } from '@/pages/ChatAgent/utils/fileLocation';
 import type { DriveEntry, DriveVersion, DriveVersions } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
-import { atVersion, driveBodyMode, tooLargeToPreview, useDriveBody } from '../driveBody';
+import { atVersion, driveBodyMode, noneCategory, showsExtract, useDriveBody } from '../driveBody';
 import { nameOf } from '../drivePaths';
 import { fileAddress, memoState, resolveFileView, type FileView, type MemoView } from '../memoMarks';
 import type { DriveEditor } from '../useDriveEditor';
@@ -59,6 +60,8 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
   const locale = useLocale();
   const now = useNow();
   const { space, actions, go, leaveEditor, ask } = useDriveContext();
+  // The same read the page holds for this file, so a Word text can ask it again.
+  const entryQuery = useDriveEntry(space, path);
   const { session } = editor;
   const [htmlSource, setHtmlSource] = useState(false);
   const [comparing, setComparing] = useState<string | null>(null);
@@ -180,6 +183,13 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
       if (versionsQuery.isPending) return { kind: 'loading' };
       return { kind: 'versionGone', onBack: () => goTo({ view: 'document', version: null }) };
     }
+    // A Word file has no viewer here: it reads as the text the server takes out
+    // of it, whatever its name would otherwise open it as (a renamed report).
+    if (shownEntry?.sha256 && showsExtract(entry, viewed) && entry.version) {
+      // What names the bytes it reads: the versions for a past one, the entry for the head.
+      const source = viewed ? versionsQuery : entryQuery;
+      return { kind: 'extract', entry, seq: viewed?.seq ?? entry.version, sha: shownEntry.sha256, source };
+    }
     const content = shown.data?.content;
     if (isHtml && content != null) return { kind: 'html', name: entry.name, content, source: htmlSource };
     return {
@@ -187,10 +197,10 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
       entry,
       body: shown.data ?? null,
       loading: mode !== 'none' && shown.isPending,
-      // A body read as none is a PDF past the bound that could not be read by range.
-      error: mode === 'none'
-        ? { category: tooLargeToPreview(shownEntry ?? entry) ? 'too_large' : 'binary_file' }
-        : shown.data?.mode === 'none' ? { category: 'too_large' } : bodyError(shown.error),
+      // Not read at all, or read as none: a download card that says why.
+      error: mode === 'none' || shown.data?.mode === 'none'
+        ? { category: noneCategory(shownEntry ?? entry) }
+        : bodyError(shown.error),
       onRetry: () => void shown.refetch(),
       seq: viewed?.seq ?? null,
     };
@@ -210,6 +220,7 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
     main = <MemoAuthors entry={entry} onPick={(seq) => goTo({ view: 'changes', version: seq })} />;
   }
 
+  const editable = view === 'document' && isText && docVersion === null && !head.isError;
   return (
     <section
       className="drive-file"
@@ -226,7 +237,7 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
         entry={entry}
         mobile={mobile}
         editor={editor}
-        canEdit={view === 'document' && isText && docVersion === null && !!head.data?.version}
+        edit={!editable ? 'none' : head.data?.version ? 'ready' : 'waiting'}
         html={view === 'document' && isHtml && docVersion === null ? { source: htmlSource, toggle: () => setHtmlSource((s) => !s) } : null}
       >
         {mark && entry && (
@@ -246,7 +257,10 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
       </FileHeader>
       {bars}
       <div className="drive-file-body">
-        <div className={cn('drive-file-main', fill && 'is-fill')}>{main}</div>
+        <div className={cn('drive-file-main', fill && 'is-fill')}>
+          {/* A new view fades in over the one it replaces rather than cutting to it. */}
+          <div key={view} className="drive-file-view">{main}</div>
+        </div>
       </div>
     </section>
   );

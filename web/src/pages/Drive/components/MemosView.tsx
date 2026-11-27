@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
-import { HeaderButton, ListError, ListSkeleton } from '@/components/mcp/McpPrimitives';
+import { HeaderButton, ListError } from '@/components/mcp/McpPrimitives';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { useDriveMemos } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
@@ -17,6 +17,8 @@ import { memoState } from '../memoMarks';
 import { whoLabel } from '../who';
 import { DriveViews } from './DriveViews';
 import { EntryGlyph } from './EntryGlyph';
+import { EntryName } from './EntryName';
+import { RowsSkeleton } from './RowsSkeleton';
 import { MemoStatus, TickerChips } from './MemoBadges';
 import { PaneFrame } from './PaneFrame';
 
@@ -50,11 +52,13 @@ function MemoRow({ memo, compact, active, onTicker }: {
         <button type="button" className="drive-memos-open" onClick={() => open(entry)} aria-current={active ? 'true' : undefined}>
           <EntryGlyph name={entry.name} className="drive-row-icon" />
           <span className="drive-row-text">
-            <span className="drive-row-name">{entry.name}</span>
+            <EntryName name={entry.name} className="drive-row-name" />
             <span className="drive-row-sub">
-              {compact
-                ? [folder || t('drive:title'), when].join(' · ')
-                : folder || t('drive:title')}
+              <span className="drive-row-facts">
+                {compact
+                  ? [folder || t('drive:title'), when].join(' · ')
+                  : folder || t('drive:title')}
+              </span>
             </span>
           </span>
         </button>
@@ -102,7 +106,7 @@ export function MemosView({ openPath, compact }: { openPath: string | null; comp
   if (memos.error && !memos.data) {
     body = <ListError onRetry={() => void memos.refetch()}>{loadFailedLine(memos.error, t)}</ListError>;
   } else if (!memos.data) {
-    body = <ListSkeleton rows={5} />;
+    body = <RowsSkeleton rows={5} compact />;
   } else if (rows.length === 0) {
     body = (
       <EmptyState
@@ -137,7 +141,7 @@ export function MemosView({ openPath, compact }: { openPath: string | null; comp
             {header('revised', 'drive:memos.columns.revised', 'drive-memos-revised')}
           </div>
         )}
-        <div role="rowgroup">
+        <div role="rowgroup" className="drive-memos-rows">
           {rows.map((memo) => (
             <MemoRow
               key={memo.entry.id}

@@ -21,15 +21,83 @@ export function tooLargeToPreview(entry: Pick<DriveEntry, 'name' | 'size'>): boo
 /**
  * How a Drive file is read for its viewer. The name picks the viewer as it
  * does in the file panel, but the server knows which files are text: a binary
- * file under a text name (a data file the store keeps, a `.csv` included)
- * opens as a download card rather than as garbled characters, and text under
- * an unknown name still opens as text.
+ * file under a text name opens as a download card rather than as garbled
+ * characters (a table the store keeps as data is tried as text first), and
+ * text under an unknown name still opens as text.
  */
 export function driveBodyMode(entry: Pick<DriveEntry, 'name' | 'is_text' | 'size'>): BodyMode {
   const mode = bodyMode(entry.name);
   if (tooLargeToPreview(entry)) return 'none';
-  if (entry.is_text === false && (mode === 'text' || mode === 'html')) return 'none';
+  if (entry.is_text === false && (mode === 'text' || mode === 'html')) return readsAsData(entry) ? 'text' : 'none';
   return mode;
+}
+
+/**
+ * Tables the store keeps as data rather than text, which still read as text
+ * once their bytes are UTF-8. A research CSV is one of the files a person
+ * most wants to glance at, so it opens in the table viewer, within a bound
+ * the browser parses at once; past the bound, or not UTF-8, it is a download.
+ */
+const DATA_TEXT_EXTENSIONS = new Set(['csv', 'tsv', 'jsonl', 'ndjson']);
+const DATA_PREVIEW_MAX_BYTES = 4 * 1024 * 1024;
+
+function isDataTable(entry: Pick<DriveEntry, 'name' | 'is_text'>): boolean {
+  return entry.is_text === false && DATA_TEXT_EXTENSIONS.has(getFileExtension(entry.name));
+}
+
+function readsAsData(entry: Pick<DriveEntry, 'name' | 'is_text' | 'size'>): boolean {
+  return isDataTable(entry) && (entry.size ?? Infinity) <= DATA_PREVIEW_MAX_BYTES;
+}
+
+/** A table past the bound: its card says it is too large, not that it is not text. */
+function dataPastBound(entry: Pick<DriveEntry, 'name' | 'is_text' | 'size'>): boolean {
+  return isDataTable(entry) && !readsAsData(entry);
+}
+
+const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const GENERIC_TYPES = new Set(['', 'application/octet-stream', 'application/zip', 'binary/octet-stream']);
+
+/**
+ * Word files: no viewer in the browser, but the server reads their text out
+ * (a memo's changes compare it). Known as the server knows them: by the type
+ * they were saved with, and by the name only for binary bytes saved with none
+ * that says, so a renamed report still reads.
+ */
+function readsAsExtract(entry: Pick<DriveEntry, 'name' | 'content_type' | 'is_text'>): boolean {
+  const media = (entry.content_type ?? '').split(';')[0].trim().toLowerCase();
+  if (media === DOCX_TYPE) return true;
+  return !entry.is_text && GENERIC_TYPES.has(media) && getFileExtension(entry.name) === 'docx';
+}
+
+/**
+ * Whether a file shows as its extracted text: the head by its type, a past
+ * version by the server's own word on it, since a file overwritten with
+ * another kind keeps only the head's type. A PDF among them keeps its viewer.
+ */
+export function showsExtract(entry: DriveEntry, version: DriveVersion | null): boolean {
+  if (!version) return readsAsExtract(entry);
+  return version.text === 'extracted' && getFileExtension(entry.name) !== 'pdf';
+}
+
+/**
+ * Why a file shows the download card in place of a viewer: past the preview
+ * bound (or a PDF past it that could not be read by range), or bytes that are
+ * not text, a table's that did not decode included.
+ */
+export function noneCategory(entry: Pick<DriveEntry, 'name' | 'is_text' | 'size'>): 'too_large' | 'binary_file' {
+  if (tooLargeToPreview(entry) || dataPastBound(entry)) return 'too_large';
+  return driveBodyMode(entry) === 'none' || readsAsData(entry) ? 'binary_file' : 'too_large';
+}
+
+/** A data file's bytes that are not UTF-8: it opens as the download card. */
+class NotText extends Error {}
+
+function strictUtf8(buffer: ArrayBuffer): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    throw new NotText();
+  }
 }
 
 /** A PDF past the preview bound that could not be read by range: it opens as the download card. */
@@ -40,13 +108,21 @@ class TooLargeWhole extends Error {}
  * is null). A PDF opens from its first slice and reads on by range, as it
  * does in a workspace; past the preview bound it is never read whole.
  */
-function driveReaders(space: string, entryId: string, seq: number | null, size: number): FileReaders {
+function driveReaders(space: string, entry: DriveEntry, seq: number | null): FileReaders {
+  const entryId = entry.id;
   // A text body's `version` is the sha256 of its bytes, read off the answer:
-  // the `If-Match` of an edit made over it.
-  const text = async () => {
-    const { content, sha } = await readText(space, entryId, seq);
-    return { content, from: LIVE, version: sha };
-  };
+  // the `If-Match` of an edit made over it. A table kept as data is read as
+  // bytes and decoded here, strictly, since the server keeps no promise they
+  // are text.
+  const text = readsAsData(entry)
+    ? async () => {
+      const { buffer, sha } = await readBytes(space, entryId, seq);
+      return { content: strictUtf8(buffer), from: LIVE, version: sha };
+    }
+    : async () => {
+      const { content, sha } = await readText(space, entryId, seq);
+      return { content, from: LIVE, version: sha };
+    };
   const bytes = async () => {
     const { buffer } = await readBytes(space, entryId, seq);
     return { buffer, from: LIVE };
@@ -58,7 +134,7 @@ function driveReaders(space: string, entryId: string, seq: number | null, size: 
     openRanged: async () => {
       const opened = await openRangedRead(contentUrl(space), contentParams(entryId, seq));
       if (opened.kind === 'whole') {
-        if (size > PREVIEW_MAX_BYTES) throw new TooLargeWhole();
+        if ((entry.size ?? 0) > PREVIEW_MAX_BYTES) throw new TooLargeWhole();
         return bytes();
       }
       return opened.kind === 'bytes' ? { buffer: opened.buffer, from: LIVE } : { ranged: opened.file, from: LIVE };
@@ -71,9 +147,9 @@ const NONE: FileBody = { mode: 'none', mime: null, content: null, buffer: null, 
 export async function readDriveBody(space: string, entry: DriveEntry, seq: number | null): Promise<FileBody> {
   if (driveBodyMode(entry) === 'none') return NONE;
   try {
-    return await readFileBody(driveReaders(space, entry.id, seq, entry.size ?? 0), entry.name);
+    return await readFileBody(driveReaders(space, entry, seq), entry.name);
   } catch (err) {
-    if (err instanceof TooLargeWhole) return NONE;
+    if (err instanceof TooLargeWhole || err instanceof NotText) return NONE;
     throw err;
   }
 }
