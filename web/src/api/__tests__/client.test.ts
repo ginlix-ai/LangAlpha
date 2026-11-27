@@ -24,6 +24,13 @@ vi.mock('../../lib/authToken', async (importActual) => ({
   clearAuthToken: vi.fn(),
 }));
 
+// Where an edge block is reported; the decision under test is what reaches it.
+const mockReportEdgeBlock = vi.fn<(kind: string, method: string, route: string, rayId: string | null) => void>();
+vi.mock('../../lib/sentry', () => ({
+  reportEdgeBlock: (kind: string, method: string, route: string, rayId: string | null) =>
+    mockReportEdgeBlock(kind, method, route, rayId),
+}));
+
 import { runAuthResets } from '../../lib/authResets';
 import { api, ApiError } from '../client';
 
@@ -70,6 +77,7 @@ beforeEach(() => {
   mockGetAccessToken.mockResolvedValue(null);
   mockRefreshAccessToken.mockResolvedValue(null);
   mockAuthGeneration.mockReturnValue(0);
+  mockReportEdgeBlock.mockReset();
 });
 
 afterEach(() => {
@@ -502,6 +510,59 @@ describe('429 and structured detail', () => {
   it('leaves the message alone when detail is a bare string', async () => {
     reply(json(500, { detail: 'Server error' }));
     await expect(api.get('/x')).rejects.toMatchObject({ message: 'Request failed with status code 500' });
+  });
+});
+
+describe('a refusal from in front of the server', () => {
+  const page = (headers: Record<string, string> = {}): Reply => ({
+    status: 403,
+    body: '<!DOCTYPE html><title>Attention Required!</title>',
+    headers: { 'content-type': 'text/html; charset=UTF-8', ...headers },
+  });
+
+  it('marks a 403 page as a content block and reports its route and ray id', async () => {
+    reply(page({ 'cf-ray': '8e0f1a2b3c4d5e6f-AAA' }));
+    const err = await failure(api.post('/api/v1/attachments/11111111-2222-4333-8444-555555555555/content', new FormData()));
+    expect(err.edgeBlocked).toBe('content');
+    expect(err.status).toBe(403);
+    expect(err.message).toMatch(/firewall/);
+    expect(mockReportEdgeBlock).toHaveBeenCalledWith('content', 'POST', '/api/v1/attachments/:id/:id', '8e0f1a2b3c4d5e6f-AAA');
+  });
+
+  it('tells a challenge apart, since a reload answers it', async () => {
+    reply(page({ 'cf-mitigated': 'challenge' }));
+    const err = await failure(api.post('/api/v1/threads/messages', {}));
+    expect(err.edgeBlocked).toBe('challenge');
+    expect(err.message).toMatch(/reload/i);
+    expect(mockReportEdgeBlock).toHaveBeenCalledWith('challenge', 'POST', '/api/v1/threads/:id', null);
+  });
+
+  it('reports no capability or name the path carries', async () => {
+    reply(page());
+    await failure(api.get('/api/v1/share-links/AbCdEfGhIjKl'));
+    await failure(api.post('/api/v1/mcp/vault/secrets/openai', {}));
+    expect(mockReportEdgeBlock.mock.calls.map((c) => c[2])).toEqual([
+      '/api/v1/share-links/:id',
+      '/api/v1/mcp/:id/:id/:id',
+    ]);
+  });
+
+  it('reports nothing for an account signed out while the request was out', async () => {
+    fetchMock.mockImplementation(async () => {
+      runAuthResets();
+      return new Response('<html></html>', { status: 403, headers: { 'content-type': 'text/html' } });
+    });
+    const err = await failure(api.post('/api/v1/attachments/x/content', {}));
+    expect(err.edgeBlocked).toBe('content');
+    expect(mockReportEdgeBlock).not.toHaveBeenCalled();
+  });
+
+  it("leaves the server's own 403, and a signed URL's, to their callers", async () => {
+    reply(json(403, { detail: 'Not allowed' }));
+    expect((await failure(api.get('/api/v1/workspaces/w1'))).edgeBlocked).toBeUndefined();
+    reply(page());
+    expect((await failure(api.putSigned('https://store.example.com/b/k?sig=1', new Blob(['x'])))).edgeBlocked).toBeUndefined();
+    expect(mockReportEdgeBlock).not.toHaveBeenCalled();
   });
 });
 
