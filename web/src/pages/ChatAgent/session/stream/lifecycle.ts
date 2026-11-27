@@ -6,6 +6,7 @@
  * via RecoveryDeps so this module never sees the full runtime.
  */
 
+import { edgeBlockOf } from '@/api/errors';
 import { finalizeAssistantMessage } from './finalizeMessage';
 import { holdsContent } from './continuedBubbles';
 import type { StreamEventProcessor } from './processStreamEvent';
@@ -647,9 +648,11 @@ export const reconnectToStream = async (
       console.error('[Reconnect] Error during reconnection:', err);
       // The error's own text is the transport's or a status line, which says
       // nothing the user can act on. A refused credential is the one failure
-      // a sign-in fixes.
-      const signedOut = status === 401 || status === 403;
-      rt.setMessageError({ message: rt.t(signedOut ? 'chat.reconnectSignedOut' : 'chat.reconnectFailed'), kind: 'notice' });
+      // a sign-in fixes; a firewall's 403 is not one.
+      const edge = edgeBlockOf(err);
+      const signedOut = !edge && (status === 401 || status === 403);
+      const key = edge ? `edgeBlock.${edge}` : signedOut ? 'chat.reconnectSignedOut' : 'chat.reconnectFailed';
+      rt.setMessageError({ message: rt.t(key), kind: 'notice' });
     }
   } finally {
     // Stop the idle watchdog (no-op when it already fired or was never armed).

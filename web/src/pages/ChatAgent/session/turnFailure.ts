@@ -5,6 +5,7 @@
  * fetch", "HTTP error! status: 500") is no message to show, and a failed
  * reply already says the request failed and offers Retry.
  */
+import { edgeBlockOf } from '@/api/errors';
 import type { AccountStanding } from '@/lib/accountRules';
 import { claudeCodeRefusal } from '@/lib/claudeCode';
 import { holdsDraft, othersTurnWords, readTurnRefusal } from '@/lib/turnRefusal';
@@ -88,6 +89,9 @@ export function readTurnFailure(err: unknown, { t, standing, workspaceId }: {
       errorInfo.type === 'model_removed' ? 'preferences' : null,
     );
   }
+  // Refused before the server saw it, so none of the server's 403s below apply.
+  const edge = edgeBlockOf(err);
+  if (edge) return answer(t(edge === 'content' ? 'chat.sendBlocked' : 'chat.sendChallenged'), false);
   if (errObj.status === 403) {
     return answer({ message: message || 'Access denied.', links: [{ url: '/setup/method', label: 'Configure providers' }] }, true);
   }

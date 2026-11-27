@@ -4,6 +4,7 @@
  */
 import type { useTranslation } from 'react-i18next';
 
+import { edgeBlockOf } from '@/api/errors';
 import { isPlatformMode } from '@/config/hostMode';
 import type { ResourceTier } from '@/types/api';
 
@@ -15,6 +16,9 @@ type Translate = ReturnType<typeof useTranslation>['t'];
 /** Map entitlement failures (403 plan-gate / 429 quota) to actionable copy in
  *  platform mode; generic API detail otherwise. */
 export function entitlementErrorMessage(err: unknown, t: Translate, tier?: ResourceTier): string {
+  // A firewall's 403 says nothing about the plan.
+  const edge = edgeBlockOf(err);
+  if (edge) return t(`edgeBlock.${edge}`);
   if (isPlatformMode) {
     const status = apiErrorStatus(err);
     if (status === 403) {

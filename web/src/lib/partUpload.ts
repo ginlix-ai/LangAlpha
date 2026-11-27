@@ -8,7 +8,7 @@
  * away while it is open.
  */
 import { api, ApiError, delay } from '@/api/client';
-import { apiErrorDetail, apiErrorDetailMessage, apiErrorStatus } from '@/api/errors';
+import { apiErrorDetail, apiErrorDetailMessage, apiErrorStatus, edgeBlockOf } from '@/api/errors';
 import { getAuthHeaders } from '@/lib/authToken';
 
 export interface SignedUploadPart {
@@ -57,11 +57,18 @@ export type UploadFailure =
   | { kind: 'tooLarge' }
   /** The server said no; `message` is what it said, shown as given. */
   | { kind: 'refused'; message: string | null }
+  /** Something in front of the server refused it, most likely for its content. */
+  | { kind: 'blocked' }
+  /** Something in front of the server stopped it until the page is reloaded. */
+  | { kind: 'challenged' }
   | { kind: 'unknown' };
 
 export function classifyUploadError(err: unknown): UploadFailure {
   if (err instanceof UploadSendError) return { kind: 'send' };
   if (err instanceof UploadRefusedError) return { kind: 'refused', message: err.reason };
+  const edge = edgeBlockOf(err);
+  if (edge === 'content') return { kind: 'blocked' };
+  if (edge === 'challenge') return { kind: 'challenged' };
   const detail = apiErrorDetail(err);
   if (typeof detail === 'string' && detail) return { kind: 'refused', message: detail };
   const message = apiErrorDetailMessage(err);

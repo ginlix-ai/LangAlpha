@@ -1,4 +1,5 @@
 import { noteIfSuspended } from '@/lib/accountSuspension';
+import { edgeBlockKind, noteEdgeBlock } from '@/lib/edgeBlock';
 
 /**
  * A thread's long-lived streams (the thread stream, a run's stream and the watch) refused on
@@ -25,9 +26,20 @@ export function noteThreadRefused(threadId: string, status: number | undefined, 
   listeners.forEach((listener) => listener(threadId));
 }
 
-/** The same for a stream's raw response, whose body it reads. */
-export async function noteThreadResponseRefused(threadId: string, res: Response): Promise<void> {
+/** The same for a stream's raw response, whose body it reads. `sameSession`
+ *  is the check taken before the request went out, since an edge block is
+ *  reported only for the account that sent it. */
+export async function noteThreadResponseRefused(
+  threadId: string, res: Response, sameSession: () => boolean,
+): Promise<void> {
   if (res.status !== 403 && res.status !== 404) return;
+  // A firewall's refusal says nothing about access to the thread. The
+  // thread's streams are all GETs.
+  const edge = edgeBlockKind(res.status, (name) => res.headers.get(name));
+  if (edge) {
+    if (sameSession()) noteEdgeBlock(edge, 'GET', res.url, res.headers.get('cf-ray'));
+    return;
+  }
   let detail: unknown = null;
   try {
     detail = ((await res.clone().json()) as { detail?: unknown } | null)?.detail ?? null;

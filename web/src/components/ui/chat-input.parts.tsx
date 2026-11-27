@@ -53,6 +53,8 @@ function ProgressRing({ percent }: { percent: number }) {
 const FAILURE_KEYS = {
   send: 'chat.composer.attachment.sendFailed',
   tooLarge: 'chat.composer.attachment.tooLarge',
+  blocked: 'chat.composer.attachment.blocked',
+  challenged: 'edgeBlock.challenge',
   refused: 'chat.composer.attachment.failed',
   unknown: 'chat.composer.attachment.failed',
 } as const satisfies Record<UploadFailure['kind'], string>;

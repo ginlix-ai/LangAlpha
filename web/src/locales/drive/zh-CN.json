@@ -291,6 +291,7 @@
     "entries_other": "{{count}} 项，上限 {{max}}"
   },
   "errors": {
+    "blocked": "被服务器前的防火墙拦下，多半是因为其中的内容。",
     "loadFailed": "加载失败，请检查网络后重试。",
     "notLoaded": "没能加载。",
     "slash": "名称里不能有 /。",

@@ -4,10 +4,12 @@
  * Package-internal — the barrel does not re-export streamFetch/postSSEStream.
  */
 import { api } from '@/api/client';
+import { authSessionCheck } from '@/lib/authResets';
 import { getAuthHeaders } from '@/lib/authToken';
 import { holdReload } from '@/lib/reloadHolds';
 import { RUN_STREAM_BEAT_MS, watchStreamSilence, type StreamSilenceWatch } from '@/lib/streamSilence';
 import { noteIfSuspended } from '@/lib/accountSuspension';
+import { edgeBlockKind, edgeBlockMessage, noteEdgeBlock, type EdgeBlockKind } from '@/lib/edgeBlock';
 
 export const baseURL = api.defaults.baseURL;
 
@@ -83,6 +85,7 @@ export async function streamFetch(
   // For a stream whose server keeps it alive; a replay just ends.
   keptAlive?: KeptAlive,
 ): Promise<StreamResult> {
+  const sameSession = authSessionCheck();
   let res: Response;
   try {
     res = await fetch(`${baseURL}${url}`, opts);
@@ -127,6 +130,14 @@ export async function streamFetch(
     if (res.status === 413) {
       const err: Error & { status?: number } = new Error('Files too large. Try smaller files or fewer attachments.');
       err.status = 413;
+      throw err;
+    }
+    const edge = edgeBlockKind(res.status, (name) => res.headers.get(name));
+    if (edge) {
+      if (sameSession()) noteEdgeBlock(edge, opts.method || 'GET', url, res.headers.get('cf-ray'));
+      const err: Error & { status?: number; edgeBlocked?: EdgeBlockKind } = new Error(edgeBlockMessage(edge));
+      err.status = res.status;
+      err.edgeBlocked = edge;
       throw err;
     }
     // Handle 404 specifically for history replay (expected for new threads)

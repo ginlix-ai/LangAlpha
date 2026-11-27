@@ -1,4 +1,8 @@
 {
+  "edgeBlock": {
+    "content": "A firewall in front of the server blocked this request, most likely because of what it contains.",
+    "challenge": "A firewall in front of the server stopped this request until the page is reloaded. Reload it and try again."
+  },
   "common": {
     "submit": "Submit",
     "staleBuild": {
@@ -1047,6 +1051,7 @@
         "failed": "Upload failed",
         "sendFailed": "Couldn't send the file. Check your connection.",
         "tooLarge": "This file is too large to attach.",
+        "blocked": "Blocked by a firewall, most likely because of what the file contains. Zip it and try again.",
         "uploadingLabel": "{{name}}, uploading, {{percent}}%",
         "failedLabel": "{{name}}, upload failed: {{error}}",
         "holdUploading_one": "Uploading {{count}} file…",
@@ -1107,6 +1112,8 @@
     "busyRunningSend": "Another reply was still running in this chat, so this message wasn't sent. Retry once it finishes.",
     "reconnectFailed": "Couldn't reconnect to this reply. Refresh to see where it stands.",
     "reconnectSignedOut": "You've been signed out. Sign in again to keep following this reply.",
+    "sendBlocked": "A firewall blocked this message, most likely because of something in it, such as pasted code or HTML.",
+    "sendChallenged": "A firewall stopped this message until the page is reloaded. Reload it and send again.",
     "historyLoadFailed": "This chat couldn't be loaded. Refresh to try again.",
     "editReplacesLater": "Messages after this one will be replaced and can't be recovered.",
     "errorHintApiKey": "Check that your API key is correct and hasn't been revoked.",

@@ -314,6 +314,7 @@
     "entries_other": "{{count}} items of {{max}}"
   },
   "errors": {
+    "blocked": "Blocked by a firewall in front of the server, most likely because of what it contains.",
     "loadFailed": "Could not load this. Check your connection and try again.",
     "notLoaded": "Could not load this.",
     "slash": "A name cannot contain /.",
