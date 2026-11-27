@@ -30,7 +30,9 @@ from ptc_agent.core.sandbox.runtime import (
     SessionCommandResult,
     SandboxProvider,
     SandboxRuntime,
+    SessionState,
 )
+from ptc_agent.core.sandbox.sessions import _preview_session_id
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +80,12 @@ def mock_runtime():
     runtime.create_session = AsyncMock()
     runtime.delete_session = AsyncMock()
     runtime.session_execute = AsyncMock(return_value="cmd-001")
-    runtime.session_command_logs = AsyncMock(
+    runtime.session_logs = AsyncMock(
         return_value=SessionCommandResult(
             cmd_id="cmd-001", exit_code=None, stdout="some output", stderr=""
         )
     )
+    runtime.list_sessions = AsyncMock(return_value=[])
     runtime.exec = AsyncMock()
     runtime.upload_file = AsyncMock()
     runtime.get_preview_url = AsyncMock(
@@ -129,14 +132,12 @@ class TestStartPreviewServer:
         mock_runtime.create_session.assert_called_once()
         # Verify the session is stored correctly
         assert 8080 in sandbox._preview_sessions
-        session_id, stored_cmd_id = sandbox._preview_sessions[8080]
-        assert session_id.startswith("preview-8080-")
-        assert stored_cmd_id == "preview-cmd-1"
+        assert sandbox._preview_sessions[8080].startswith("preview-8080-")
 
     @pytest.mark.asyncio
     async def test_stale_session_teardown(self, sandbox, mock_runtime):
         # Pre-populate a stale session for port 8080
-        sandbox._preview_sessions[8080] = ("preview-8080", "old-cmd")
+        sandbox._preview_sessions[8080] = "preview-8080"
 
         mock_runtime.session_execute.return_value = "new-cmd"
 
@@ -146,14 +147,13 @@ class TestStartPreviewServer:
         # delete_session should have been called for the stale session
         assert mock_runtime.delete_session.call_count >= 1
         # Verify updated preview sessions
-        assert sandbox._preview_sessions[8080][0].startswith("preview-8080-")
-        assert sandbox._preview_sessions[8080][1] == "new-cmd"
+        assert sandbox._preview_sessions[8080].startswith("preview-8080-")
 
     @pytest.mark.asyncio
     async def test_stale_session_cleanup_failure_continues(
         self, sandbox, mock_runtime
     ):
-        sandbox._preview_sessions[8080] = ("preview-8080", "old-cmd")
+        sandbox._preview_sessions[8080] = "preview-8080"
         # delete_session fails but we should continue
         mock_runtime.delete_session.side_effect = Exception("cleanup failed")
 
@@ -255,7 +255,7 @@ class TestStopPreviewServer:
 
     @pytest.mark.asyncio
     async def test_found_and_deleted(self, sandbox, mock_runtime):
-        sandbox._preview_sessions[8080] = ("preview-8080", "cmd-1")
+        sandbox._preview_sessions[8080] = "preview-8080"
         result = await sandbox.stop_preview_server(8080)
         assert result is True
         mock_runtime.delete_session.assert_called_once()
@@ -268,7 +268,7 @@ class TestStopPreviewServer:
 
     @pytest.mark.asyncio
     async def test_delete_fails_still_cleans_up(self, sandbox, mock_runtime):
-        sandbox._preview_sessions[8080] = ("preview-8080", "cmd-1")
+        sandbox._preview_sessions[8080] = "preview-8080"
         mock_runtime.delete_session.side_effect = Exception("network error")
 
         result = await sandbox.stop_preview_server(8080)
@@ -282,8 +282,8 @@ class TestGetPreviewServerLogs:
 
     @pytest.mark.asyncio
     async def test_entry_exists_returns_logs(self, sandbox, mock_runtime):
-        sandbox._preview_sessions[8080] = ("preview-8080", "cmd-1")
-        mock_runtime.session_command_logs.return_value = SessionCommandResult(
+        sandbox._preview_sessions[8080] = "preview-8080"
+        mock_runtime.session_logs.return_value = SessionCommandResult(
             cmd_id="cmd-1", exit_code=None, stdout="server started", stderr=""
         )
 
@@ -303,8 +303,8 @@ class TestGetPreviewServerLogs:
 
     @pytest.mark.asyncio
     async def test_logs_api_failure_returns_error_dict(self, sandbox, mock_runtime):
-        sandbox._preview_sessions[8080] = ("preview-8080", "cmd-1")
-        mock_runtime.session_command_logs.side_effect = Exception("API error")
+        sandbox._preview_sessions[8080] = "preview-8080"
+        mock_runtime.session_logs.side_effect = Exception("API error")
 
         result = await sandbox.get_preview_server_logs(8080)
         assert result["success"] is False
@@ -1044,12 +1044,20 @@ async def test_occupied_preview_port_never_returns_sibling_url(sandbox, mock_run
     mock_runtime.get_preview_url.assert_not_awaited()
 
 
+def _machine_has(mock_runtime, *session_ids: str, stopped: tuple[str, ...] = ()) -> None:
+    """The machine's own sessions, whichever worker started them."""
+    mock_runtime.list_sessions.return_value = [
+        SessionState(sid, running=True) for sid in session_ids
+    ] + [SessionState(sid, running=False) for sid in stopped]
+
+
 @pytest.mark.asyncio
 async def test_occupied_preview_port_reuses_the_owning_workspace_server(
     sandbox, mock_runtime
 ):
-    sandbox._preview_sessions[8080] = ("preview-8080", "cmd-1")
-    sandbox._preview_owners[8080] = "ws-1"
+    """No process remembers the session after a restart; the machine's
+    session list still names its workspace."""
+    _machine_has(mock_runtime, _preview_session_id(8080, "ws-1"))
     mock_runtime.exec.return_value = MagicMock(exit_code=0)
     with patch.object(sandbox, "_is_preview_reachable", AsyncMock(return_value=True)):
         result = await sandbox.start_and_get_preview_url(
@@ -1064,20 +1072,151 @@ async def test_occupied_preview_port_reuses_the_owning_workspace_server(
 async def test_occupied_preview_port_rejects_a_sibling_workspace(
     sandbox, mock_runtime
 ):
-    sandbox._preview_sessions[8080] = ("preview-8080", "cmd-1")
-    sandbox._preview_owners[8080] = "ws-1"
+    _machine_has(mock_runtime, _preview_session_id(8080, "ws-1"))
     mock_runtime.exec.return_value = MagicMock(exit_code=0)
     with pytest.raises(PreviewPortInUse, match="already in use"):
         await sandbox.start_and_get_preview_url(
             "python -m http.server 8080", 8080, owner="ws-2"
         )
     mock_runtime.get_preview_url.assert_not_awaited()
+    mock_runtime.delete_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_record_of_a_sibling_never_decides_the_port(
+    sandbox, mock_runtime
+):
+    """This process last saw ws-1 on the port; ws-2's app runs there now,
+    started by another worker."""
+    sandbox._preview_sessions[8080] = _preview_session_id(8080, "ws-1")
+    _machine_has(mock_runtime, _preview_session_id(8080, "ws-2"))
+    mock_runtime.exec.return_value = MagicMock(exit_code=0)
+    with patch.object(sandbox, "_is_preview_reachable", AsyncMock(return_value=True)):
+        result = await sandbox.start_and_get_preview_url(
+            "python -m http.server 8080", 8080, owner="ws-2"
+        )
+
+    assert result.url == "https://preview.example.com/signed"
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_names_no_owner_is_never_taken_on(sandbox, mock_runtime):
+    _machine_has(mock_runtime, "preview-8080-a46b34fc6737")
+    mock_runtime.exec.return_value = MagicMock(exit_code=0)
+    with pytest.raises(PreviewPortInUse, match="already in use"):
+        await sandbox.start_and_get_preview_url(
+            "python -m http.server 8080", 8080, owner="ws-1"
+        )
+    mock_runtime.delete_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_names_no_owner_beside_the_owners_refuses_the_port(
+    sandbox, mock_runtime
+):
+    """The owner's session may not have bound yet; what answers on the port
+    may be the unidentified one."""
+    _machine_has(
+        mock_runtime, "preview-8080-a46b34fc6737", _preview_session_id(8080, "ws-1")
+    )
+    mock_runtime.exec.return_value = MagicMock(exit_code=0)
+    with pytest.raises(PreviewPortInUse, match="already in use"):
+        await sandbox.start_and_get_preview_url(
+            "python -m http.server 8080", 8080, owner="ws-1"
+        )
+    mock_runtime.get_preview_url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_replaces_every_session_of_the_owner_on_the_port(
+    sandbox, mock_runtime
+):
+    """Another worker replaced the session this process started; both go, or
+    the one still running keeps the port and the new one dies binding it."""
+    stale = _preview_session_id(8080, "ws-1")
+    running = _preview_session_id(8080, "ws-1")
+    sandbox._preview_sessions[8080] = stale
+    _machine_has(mock_runtime, running)
+    await sandbox.start_preview_server("python app.py", 8080, owner="ws-1")
+
+    deleted = {c.args[0] for c in mock_runtime.delete_session.await_args_list}
+    assert deleted == {stale, running}
+    assert sandbox._preview_sessions[8080] not in deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "holder",
+    [_preview_session_id(8080, "ws-1"), "preview-8080-a46b34fc6737"],
+    ids=["sibling", "names-no-owner"],
+)
+async def test_a_restart_refuses_while_another_session_runs_on_the_port(
+    sandbox, mock_runtime, holder
+):
+    _machine_has(mock_runtime, holder)
+    with pytest.raises(PreviewPortInUse):
+        await sandbox.start_preview_server("python app.py", 8080, owner="ws-2")
+    mock_runtime.delete_session.assert_not_awaited()
+    mock_runtime.session_execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_deletes_the_owners_stopped_sessions(sandbox, mock_runtime):
+    """Every start mints a new id, so a stopped one another worker left is
+    deleted here or never."""
+    exited = _preview_session_id(8080, "ws-1")
+    _machine_has(mock_runtime, stopped=(exited,))
+    await sandbox.start_preview_server("python app.py", 8080, owner="ws-1")
+
+    mock_runtime.delete_session.assert_awaited_once_with(exited)
+
+
+@pytest.mark.asyncio
+async def test_a_siblings_stopped_session_leaves_the_port_free(sandbox, mock_runtime):
+    sibling = _preview_session_id(8080, "ws-1")
+    _machine_has(mock_runtime, stopped=(sibling,))
+    await sandbox.start_preview_server("python app.py", 8080, owner="ws-2")
+
+    mock_runtime.delete_session.assert_not_awaited()
+    mock_runtime.session_execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_occupied_port_with_only_a_stopped_session_of_the_owner_is_refused(
+    sandbox, mock_runtime
+):
+    """Something other than the owner's session answers there."""
+    _machine_has(mock_runtime, stopped=(_preview_session_id(8080, "ws-1"),))
+    mock_runtime.exec.return_value = MagicMock(exit_code=0)
+    with pytest.raises(PreviewPortInUse, match="already in use"):
+        await sandbox.start_and_get_preview_url(
+            "python -m http.server 8080", 8080, owner="ws-1"
+        )
+    mock_runtime.get_preview_url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", ["create_session", "session_execute"])
+@pytest.mark.parametrize("failure", [RuntimeError("lost reply"), asyncio.CancelledError()])
+async def test_a_launch_that_never_runs_its_command_deletes_its_session(
+    sandbox, mock_runtime, step, failure
+):
+    """A session with no command lists as running, and would hold the port
+    against every other workspace. A cancel or a lost reply can leave one
+    made by either call."""
+    getattr(mock_runtime, step).side_effect = failure
+    with pytest.raises(type(failure)):
+        await sandbox.start_preview_server("python app.py", 8080, owner="ws-1")
+
+    created = mock_runtime.create_session.await_args.args[0]
+    mock_runtime.delete_session.assert_awaited_once_with(created)
+    assert 8080 not in sandbox._preview_sessions
 
 
 @pytest.mark.asyncio
 async def test_failed_preview_command_never_returns_an_existing_server(sandbox, mock_runtime):
     mock_runtime.exec.side_effect = [MagicMock(exit_code=1), MagicMock(stdout="READY")]
-    mock_runtime.session_command_logs.return_value = SessionCommandResult(
+    mock_runtime.session_logs.return_value = SessionCommandResult(
         cmd_id="cmd-001", exit_code=1, stdout="", stderr="Address already in use"
     )
     with pytest.raises(RuntimeError, match="Address already in use"):
