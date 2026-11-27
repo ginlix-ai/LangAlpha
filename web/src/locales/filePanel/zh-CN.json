@@ -151,6 +151,7 @@
   "uploadFile": "上传文件",
   "cancelUpload": "取消上传",
   "uploadSendFailed": "文件未能发送。请检查网络连接后重试。",
+  "uploadBlocked": "文件被防火墙拦下，多半是因为文件内容。请压缩成 zip 后重试。",
   "away": {
     "retryMac": "现在连不上你的 Mac，请等它唤醒并联网后再试。",
     "retryNamed": "现在连不上 {{name}}，请等它开机并联网后再试。",

@@ -1,4 +1,8 @@
 {
+  "edgeBlock": {
+    "content": "服务器前的防火墙拦下了这个请求，多半是因为其中的内容。",
+    "challenge": "服务器前的防火墙暂时拦下了这个请求，刷新页面后再试。"
+  },
   "common": {
     "submit": "提交",
     "staleBuild": {
@@ -1037,6 +1041,7 @@
         "failed": "上传失败",
         "sendFailed": "文件没能发出去，请检查网络连接。",
         "tooLarge": "文件太大，无法添加。",
+        "blocked": "文件被防火墙拦下，多半是因为文件内容。请压缩成 zip 后重试。",
         "uploadingLabel": "{{name}}，正在上传，{{percent}}%",
         "failedLabel": "{{name}} 上传失败：{{error}}",
         "holdUploading_one": "还有 {{count}} 个文件在上传…",
@@ -1097,6 +1102,8 @@
     "busyRunningSend": "此对话中另一条回复仍在进行，此消息未发送。请在其完成后重试。",
     "reconnectFailed": "无法重新连接到此回复。请刷新查看最新进度。",
     "reconnectSignedOut": "您已退出登录。请重新登录以继续查看此回复。",
+    "sendBlocked": "这条消息被防火墙拦下了，多半是因为其中的内容，比如粘贴的代码或 HTML。",
+    "sendChallenged": "防火墙暂时拦下了这条消息，刷新页面后再发送。",
     "historyLoadFailed": "无法加载此对话，请刷新后重试。",
     "editReplacesLater": "此消息之后的内容将被替换，且无法恢复。",
     "errorHintApiKey": "请确认 API 密钥正确且未被撤销。",

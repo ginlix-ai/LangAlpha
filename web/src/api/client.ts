@@ -15,6 +15,7 @@ import { authSessionCheck } from '../lib/authResets';
 import { authGeneration, bearerTokenOf, getAccessToken, refreshAccessToken } from '../lib/authToken';
 import { trackRequest } from '../lib/reloadHolds';
 import { noteIfSuspended } from '../lib/accountSuspension';
+import { edgeBlockKind, edgeBlockMessage, noteEdgeBlock, type EdgeBlockKind } from '../lib/edgeBlock';
 
 const baseURL: string = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -82,6 +83,8 @@ export class ApiError extends Error {
   declare rateLimitInfo?: Record<string, unknown>;
   /** Seconds to wait before asking again, from `Retry-After` on a 429 or a 503. */
   declare retryAfter?: number | null;
+  /** Refused in front of the server (`lib/edgeBlock`), which never saw the request. */
+  declare edgeBlocked?: EdgeBlockKind;
 
   constructor(message: string, code: ErrorCode, response?: ApiResponse<unknown>) {
     const detail = (response?.data as { detail?: unknown } | null | undefined)?.detail;
@@ -218,7 +221,7 @@ function viaXhr(
 
 async function send(
   method: string, url: string, headers: Record<string, string>, body: XMLHttpRequestBodyInit | undefined,
-  config: RequestConfig,
+  config: RequestConfig, ours = true,
 ): Promise<ApiResponse> {
   const { signal, timeout, idleTimeout } = config;
   // One controller carries both the caller's abort and the deadlines, so the
@@ -262,6 +265,14 @@ async function send(
   const response: ApiResponse = { ...rest, headers: Object.fromEntries(rawHeaders) };
   const { status } = response;
   if (status >= 200 && status < 300) return response;
+  // Not for a signed URL: another origin's refusals are its own, and its path
+  // names the file.
+  const edge = ours ? edgeBlockKind(status, (name) => response.headers[name]) : null;
+  if (edge) {
+    const blocked = new ApiError(edgeBlockMessage(edge), 'ERR_BAD_REQUEST', response);
+    blocked.edgeBlocked = edge;
+    throw blocked;
+  }
   // Every route refuses a suspended account the same way: the shell turns
   // the whole app into that one state rather than each caller failing alone.
   if (status === 403) noteIfSuspended((response.data as { detail?: unknown } | null)?.detail);
@@ -348,6 +359,13 @@ async function request<T>(method: string, url: string, data: unknown, config: Re
   const settle = trackRequest(authGeneration());
   try {
     return await attempt();
+  } catch (e) {
+    // Reported only for the account that sent it: after a sign-out or a
+    // switch, Sentry already names the next one.
+    if (e instanceof ApiError && e.edgeBlocked && sameSession()) {
+      noteEdgeBlock(e.edgeBlocked, method, target, e.response?.headers['cf-ray']);
+    }
+    throw e;
   } finally {
     settle();
   }
@@ -387,5 +405,5 @@ export const api = {
    * in `config.headers`: the signature says what the request may carry, and a
    * bearer token has no business on another origin.
    */
-  putSigned: (url: string, body: Blob, config: RequestConfig = {}) => send('PUT', url, config.headers ?? {}, body, config),
+  putSigned: (url: string, body: Blob, config: RequestConfig = {}) => send('PUT', url, config.headers ?? {}, body, config, false),
 };

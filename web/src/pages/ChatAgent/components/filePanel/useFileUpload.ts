@@ -15,6 +15,10 @@ function uploadErrorMessage(err: unknown, file: globalThis.File, t: TFunction): 
     // something in front of it, whose limit this page cannot know.
     case 'tooLarge':
       return `File is too large to upload (${(file.size / (1024 * 1024)).toFixed(1)} MB).`;
+    case 'blocked':
+      return t('filePanel:uploadBlocked');
+    case 'challenged':
+      return t('edgeBlock.challenge');
     case 'refused':
       if (failure.message) return failure.message;
       break;

@@ -10,6 +10,7 @@
  * research. Breadcrumbs keep no console text and no request bodies.
  */
 
+import { registerAuthReset } from './authResets';
 import { pageIsTranslated } from './translatedDom';
 
 type SentryModule = typeof import('@sentry/react');
@@ -119,6 +120,8 @@ export function initSentry(entryUrl: string, isStaleBuildError: (error: unknown)
       sentry = mod;
       for (const { error, translated } of pendingAbsorbed) sendAbsorbed(mod, error, translated);
       pendingAbsorbed = [];
+      for (const block of pendingEdgeBlocks) sendEdgeBlock(mod, block);
+      pendingEdgeBlocks = [];
     }).catch(() => {
       // An ad blocker refusing the chunk or the ingest host is the user's call.
     });
@@ -131,6 +134,47 @@ export function initSentry(entryUrl: string, isStaleBuildError: (error: unknown)
 export function setSentryUser(id: string | null): void {
   userId = id;
   sentry?.setUser(id ? { id } : null);
+}
+
+type EdgeBlock = { kind: 'content' | 'challenge'; method: string; route: string; rayId: string | null };
+// Each kind, method and route once per page load: a page polling a blocked
+// route, or a challenged session, would otherwise send an event per request.
+const reportedEdgeBlocks = new Set<string>();
+// Blocks met before the SDK arrived, sent once it does.
+let pendingEdgeBlocks: EdgeBlock[] = [];
+// The last account's: what it was told, and what it has not sent yet.
+registerAuthReset(() => {
+  reportedEdgeBlocks.clear();
+  pendingEdgeBlocks = [];
+});
+
+/**
+ * A request something in front of the server refused (`lib/edgeBlock`). One
+ * issue per kind and route, so a firewall rule that starts catching a route
+ * shows as a new issue, with the edge's ray id to find the rule that fired.
+ * The route arrives redacted, since tags pass `beforeSend` as they are.
+ */
+export function reportEdgeBlock(kind: EdgeBlock['kind'], method: string, route: string, rayId: string | null): void {
+  const key = `${kind} ${method} ${route}`;
+  if (reportedEdgeBlocks.has(key)) return;
+  reportedEdgeBlocks.add(key);
+  const block = { kind, method, route, rayId };
+  if (sentry) sendEdgeBlock(sentry, block);
+  else pendingEdgeBlocks.push(block);
+}
+
+function sendEdgeBlock(mod: SentryModule, { kind, method, route, rayId }: EdgeBlock): void {
+  mod.withScope((scope) => {
+    scope.setTag('edge_block', kind);
+    scope.setTag('edge_route', `${method} ${route}`);
+    if (rayId) scope.setTag('cf_ray', rayId);
+    scope.setFingerprint(['edge-block', kind, method, route]);
+    scope.setLevel('error');
+    // The SDK's fetch breadcrumbs keep each request's whole path, the blocked
+    // one's included, which the route above was cut down to keep out.
+    scope.addEventProcessor((event) => ({ ...event, breadcrumbs: [] }));
+    mod.captureMessage(`Blocked in front of the server (${kind}): ${method} ${route}`);
+  });
 }
 
 /** For errors React caught in a boundary, which never reach the global handler. */

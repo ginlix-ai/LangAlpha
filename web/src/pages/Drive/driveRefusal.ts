@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 import { driveErrorMessage, driveErrorType } from '@/api/drive';
-import { apiErrorStatus } from '@/api/errors';
+import { apiErrorStatus, edgeBlockOf } from '@/api/errors';
 import { formatBytes } from '@/lib/format';
 import type { DriveUsage } from '@/types/drive';
 
@@ -84,6 +84,10 @@ export function driveRefusal(err: unknown, t: TFunction, ctx: RefusalContext): R
     }
     default:
       break;
+  }
+  const edge = edgeBlockOf(err);
+  if (edge) {
+    return { toast: { title: ctx.failed, description: t(edge === 'content' ? 'drive:errors.blocked' : 'edgeBlock.challenge') } };
   }
   // A 413 with no Drive body came from something in front of the server,
   // whose limit is its own: the Drive's would name the wrong one.

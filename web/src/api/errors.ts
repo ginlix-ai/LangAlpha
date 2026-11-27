@@ -131,3 +131,10 @@ export function isLastingRefusal(err: unknown): boolean {
 export function retryUnlessClientError(failureCount: number, err: unknown): boolean {
   return failureCount < 2 && !isClientError(err);
 }
+
+/** How something in front of the server refused the request (`lib/edgeBlock`),
+ *  as the API client and the stream transport mark it; null for anything else. */
+export function edgeBlockOf(err: unknown): 'content' | 'challenge' | null {
+  const kind = (err as { edgeBlocked?: unknown } | null)?.edgeBlocked;
+  return kind === 'content' || kind === 'challenge' ? kind : null;
+}

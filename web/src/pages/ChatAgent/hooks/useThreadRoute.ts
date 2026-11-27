@@ -9,7 +9,7 @@ import { leaveGoneWorkspace, sharedGoneNav } from '@/lib/sharedGone';
 import { onThreadRefused } from '@/lib/threadRefusals';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { useStableHandler } from '@/hooks/useStableHandler';
-import { apiErrorStatus } from '@/api/errors';
+import { apiErrorStatus, edgeBlockOf } from '@/api/errors';
 import type { Thread } from '@/types/api';
 import { threadDetailQuery } from '../utils/threadQueries';
 import { shouldLeaveThreadRoute } from '../utils/threadRouteGuard';
@@ -92,7 +92,9 @@ export function useThreadRoute({ threadId, urlWorkspaceId, namedWorkspaceId, las
   }), [queryClient, leaveSharedThread]);
   // A shared workspace's thread the viewer no longer reaches answers as no
   // thread at all, so a 404 after a read that showed it shared ends it too.
-  const sharedAccessEnded = !!thread?.shared && (accessDenied || apiErrorStatus(threadError) === 404);
+  // A firewall's 403 (`edgeBlocked`) says nothing about access, so it never ends it.
+  const sharedAccessEnded = !!thread?.shared && !edgeBlockOf(threadError)
+    && (accessDenied || apiErrorStatus(threadError) === 404);
   useEffect(() => {
     if (sharedAccessEnded && threadId) leaveSharedThread(threadId);
   }, [sharedAccessEnded, threadId, leaveSharedThread]);

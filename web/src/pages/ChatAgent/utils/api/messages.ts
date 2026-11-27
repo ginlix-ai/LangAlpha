@@ -2,6 +2,8 @@
  * Chat messaging: send/retry/HITL/cancel streams, workflow + report-back
  * status, thread watch, reconnect, turns, and the v2 thread mux.
  */
+import { edgeBlockOf } from '@/api/errors';
+import { authSessionCheck } from '@/lib/authResets';
 import { api } from '@/api/client';
 import type { ChartView } from '@/pages/MarketView/types/chartView';
 import type { ArtifactCommentSendFields, CommentSend, WorkflowRunStatus } from '@/types/api';
@@ -536,6 +538,7 @@ export function watchThread(
       for (let attempt = 0; attempt <= lastAttempt(); attempt++) {
         if (abort.signal.aborted) return;
         try {
+          const sameSession = authSessionCheck();
           const authHeaders = await getAuthHeaders();
           const res = await fetch(`${baseURL}/api/v1/threads/${threadId}/watch`, {
             method: 'GET',
@@ -556,7 +559,7 @@ export function watchThread(
           }
 
           if (!res.ok || !res.body) {
-            await noteThreadResponseRefused(threadId, res);
+            await noteThreadResponseRefused(threadId, res, sameSession);
             return;
           }
 
@@ -684,7 +687,8 @@ export async function reconnectToWorkflowStream(
     );
   } catch (err) {
     const { status, errorInfo } = err as { status?: number; errorInfo?: unknown };
-    noteThreadRefused(threadId, status, errorInfo);
+    // Reported by the transport; it says nothing about access to the thread.
+    if (!edgeBlockOf(err)) noteThreadRefused(threadId, status, errorInfo);
     throw err;
   }
 }
@@ -718,6 +722,7 @@ export async function openThreadMuxStream(
   openTurn = false,
 ): Promise<void> {
   if (!threadId) throw new Error('Thread ID is required');
+  const sameSession = authSessionCheck();
   const authHeaders = await getAuthHeaders();
   let qs = cursors ? `&cursors=${encodeURIComponent(cursors)}` : '';
   // Knowledge-horizon age: how far the client's snapshot/last-frame lags
@@ -734,7 +739,7 @@ export async function openThreadMuxStream(
     },
   );
   if (!res.ok) {
-    await noteThreadResponseRefused(threadId, res);
+    await noteThreadResponseRefused(threadId, res, sameSession);
     const err: Error & { status?: number } = new Error(
       `mux stream HTTP ${res.status}`,
     );

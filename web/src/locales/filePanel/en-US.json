@@ -155,6 +155,7 @@
   "uploadFile": "Upload file",
   "cancelUpload": "Cancel upload",
   "uploadSendFailed": "The file could not be sent. Check your connection and try again.",
+  "uploadBlocked": "Blocked by a firewall, most likely because of what the file contains. Zip it and try again.",
   "away": {
     "retryMac": "Can't reach your Mac right now. Try again once it's awake and online.",
     "retryNamed": "Can't reach {{name}} right now. Try again once it's on and online.",
