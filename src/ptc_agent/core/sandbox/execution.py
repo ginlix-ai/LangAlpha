@@ -431,8 +431,10 @@ async def start_bash_job(
     working_dir: str | None = None,
     wait_s: float | None,
     context: _jobs.JobContext = _jobs.JobContext(),
+    until: _jobs.Arrival | None = None,
 ) -> _jobs.JobOutcome:
-    """Run a bash command as a detached job and wait up to ``wait_s`` for it.
+    """Run a bash command as a detached job and wait up to ``wait_s`` for it,
+    or until ``until`` says something arrived.
 
     ``wait_s=0`` returns at once; None waits until it ends. The command runs
     as ``cd <working_dir> && <command>``, saved first as the thread's audit
@@ -484,7 +486,7 @@ async def start_bash_job(
             sandbox,
             handle,
             lambda: _jobs.run_job(
-                exec_fn, spec, wait_s, upload=_job_upload(sandbox), handle=handle
+                exec_fn, spec, wait_s, upload=_job_upload(sandbox), handle=handle, until=until
             ),
         )
     except _jobs.JobNotLaunched as e:
@@ -564,11 +566,13 @@ async def start_code_job(
     *,
     wait_s: float | None,
     context: _jobs.JobContext = _jobs.JobContext(),
+    until: _jobs.Arrival | None = None,
 ) -> _jobs.JobOutcome:
     """Run Python code as a detached job: saved to a file, run as ``python3``.
 
     A run that ended within the wait on a missing import installs it and runs
-    again, with what is left of the wait; one handed off is never rerun. A
+    again, with what is left of the wait; one still running when the wait
+    ends, or when ``until`` cut it short, is never rerun. A
     rerun is a job of its own, so the id and log are the outcome's, and its
     MCP calls follow the earlier attempts'.
     """
@@ -578,7 +582,7 @@ async def start_code_job(
     left = wait_s
     reruns = _INSTALL_RERUNS
     while True:
-        outcome = await _run_code(sandbox, code, left, context, carried)
+        outcome = await _run_code(sandbox, code, left, context, carried, until)
         if not isinstance(outcome, _jobs.Ended) or outcome.exit_code == 0 or not reruns:
             return outcome
         # Never the output: it carries what the code printed and what its
@@ -607,6 +611,7 @@ async def _run_code(
     wait_s: float | None,
     context: _jobs.JobContext,
     carried: tuple[dict, ...],
+    until: _jobs.Arrival | None = None,
 ) -> _jobs.JobOutcome:
     ref = _jobs.job_paths(
         sandbox.layout,
@@ -646,7 +651,7 @@ async def _run_code(
             sandbox,
             handle,
             lambda: _jobs.run_job(
-                exec_fn, spec, wait_s, upload=_job_upload(sandbox), handle=handle
+                exec_fn, spec, wait_s, upload=_job_upload(sandbox), handle=handle, until=until
             ),
         )
     except _jobs.JobNotLaunched as e:
@@ -663,18 +668,31 @@ async def _run_code(
 
 
 async def continue_job(
-    sandbox: "PTCSandbox", outcome: _jobs.Running, wait_s: float | None
+    sandbox: "PTCSandbox",
+    outcome: _jobs.Running,
+    wait_s: float | None,
+    *,
+    until: _jobs.Arrival | None = None,
 ) -> _jobs.JobOutcome:
     """Wait up to ``wait_s`` more on a job a start returned still running
-    (None: until it ends). A failure stops it; a cancel leaves it to the
-    caller, which holds it."""
+    (None: until it ends), or until ``until`` says something arrived. A
+    failure stops it; a cancel leaves it to the caller, which holds it."""
     await sandbox._wait_ready()
     exec_fn = _JobExec(sandbox)
     result = await _drive_job(
-        sandbox, outcome.handle, lambda: _jobs.continue_job(exec_fn, outcome, wait_s)
+        sandbox,
+        outcome.handle,
+        lambda: _jobs.continue_job(exec_fn, outcome, wait_s, until=until),
     )
     _record_duration(result)
     return result
+
+
+async def watch_job(sandbox: "PTCSandbox", outcome: _jobs.Running) -> None:
+    """Return once a job is no longer running, leaving its end unread.
+    Raises what an exec raises: the caller decides whether to watch again."""
+    await sandbox._wait_ready()
+    await _jobs.watch_job(_JobExec(sandbox), outcome)
 
 
 async def read_ended_job(sandbox: "PTCSandbox", outcome: _jobs.Running) -> _jobs.JobOutcome:

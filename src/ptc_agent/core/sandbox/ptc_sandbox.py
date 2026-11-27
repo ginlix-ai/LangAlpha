@@ -24,6 +24,7 @@ from ptc_agent.core.sandbox.platform_secrets import (
 from ptc_agent.core.sandbox.providers import create_provider
 from ptc_agent.core.sandbox.providers._image_recipe import builtin_mcp_packages
 from ptc_agent.core.sandbox.jobs import (
+    Arrival,
     Ended,
     Failed,
     JobContext,
@@ -1320,6 +1321,7 @@ class PTCSandbox:
         working_dir: str | None = None,
         wait_s: float | None,
         context: JobContext = JobContext(),
+        until: Arrival | None = None,
     ) -> JobOutcome:
         return await _execution.start_bash_job(
             self,
@@ -1327,6 +1329,7 @@ class PTCSandbox:
             working_dir=working_dir,
             wait_s=wait_s,
             context=context,
+            until=until,
         )
 
     async def run_foreground(self, spec: JobSpec, timeout: int) -> Ended | Failed:
@@ -1338,16 +1341,23 @@ class PTCSandbox:
         *,
         wait_s: float | None,
         context: JobContext = JobContext(),
+        until: Arrival | None = None,
     ) -> JobOutcome:
         return await _execution.start_code_job(
             self,
             code,
             wait_s=wait_s,
             context=context,
+            until=until,
         )
 
-    async def continue_job(self, outcome: Running, wait_s: float | None) -> JobOutcome:
-        return await _execution.continue_job(self, outcome, wait_s)
+    async def continue_job(
+        self, outcome: Running, wait_s: float | None, *, until: Arrival | None = None
+    ) -> JobOutcome:
+        return await _execution.continue_job(self, outcome, wait_s, until=until)
+
+    async def watch_job(self, outcome: Running) -> None:
+        await _execution.watch_job(self, outcome)
 
     async def read_ended_job(self, outcome: Running) -> JobOutcome:
         return await _execution.read_ended_job(self, outcome)
