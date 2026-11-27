@@ -6,6 +6,12 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.csv as pacsv
+
+
+def _member(z: zipfile.ZipFile, name: str) -> str:
+    return next(n for n in z.namelist() if n.rsplit("/", 1)[-1] == f"{name}.tsv")
 
 
 def read_table(path: Path, name: str) -> pd.DataFrame:
@@ -14,7 +20,7 @@ def read_table(path: Path, name: str) -> pd.DataFrame:
     if path.is_dir():
         return _read(lambda: (path / f"{name}.tsv").open("rb"), name)
     with zipfile.ZipFile(path) as z:
-        member = next(n for n in z.namelist() if n.rsplit("/", 1)[-1] == f"{name}.tsv")
+        member = _member(z, name)
         return _read(lambda: z.open(member), name)
 
 
@@ -56,6 +62,19 @@ def _quote_ran_on(f, rows: int) -> bool:
             return False
         lines += 1
     return lines > rows
+
+
+def read_arrow_table(path: Path, name: str, column_types: dict[str, pa.DataType]) -> pa.Table:
+    """The columns of column_types of table name, in those Arrow types, cells split and unquoted as read_table
+    splits them (a quoted cell may hold a tab or a line break) and empty cells null."""
+    options = dict(
+        parse_options=pacsv.ParseOptions(delimiter="\t", newlines_in_values=True),
+        convert_options=pacsv.ConvertOptions(column_types=column_types, include_columns=list(column_types),
+                                             null_values=[""], strings_can_be_null=True))
+    if path.is_dir():
+        return pacsv.read_csv(path / f"{name}.tsv", **options)
+    with zipfile.ZipFile(path) as z, z.open(_member(z, name)) as f:
+        return pacsv.read_csv(f, **options)
 
 
 def sec_date(s: pd.Series) -> pd.Series:

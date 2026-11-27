@@ -12,6 +12,8 @@ dependencies = [
     "edgartools>=5.62.1,<7",
     "lxml>=5.3",
     "pandas>=2.2",
+    # The 13F data set reader parses with Arrow's CSV reader and string kernels.
+    "pyarrow>=14",
 ]
 
 [build-system]
