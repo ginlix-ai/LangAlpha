@@ -16,7 +16,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from psycopg.rows import dict_row
 
@@ -255,6 +255,24 @@ async def _visibility(cur, thread_id: str) -> Optional[Visibility]:
     )
     row = await cur.fetchone()
     return Visibility(**row) if row else None
+
+
+async def is_live(thread_id: str, *, conn: Any = None) -> bool:
+    """Whether the thread exists in a workspace not deleted, read on ``conn``
+    when the caller holds one."""
+    thread_id = normalize_uuid(thread_id)
+    if thread_id is None:
+        return False
+    if conn is None:
+        async with pool.get_db_connection() as own:
+            return await is_live(thread_id, conn=own)
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM conversation_threads t JOIN workspaces w ON w.workspace_id = t.workspace_id"
+            " WHERE t.conversation_thread_id = %s AND w.status <> 'deleted'",
+            (thread_id,),
+        )
+        return await cur.fetchone() is not None
 
 
 async def titled(

@@ -115,21 +115,24 @@ def get_checkpointer():
     return checkpointer
 
 
-async def read_claude_session(thread_id: str, checkpoint_id: str | None) -> dict:
-    """Claude's session records at ``checkpoint_id`` (the newest when None),
-    replayed from the checkpoints' writes: the channel keeps no value of its
-    own in a checkpoint, so a raw read of one has none."""
-    from langgraph.graph import START, StateGraph
-
+async def read_claude_session(
+    thread_id: str, checkpoint_id: str | None, checkpoint_ns: str = ""
+) -> dict:
+    """Claude's session records at ``checkpoint_id`` (the newest when None)
+    in ``checkpoint_ns``, the thread's or a task lane's, replayed from the
+    checkpoints' writes: the channel keeps no value of its own in a
+    checkpoint, so a raw read of one has none."""
     from ptc_agent.agent.claude_code.session import SessionState
-
-    graph = (
-        StateGraph(SessionState)
-        .add_node("noop", lambda state: {})
-        .add_edge(START, "noop")
-        .compile(checkpointer=get_checkpointer())
+    from ptc_agent.agent.middleware.background_subagent.workflow.ui_snapshot import (
+        task_namespace_graph,
     )
-    snapshot = await graph.aget_state(build_checkpoint_config(thread_id, checkpoint_id))
+
+    # Reads the thread's own namespace as a plain graph would, and a lane's
+    # through the child it registers.
+    graph = task_namespace_graph(SessionState, get_checkpointer())
+    config = build_checkpoint_config(thread_id, checkpoint_id)
+    config["configurable"]["checkpoint_ns"] = checkpoint_ns
+    snapshot = await graph.aget_state(config)
     return snapshot.values.get("claude_session") or {}
 
 

@@ -227,6 +227,14 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         )
         if task.ask is not None:
             run_on = replace(run_on, ask=task.ask)
+        ledger = getattr(self.registry, "run_ledger", None)
+        if cause == "resume" and ledger is not None:
+            # A task a forked chat carries runs on from its lane at the
+            # carried runs' end, written here before anything reads the lane,
+            # through the fence this run holds on it.
+            await self._through_ledger(
+                task, cause, ledger.carry_task_lane(task.task_id, self.namespace_owner)
+            )
         if (
             cause == "resume"
             and run_on.claude_code is not None
@@ -235,11 +243,12 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             await self._release_task_ns(task.task_id)
             raise TaskRunRefused(OTHER_MODEL_TASK_REFUSAL, final=True)
 
-        ledger = getattr(self.registry, "run_ledger", None)
         if ledger is None:
             return ""
-        try:
-            return await ledger.start_task_run(
+        return await self._through_ledger(
+            task,
+            cause,
+            ledger.start_task_run(
                 task_id=task.task_id,
                 cause=cause,
                 description=description,
@@ -251,7 +260,14 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 # one that launched it, which a workflow's child (no parent)
                 # carries too.
                 spending_run_id=parent_run_id or task.spawned_run_id,
-            )
+            ),
+        )
+
+    async def _through_ledger(self, task: BackgroundTask, cause: str, call: Awaitable[Any]) -> Any:
+        """``call``'s answer, or the run refused with its fence released when
+        the ledger refuses it or cannot answer."""
+        try:
+            return await call
         except TaskRunRejected as e:
             logger.warning(
                 "task-run admission rejected",
@@ -576,12 +592,18 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 }
             }
             checkpoint_tuple = await self.checkpointer.aget_tuple(config)
-            if not checkpoint_tuple and not running_elsewhere:
-                return None
-
             metadata = (
                 checkpoint_tuple.metadata if checkpoint_tuple else None
             ) or {}
+            if not checkpoint_tuple and not running_elsewhere:
+                # A task a forked chat carries keeps its lane in the chat it
+                # came from until a resume writes it here; its ledger row
+                # says what it is.
+                ledger = getattr(self.registry, "run_ledger", None)
+                metadata = await ledger.carried_task(task_id) if ledger is not None else None
+                if not metadata:
+                    return None
+
             subagent_type = metadata.get("subagent_type") or (meta or {}).get(
                 "subagent_type", "general-purpose"
             )

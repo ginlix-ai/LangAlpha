@@ -418,6 +418,29 @@ class SubagentRunCoordinator:
         through this injected port, never via server DB imports."""
         return await sr_db.mark_result_delivered(task_run_id)
 
+    async def carry_task_lane(self, task_id: str, fence: Any = None) -> None:
+        """Boundary adapter: before a resume, write the lane of a task this
+        thread carries from the chat it was forked from into the thread
+        (``forks.tasks``), through ``fence``, the run's namespace owner
+        holding the task's fence. Raises ``TaskRunRejected`` when that lane
+        is gone, so the task cannot go on here."""
+        from src.server.services.forks.tasks import LANE_GONE, LaneGone, carry_task_lane
+
+        try:
+            await carry_task_lane(self.thread_id, task_id, fence)
+        except LaneGone:
+            raise TaskRunRejected(LANE_GONE, final=True) from None
+
+    async def carried_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """The ledger row of a task this thread carries without its lane, for
+        a resume after a restart to rebuild the task from: the lane's
+        checkpoints it would read that from are not in this thread."""
+        from src.server.services.forks.tasks import carried_lane
+
+        if await carried_lane(self.thread_id, task_id) is None:
+            return None
+        return await sr_db.get_task(self.thread_id, task_id)
+
     async def get_latest_run(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Latest-chain run row for a task, or None (pre-ledger/unknown).
 

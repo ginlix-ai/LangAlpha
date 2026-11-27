@@ -341,21 +341,29 @@ class CheckpointHistoryReader:
     async def aget_task_history(
         self, thread_id: str, task_id: str
     ) -> TaskHistory:
-        """Materialize replay-relevant state from a ``task:{task_id}`` namespace."""
-        snapshot = await self.graph.aget_state(
-            {
-                "configurable": {
-                    "thread_id": thread_id,
-                    "checkpoint_ns": f"task:{task_id}",
-                }
-            }
-        )
-        return TaskHistory(
-            checkpoint_id=(snapshot.config or {})
-            .get("configurable", {})
-            .get("checkpoint_id"),
-            **vars(slices.delta({}, snapshot.values)),
-        )
+        """Materialize replay-relevant state from a ``task:{task_id}`` namespace.
+
+        A fork that carries the task but holds none of its lane reads it
+        where it lives, at the carried runs' end, its records naming the
+        fork's runs, while its maker can still open it (``forks.tasks``)."""
+        from src.server.services.forks.tasks import carried_lane
+
+        snapshot = await self.aget_task_state(thread_id, task_id)
+        values = snapshot.values
+        checkpoint_id = (snapshot.config or {}).get("configurable", {}).get("checkpoint_id")
+        if checkpoint_id is None and (lane := await carried_lane(thread_id, task_id)) and await lane.readable():
+            checkpoint_id, values = lane.task.checkpoint_id, await lane.values()
+        return TaskHistory(checkpoint_id=checkpoint_id, **vars(slices.delta({}, values)))
+
+    async def aget_task_state(
+        self, thread_id: str, task_id: str, checkpoint_id: str | None = None
+    ) -> Any:
+        """The ``task:{task_id}`` lane's state, at ``checkpoint_id`` or its
+        newest."""
+        configurable = {"thread_id": thread_id, "checkpoint_ns": f"task:{task_id}"}
+        if checkpoint_id:
+            configurable["checkpoint_id"] = checkpoint_id
+        return await self.graph.aget_state({"configurable": configurable})
 
     async def alatest_checkpoint_id(
         self, thread_id: str, checkpoint_ns: str = ""

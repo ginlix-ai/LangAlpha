@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal, Optional
 
 from src.server.database.conversation.replay_rows import (
     BorrowedRows,
@@ -80,20 +80,22 @@ async def segment_states(
             if reader is None:
                 readable = await served_on_computer(segment.thread_id)
             else:
-                readable = await _reaches(segment.thread_id, reader)
+                readable = await reaches(segment.thread_id, reader)
             return (await read_segment(segment, readable=readable))[0]
 
     states = await asyncio.gather(*(state(s) for s in segments))
     return {s.thread_id: found for s, found in zip(segments, states)}
 
 
-async def _reaches(thread_id: str, reader: str) -> bool:
+async def reaches(thread_id: str, reader: str, *, meta: Optional[dict[str, Any]] = None) -> bool:
+    """Whether ``reader`` may read ``thread_id`` now, from ``meta`` when the
+    caller already read it."""
     from fastapi import HTTPException
 
     from src.server.services.shared_workspaces.access import thread_access
 
     try:
-        await thread_access(thread_id, reader)
+        await thread_access(thread_id, reader, meta=meta)
     except HTTPException:
         return False
     return True

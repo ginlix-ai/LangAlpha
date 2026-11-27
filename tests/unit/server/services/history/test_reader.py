@@ -342,6 +342,10 @@ async def test_project_task_transcript_serves_unprojected_lanes(monkeypatch):
     # children have no Task-tool launch artifact): the endpoint's projection
     # must emit the same SSE-shaped items as the lane projector, tagged with
     # the task's agent id.
+    # A thread that is no fork carries no task from elsewhere.
+    monkeypatch.setattr(
+        "src.server.services.forks.tasks.carried_lane", AsyncMock(return_value=None)
+    )
     saver = InMemorySaver()
     graph = _echo_graph(saver)
     await _run_turns(graph, 1)

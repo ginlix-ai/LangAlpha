@@ -617,3 +617,59 @@ async def test_a_task_finishing_mid_export_ends_stored_finished(
     assert load_manifest(stored.manifest)["status"] == "completed"
     assert not await transcripts.behind_in_store([(thread.id, CP_OLD)])
     assert counts == [{"stored": 0, "failed": 0}, {"stored": 1, "failed": 0}]
+
+
+# -- tasks a fork carries ------------------------------------------------------
+
+
+@pytest.mark.parametrize("own", ["lane", "run"])
+async def test_a_task_a_fork_carries_is_rendered_where_its_lane_lives(thread, test_db_pool, own):
+    """A fork's carried task is read in the thread holding its lane, so the
+    fork renders no copy of it until it holds the lane itself: a resume wrote
+    it in, whether or not a run of its own followed."""
+    import json
+    from unittest.mock import patch
+
+    from langgraph.checkpoint.base import empty_checkpoint
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    from src.server.app import setup
+    from src.server.database.runs import subagent_runs
+    from src.server.services.transcripts import behind_in_store
+
+    carried = str(uuid.uuid4())
+    await subagent_runs.start_task_run(
+        task_run_id=carried, thread_id=thread.id, task_id="k1", cause="init"
+    )
+    await subagent_runs.finalize_task_run(
+        task_run_id=carried, status="completed", final_checkpoint_id=CP_OLD
+    )
+    lane = {"task_id": "k1", "thread_id": str(uuid.uuid4()), "checkpoint_id": CP_OLD,
+            "runs": {carried: str(uuid.uuid4())}}
+    async with test_db_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE conversation_threads SET metadata = %s::jsonb WHERE conversation_thread_id = %s",
+            (json.dumps({"fork": {"borrow": {"task_lanes": [lane]}}}), thread.id),
+        )
+    saver = AsyncPostgresSaver(test_db_pool)
+    with patch.object(setup, "checkpointer", saver):
+        (behind,) = await behind_in_store([(thread.id, None)])
+        assert "k1" not in behind.tasks and TASK not in behind.agents
+
+        if own == "lane":
+            async with test_db_pool.connection() as conn:
+                await conn.execute(
+                    "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata)"
+                    " VALUES (%s, 'task:k1', %s, %s::jsonb, '{}'::jsonb)",
+                    (thread.id, CP_OLD, json.dumps(empty_checkpoint())),
+                )
+        else:
+            await subagent_runs.start_task_run(
+                task_run_id=str(uuid.uuid4()), thread_id=thread.id, task_id="k1",
+                cause="resume", predecessor_run_id=carried,
+            )
+        try:
+            (behind,) = await behind_in_store([(thread.id, None)])
+            assert "k1" in behind.tasks and TASK in behind.agents
+        finally:
+            await saver.adelete_thread(thread.id)

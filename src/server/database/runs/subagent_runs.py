@@ -1156,7 +1156,9 @@ async def count_open_runs_for_thread(thread_id: str, conn=None) -> int:
 
 
 async def list_thread_tasks(thread_ids: list[str]) -> List[Dict[str, Any]]:
-    """Every task of the given threads with its latest run, oldest first."""
+    """Every task of the given threads with its latest run, oldest first.
+    ``borrowed`` marks a task whose latest run is one a fork carried, its
+    history read in the thread that holds it (``forks.tasks``)."""
     if not thread_ids:
         return []
     async with pool.get_db_connection() as conn:
@@ -1165,9 +1167,18 @@ async def list_thread_tasks(thread_ids: list[str]) -> List[Dict[str, Any]]:
                 """
                 SELECT t.thread_id, t.task_id, t.description, t.subagent_type,
                        t.created_at, r.task_run_id AS latest_run_id, r.status,
-                       r.launch_tool_call_id, r.final_checkpoint_id, r.finalized_at
+                       r.launch_tool_call_id, r.final_checkpoint_id, r.finalized_at,
+                       EXISTS (
+                           SELECT 1
+                           FROM jsonb_array_elements(
+                               COALESCE(c.metadata->'fork'->'borrow'->'task_lanes', '[]'::jsonb)
+                           ) lane
+                           WHERE lane->>'task_id' = t.task_id
+                             AND lane->'runs' ? r.task_run_id::text
+                       ) AS borrowed
                 FROM subagent_tasks t
                 LEFT JOIN subagent_runs r ON r.task_run_id = t.latest_run_id
+                LEFT JOIN conversation_threads c ON c.conversation_thread_id = t.thread_id
                 WHERE t.thread_id = ANY(%s::uuid[])
                 ORDER BY t.created_at
                 """,

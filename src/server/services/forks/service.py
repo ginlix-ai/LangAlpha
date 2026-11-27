@@ -4,7 +4,8 @@ The fork holds one checkpoint, the agent's state at the cut
 (``materialize.py``), and none of the turns before it: it shows those from
 the threads that hold them (``Borrowing.ancestors``) and numbers its own
 turns on from theirs (``Borrowing.turn_base``). Background tasks the kept turns
-finished are copied whole, so the forked agent can resume them.
+finished come as ledger rows, their lanes read where they live
+(``Borrowing.task_lanes``), so the forked agent can resume them.
 
 The fork starts no turn. A caller that wants one sends it to the new thread
 like any other message, so admission, billing and streaming stay the send
@@ -45,6 +46,7 @@ from src.server.services.forks.model import (
     stale_refusal,
 )
 from src.server.services.forks.snapshot import Snapshot, take_snapshot
+from src.server.services.forks.tasks import task_lanes
 from src.server.services.shared_workspaces.access import thread_access
 
 logger = logging.getLogger(__name__)
@@ -75,7 +77,8 @@ async def fork_thread(req: ForkRequest) -> ForkResult:
             if snapshot.checkpoint_id
             else None
         )
-        lineage = _lineage(req, snapshot, plan, cut, source)
+        held_here = await _lanes_held(req.source_thread_id, snapshot.source_borrow, plan)
+        lineage = _lineage(req, snapshot, plan, cut, source, held_here)
         # The checkpoints commit on their own connection unless they share
         # the app's database (the writer guard's condition). Decided before
         # that commit, which can land and still raise.
@@ -126,6 +129,7 @@ def _lineage(
     plan: thread_fork.LedgerPlan,
     cut: Optional[materialize.CutState],
     source: dict[str, Any],
+    held_here: frozenset[str],
 ) -> ForkLineage:
     """The fork's lineage: its own turns number on from the cut, and it
     borrows its source's borrowed turns and then the source's own up to the
@@ -176,8 +180,26 @@ def _lineage(
             checkpoint_id=snapshot.checkpoint_id,
             ancestors=tuple(ancestors),
             head=head,
+            task_lanes=task_lanes(req.source_thread_id, plan, inherited, held_here),
         ),
     )
+
+
+async def _lanes_held(
+    source_thread_id: str, inherited: Optional[Borrowing], plan: thread_fork.LedgerPlan
+) -> frozenset[str]:
+    """The carried tasks whose lane the source itself holds, written there
+    by a resume: only a task the source borrows can be read elsewhere."""
+    borrowed = [
+        task["task_id"]
+        for task, _ in plan.tasks
+        if inherited is not None and inherited.task_lane(task["task_id"]) is not None
+    ]
+    if not borrowed:
+        return frozenset()
+    async with materialize.checkpointer_pool().connection() as conn:
+        held = await thread_fork.lanes_held(conn, [(source_thread_id, t) for t in borrowed])
+    return frozenset(task_id for _, task_id in held)
 
 
 def _source_check(snapshot: Snapshot) -> dict[str, Any]:
@@ -230,7 +252,7 @@ async def _write_checkpoints(
     if cut is not None:
         checkpoint = cut.checkpoint
         await thread_fork.write_snapshot(cp, thread_id, checkpoint)
-        await thread_fork.copy_cut_blobs(
+        await thread_fork.copy_blobs(
             cp, source_thread_id=source_thread_id, target_thread_id=thread_id, cut=checkpoint
         )
         await thread_fork.copy_cut_writes(
@@ -240,13 +262,6 @@ async def _write_checkpoints(
             checkpoint_id=checkpoint.checkpoint_id,
             run_map=plan.run_map,
         )
-    await thread_fork.copy_checkpoint_chains(
-        cp,
-        source_thread_id=source_thread_id,
-        target_thread_id=thread_id,
-        tips=plan.task_tips,
-        run_map=plan.run_map,
-    )
 
 
 async def _write_thread(
