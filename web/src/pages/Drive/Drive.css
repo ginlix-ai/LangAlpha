@@ -474,6 +474,8 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Its own ground, so the pane slides over the list as a sheet rather than a pane of glass. */
+  background-color: var(--color-bg-page);
 }
 .drive-file-top {
   flex-shrink: 0;
@@ -577,12 +579,31 @@
 }
 /* A wait shows only once a read outlasts an entrance: what arrives at once
    goes straight from the last view to itself, with no placeholder between. */
+.drive-loading,
+.drive-rows-skeleton {
+  animation: drive-fade-in var(--motion-enter) var(--ease-out) var(--motion-enter) backwards;
+}
 .drive-loading {
   display: flex;
   justify-content: center;
   padding: 48px 16px;
-  animation: drive-fade-in var(--motion-enter) var(--ease-out) var(--motion-enter) both;
 }
+/* A list still being read, in its rows' own shape. */
+.drive-rows-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.drive-skeleton-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  font-size: 0.8125rem;
+}
+.drive-skeleton-icon { width: 16px; height: 16px; margin-top: 1px; flex-shrink: 0; }
+.drive-skeleton-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.drive-skeleton-sub { font-size: 0.6875rem; line-height: 1rem; }
 /* What a pane shows arrives with a short fade rather than a cut. */
 .drive-viewer,
 .drive-extract,

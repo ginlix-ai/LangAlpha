@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { objectUrlAt } from '@/api/drive';
@@ -24,6 +24,7 @@ import { driveLinkPath, drivePathKey, followMove, isWithinKey, linkedFile, paren
 import { fileAddress, memoState, resolveFileView } from './memoMarks';
 import { useDriveActions } from './useDriveActions';
 import { useDriveEditor } from './useDriveEditor';
+import { useDriveMove } from './useDriveMove';
 import { useDriveUpload } from './useDriveUpload';
 import './Drive.css';
 // After Drive.css: its memo rules override shared ones of the same weight.
@@ -57,10 +58,10 @@ function Drive() {
   const space = current ? spaceRef(current) : null;
   const usage = current?.usage ?? null;
   // Beside the memo list, a file opened from it, or moved while open, keeps the list in view.
+  const placeOf = (next: DriveLocation): DriveLocation => ({ ...next, memos: next.memos ?? (!!next.file && loc.memos) });
   const hrefFor = (next: DriveLocation) => driveHref({
     space: current && current.kind !== 'personal' ? current.id : null,
-    ...next,
-    memos: next.memos ?? (!!next.file && loc.memos),
+    ...placeOf(next),
   });
 
   const list = useDriveList(space, dir);
@@ -92,10 +93,11 @@ function Drive() {
     editor.close();
     then?.();
   };
+  const move = useDriveMove({ space, at: loc, mobile });
   const go = (to: DriveLocation, opts: { replace?: boolean } = {}) => {
-    const href = hrefFor(to);
-    if (editor.session && to.file !== file) leaveEditor(() => navigate(href, opts));
-    else navigate(href, opts);
+    const land = () => move(placeOf(to), hrefFor(to), opts);
+    if (editor.session && to.file !== file) leaveEditor(land);
+    else land();
   };
 
   // A page tab switched or closed asks the same, since a route change fires
@@ -109,6 +111,25 @@ function Drive() {
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [editor.dirty]);
+
+  // Escape puts an open file away, as it closes any other panel. Not while
+  // editing (the editor keeps its own keys), nor over a dialog or a menu,
+  // which Escape closes first.
+  const closeFile = () => go(loc.memos ? { memos: true } : { dir });
+  const onEscape = useEffectEvent(closeFile);
+  const fileOpen = !loc.trash && !!file;
+  useEffect(() => {
+    if (!fileOpen || editor.session) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], .monaco-editor')) return;
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;
+      onEscape();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fileOpen, editor.session]);
 
   const onMoved = (from: string, to: string) => {
     // Matched as the server matches names, since the URL may spell them otherwise.
@@ -183,7 +204,7 @@ function Drive() {
       go={go}
       leaveEditor={leaveEditor}
       backTo={loc.memos ? 'memos' : 'folder'}
-      back={() => go(loc.memos ? { memos: true } : { dir: file ? parentOf(file) : dir })}
+      back={closeFile}
       trash={(target) => void trash(target)}
       open={(target) => go(target.kind === 'folder' ? { dir: target.path } : { file: target.path })}
     >

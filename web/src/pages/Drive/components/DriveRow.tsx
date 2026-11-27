@@ -15,6 +15,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { usePrefetchDriveList } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { formatBytes, mediumDate, relativeTime } from '@/lib/format';
@@ -51,7 +52,8 @@ export function DriveRow({ entry, compact, active, drop }: {
   const { t } = useTranslation();
   const locale = useLocale();
   const now = useNow();
-  const { open, ask, trash } = useDriveContext();
+  const { space, open, ask, trash } = useDriveContext();
+  const prefetchList = usePrefetchDriveList();
   const folder = entry.kind === 'folder';
   const state = memoState(entry);
   const when = relativeTime(entry.modified_at, locale, now);
@@ -89,6 +91,8 @@ export function DriveRow({ entry, compact, active, drop }: {
             className="drive-row-main"
             onClick={() => open(entry)}
             onKeyDown={onKeyDown}
+            // A folder is read from the press, a click's length ahead of its open.
+            onPointerDown={folder && space ? (e) => { if (e.button === 0) void prefetchList(space, entry.path); } : undefined}
             {...drop.sourceProps(entry)}
             aria-current={active ? 'true' : undefined}
           >

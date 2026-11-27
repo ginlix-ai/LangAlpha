@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Folder, FolderPlus, FolderUp, Trash2, Upload } from 'lucide-react';
-import { HeaderButton, ListError, ListSkeleton } from '@/components/mcp/McpPrimitives';
+import { HeaderButton, ListError } from '@/components/mcp/McpPrimitives';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,6 +19,7 @@ import { crumbsOf, drivePathKey, nameOf, sortEntries, type SortKey } from '../dr
 import { carriesRow, useDriveDrop, type DriveDrop } from '../useDriveDrop';
 import { pickedFiles, type PickedFile } from '../useDriveUpload';
 import { DriveRow } from './DriveRow';
+import { RowsSkeleton } from './RowsSkeleton';
 import { DriveViews } from './DriveViews';
 import { PaneAction, PaneFrame } from './PaneFrame';
 
@@ -261,7 +262,12 @@ export function DriveList({ dir, entries, loading, error, openPath, compact, usa
       </div>
     );
   } else if (loading) {
-    body = <div className="drive-pane-pad" aria-busy="true"><ListSkeleton rows={6} /></div>;
+    body = (
+      <>
+        {!compact && <Columns sort={sort} onSort={setSort} />}
+        <RowsSkeleton compact={compact} />
+      </>
+    );
   } else if (sorted.length === 0) {
     body = (
       <div className="drive-pane-pad">

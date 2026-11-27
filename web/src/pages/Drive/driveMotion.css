@@ -1,0 +1,114 @@
+/* The page's motion between its layouts, run by driveMotion.ts; `drive-fade-in`
+   is Drive.css's. */
+
+/* ====== Opening and closing a file ======
+   One view transition, named only while it runs, under the flag on <html>: a
+   name that outlasted it would leave its element a stacking context. On a
+   desktop the list's parts travel from where the wide list drew them to the
+   column beside the file, and the file comes in from the right; closing it
+   runs the other way. Snapshots are pinned at their top-left corner and
+   clipped by their box rather than stretched with it, so text that changes
+   width travels and fades instead of squashing. */
+html:is([data-drive-motion='open'], [data-drive-motion='close']) .drive-page .drive-title { view-transition-name: drive-title; }
+html:is([data-drive-motion='open'], [data-drive-motion='close']) .drive-page .drive-views { view-transition-name: drive-views; }
+html:is([data-drive-motion='open'], [data-drive-motion='close']) .drive-page .drive-pane-actions { view-transition-name: drive-actions; }
+html:is([data-drive-motion='open'], [data-drive-motion='close']) .drive-page :is(.drive-crumbs, .drive-memos-filters) { view-transition-name: drive-below; }
+html:is([data-drive-motion='open'], [data-drive-motion='close']) .drive-page .drive-pane-scroll { view-transition-name: drive-list; }
+html:is([data-drive-motion='open'], [data-drive-motion='close']) .drive-page .drive-pane-foot { view-transition-name: drive-foot; }
+html:is([data-drive-motion='open'], [data-drive-motion='close']) .drive-page .drive-file { view-transition-name: drive-file; }
+html[data-drive-motion]::view-transition-group(*) {
+  animation-duration: var(--motion-enter);
+  animation-timing-function: var(--ease-out);
+}
+/* The file is the sheet on top whichever way it travels: a group only in the
+   old frame (a file closing) would otherwise be drawn under the list. */
+html[data-drive-motion]::view-transition-group(drive-file),
+html[data-drive-motion]::view-transition-group(drive-page-file) {
+  z-index: 2;
+}
+html[data-drive-motion]::view-transition-group(drive-list),
+html[data-drive-motion]::view-transition-group(drive-below),
+html[data-drive-motion]::view-transition-group(drive-foot) {
+  overflow: clip;
+}
+html[data-drive-motion]::view-transition-old(drive-list),
+html[data-drive-motion]::view-transition-new(drive-list),
+html[data-drive-motion]::view-transition-old(drive-below),
+html[data-drive-motion]::view-transition-new(drive-below),
+html[data-drive-motion]::view-transition-old(drive-foot),
+html[data-drive-motion]::view-transition-new(drive-foot) {
+  width: auto;
+  height: auto;
+  object-fit: none;
+  object-position: left top;
+  inset: 0 auto auto 0;
+}
+/* The actions keep to the right edge, where both rows end. */
+html[data-drive-motion]::view-transition-old(drive-actions),
+html[data-drive-motion]::view-transition-new(drive-actions) {
+  width: auto;
+  height: 100%;
+  object-fit: none;
+  object-position: right center;
+  inset: 0 0 auto auto;
+}
+/* What changes shape inside the pane (the rows, the crumbs) fades through
+   rather than across: the old gives way before the new comes in, so the wide
+   list's columns never read through the narrow one. */
+html[data-drive-motion]::view-transition-old(drive-list),
+html[data-drive-motion]::view-transition-old(drive-below),
+html[data-drive-motion]::view-transition-old(drive-actions) {
+  animation: drive-motion-fade-out var(--motion-exit) var(--ease-out) both;
+}
+html[data-drive-motion]::view-transition-new(drive-list),
+html[data-drive-motion]::view-transition-new(drive-below),
+html[data-drive-motion]::view-transition-new(drive-actions) {
+  animation: drive-fade-in var(--motion-quick) var(--ease-out) var(--motion-press) both;
+}
+/* The file travels from the page's right edge on the list's own clock and
+   curve, so its left edge stays on the list's right edge all the way: it
+   pushes the list into its column, and closing pulls it back out. Nothing
+   overlaps on the way, so nothing needs to fade. */
+html[data-drive-motion='open']::view-transition-new(drive-file) {
+  animation: drive-motion-push-in var(--motion-enter) var(--ease-out) both;
+}
+html[data-drive-motion='close']::view-transition-old(drive-file) {
+  animation: drive-motion-push-out var(--motion-enter) var(--ease-out) both;
+}
+
+/* On a phone the file is pushed over the list and popped off it. */
+html:is([data-drive-motion='push'], [data-drive-motion='pop']) .drive-page .drive-pane { view-transition-name: drive-page-list; }
+html:is([data-drive-motion='push'], [data-drive-motion='pop']) .drive-page .drive-file { view-transition-name: drive-page-file; }
+html[data-drive-motion='push']::view-transition-new(drive-page-file) {
+  animation: drive-motion-push-in var(--motion-enter) var(--ease-out) both;
+}
+html[data-drive-motion='push']::view-transition-old(drive-page-list) {
+  animation: drive-motion-push-under var(--motion-enter) var(--ease-out) both;
+}
+html[data-drive-motion='pop']::view-transition-old(drive-page-file) {
+  animation: drive-motion-push-out var(--motion-enter) var(--ease-out) both;
+}
+html[data-drive-motion='pop']::view-transition-new(drive-page-list) {
+  animation: drive-motion-from-under var(--motion-enter) var(--ease-out) both;
+}
+/* The page underneath stays put while the two panes trade places. */
+html:is([data-drive-motion='push'], [data-drive-motion='pop'])::view-transition-old(root),
+html:is([data-drive-motion='push'], [data-drive-motion='pop'])::view-transition-new(root) {
+  animation: none;
+}
+
+@keyframes drive-motion-fade-out {
+  to { opacity: 0; }
+}
+@keyframes drive-motion-push-in {
+  from { transform: translateX(100%); }
+}
+@keyframes drive-motion-push-out {
+  to { transform: translateX(100%); }
+}
+@keyframes drive-motion-push-under {
+  to { transform: translateX(-24%); opacity: 0.4; }
+}
+@keyframes drive-motion-from-under {
+  from { transform: translateX(-24%); opacity: 0.4; }
+}

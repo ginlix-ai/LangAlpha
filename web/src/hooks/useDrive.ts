@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent } from 'react';
+import { useCallback, useEffect, useEffectEvent } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { ApiError } from '@/api/client';
@@ -49,14 +49,27 @@ export function useDriveSpaces() {
 }
 
 /** A folder's children; a folder that is gone answers 404, which the page shows. */
-export function useDriveList(space: string | null, path: string) {
-  return useQuery({
-    queryKey: queryKeys.drive.list(space ?? '', path),
-    queryFn: () => listEntries(space!, path),
-    enabled: !!space,
+function driveListQuery(space: string, path: string) {
+  return {
+    queryKey: queryKeys.drive.list(space, path),
+    queryFn: () => listEntries(space, path),
     staleTime: 15_000,
     retry: retryUnlessClientError,
-  });
+  };
+}
+
+export function useDriveList(space: string | null, path: string) {
+  return useQuery({ ...driveListQuery(space ?? '', path), enabled: !!space });
+}
+
+/**
+ * Reads a folder ahead of showing it, so the page can change crumbs and rows
+ * in one frame. Settles when the listing is in (or failed, which the folder
+ * then shows); one still fresh is not read again.
+ */
+export function usePrefetchDriveList() {
+  const qc = useQueryClient();
+  return useCallback((space: string, path: string) => qc.prefetchQuery(driveListQuery(space, path)), [qc]);
 }
 
 /** Every folder in the space, for the Move to picker. */

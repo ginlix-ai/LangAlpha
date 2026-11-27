@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
-import { HeaderButton, ListError, ListSkeleton } from '@/components/mcp/McpPrimitives';
+import { HeaderButton, ListError } from '@/components/mcp/McpPrimitives';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { useDriveMemos } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
@@ -18,6 +18,7 @@ import { whoLabel } from '../who';
 import { DriveViews } from './DriveViews';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryName } from './EntryName';
+import { RowsSkeleton } from './RowsSkeleton';
 import { MemoStatus, TickerChips } from './MemoBadges';
 import { PaneFrame } from './PaneFrame';
 
@@ -105,7 +106,7 @@ export function MemosView({ openPath, compact }: { openPath: string | null; comp
   if (memos.error && !memos.data) {
     body = <ListError onRetry={() => void memos.refetch()}>{loadFailedLine(memos.error, t)}</ListError>;
   } else if (!memos.data) {
-    body = <ListSkeleton rows={5} />;
+    body = <RowsSkeleton rows={5} compact />;
   } else if (rows.length === 0) {
     body = (
       <EmptyState

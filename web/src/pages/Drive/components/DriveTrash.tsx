@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, Trash2 } from 'lucide-react';
-import { ConfirmStrip, HeaderButton, ListError, ListSkeleton } from '@/components/mcp/McpPrimitives';
+import { ConfirmStrip, HeaderButton, ListError } from '@/components/mcp/McpPrimitives';
 import { useDriveTrash } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
@@ -13,6 +13,7 @@ import { parentOf } from '../drivePaths';
 import { loadFailedLine } from '../driveRefusal';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryName } from './EntryName';
+import { RowsSkeleton } from './RowsSkeleton';
 import { PaneFrame } from './PaneFrame';
 
 const DAY_MS = 86_400_000;
@@ -122,7 +123,7 @@ export function DriveTrash({ trashDays, trashBytes, onRestored }: {
 
   let body: React.ReactNode;
   if (error) body = <ListError onRetry={() => void refetch()}>{loadFailedLine(error, t)}</ListError>;
-  else if (isLoading) body = <ListSkeleton rows={4} />;
+  else if (isLoading) body = <RowsSkeleton rows={4} compact />;
   else if (!items?.length) body = <EmptyState message={t('drive:trash.none', { count: trashDays })} />;
   else {
     body = (
