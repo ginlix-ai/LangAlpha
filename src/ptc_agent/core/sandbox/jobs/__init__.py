@@ -11,6 +11,7 @@ directory they keep, are ``protocol``.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 import uuid
@@ -57,8 +58,10 @@ from ptc_agent.core.sandbox.jobs.protocol import (
     parse_trace_reply,
     parse_unended_reply,
     parse_wait_reply,
+    release_script,
     states_script,
     stop_script as stop_script,
+    watch_script,
     trace_script,
     unended_jobs_script,
     wait_script,
@@ -69,6 +72,10 @@ logger = structlog.get_logger(__name__)
 
 ExecFn = Callable[[str, int], Awaitable[ExecResult]]
 UploadFn = Callable[[Sequence[tuple[str, bytes]]], Awaitable[None]]
+#: Whether something its caller should read now has arrived (a message sent
+#: to it, a report owed it). A wait given one ends early when it says so,
+#: with the job left running. It never raises: a read that fails is False.
+Arrival = Callable[[], Awaitable[bool]]
 
 COMMAND_ID_PREFIX = "bg-"
 
@@ -81,6 +88,12 @@ WAIT_CHUNK_S = 55
 WAITER_GONE_S = 3 * WAIT_CHUNK_S
 #: On top of the shell's own wait, for the round trip and the report.
 EXEC_MARGIN_S = 30
+#: With an arrival to watch for, the launch waits at most this long in the
+#: shell, since an arrival cuts the waits after it short and never the launch:
+#: a command this quick still returns in one round trip.
+ARRIVAL_LAUNCH_S = 5
+#: How often a wait reads whether something arrived.
+ARRIVAL_POLL_S = 2.0
 
 
 def new_command_id() -> str:
@@ -205,7 +218,10 @@ class _Outcome:
 
 @dataclass(frozen=True)
 class Running(_Outcome):
-    """Still running when the wait ran out."""
+    """Still running when the wait ran out, or when something arrived for the
+    caller to read (``woken``)."""
+
+    woken: bool = False
 
 
 @dataclass(frozen=True)
@@ -312,14 +328,119 @@ async def _ask(
         raise
 
 
-async def _wait_once(exec_fn: ExecFn, ref: JobRef, chunk: int) -> WaitReply:
+async def _wait_once(
+    exec_fn: ExecFn,
+    ref: JobRef,
+    chunk: int,
+    *,
+    nonce: str | None = None,
+    releasing: str | None = None,
+    release_on_cancel: bool = True,
+) -> WaitReply:
+    """One wait exec, releasing the wait ``releasing`` names first. A cancel
+    releases this one, in the background so the cancel is not held up: the
+    shell an exec given up leaves running would otherwise reap a job that
+    ends meanwhile, moving the log the agent is told to read. A caller that
+    releases it itself passes ``release_on_cancel=False``."""
+    nonce = nonce or _nonce()
+    try:
+        return await _ask(
+            exec_fn,
+            wait_script(ref, chunk, nonce, releasing=releasing),
+            chunk + EXEC_MARGIN_S,
+            lambda r: parse_wait_reply(r, nonce),
+        )
+    except asyncio.CancelledError:
+        if chunk > 0 and release_on_cancel:
+            _release_later(exec_fn, ref, nonce)
+        raise
+
+
+# Releases of waits whose calls were cancelled, held so they finish after the
+# call is gone. Execution context only: nothing reads it.
+_releasing: set[asyncio.Task[None]] = set()
+
+
+def _release_later(exec_fn: ExecFn, ref: JobRef, nonce: str) -> None:
+    task = asyncio.ensure_future(_release(exec_fn, ref, nonce))
+    _releasing.add(task)
+    task.add_done_callback(_releasing.discard)
+
+
+async def _release(exec_fn: ExecFn, ref: JobRef, nonce: str) -> None:
+    try:
+        await exec_fn(release_script(ref, nonce), EXEC_MARGIN_S)
+    except Exception as e:  # noqa: BLE001 - the wait it leaves ends within a chunk
+        logger.warning("Could not release a given-up wait", command_id=ref.command_id, error=str(e))
+
+
+async def until_arrived(until: Arrival) -> None:
+    """Return once ``until`` says something arrived; it is read at once,
+    then every ``ARRIVAL_POLL_S``."""
+    while True:
+        try:
+            if await until():
+                return
+        except Exception as e:  # noqa: BLE001 - an unreadable arrival is none
+            logger.debug("Could not read whether anything arrived", error=str(e))
+        await asyncio.sleep(ARRIVAL_POLL_S)
+
+
+async def _wait(
+    exec_fn: ExecFn, ref: JobRef, chunk: int, until: Arrival | None
+) -> WaitReply | None:
+    """One wait, cut short when ``until`` says something arrived: None then,
+    unless the job ended as it did, which the read that releases the given-up
+    wait reports."""
+    if until is None or chunk <= 0:
+        return await _wait_once(exec_fn, ref, chunk)
     nonce = _nonce()
-    return await _ask(
-        exec_fn,
-        wait_script(ref, chunk, nonce),
-        chunk + EXEC_MARGIN_S,
-        lambda r: parse_wait_reply(r, nonce),
+    wait = asyncio.ensure_future(
+        _wait_once(exec_fn, ref, chunk, nonce=nonce, release_on_cancel=False)
     )
+    arrival = asyncio.ensure_future(until_arrived(until))
+    try:
+        await asyncio.wait((wait, arrival), return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        _release_later(exec_fn, ref, nonce)
+        raise
+    finally:
+        arrival.cancel()
+        wait.cancel()
+    if wait.done() and not wait.cancelled():
+        return wait.result()
+    try:
+        await wait
+    except asyncio.CancelledError:
+        # The wait's own cancel is expected; the call's is not to be lost.
+        if _cancelling():
+            _release_later(exec_fn, ref, nonce)
+            raise
+    reply = await _wait_once(exec_fn, ref, 0, releasing=nonce)
+    return None if reply.status == "running" else reply
+
+
+def _cancelling() -> bool:
+    """Whether the running task itself was cancelled, not just a task it
+    cancelled and awaited."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
+async def watch_job(exec_fn: ExecFn, outcome: Running) -> None:
+    """Return once the job is no longer running, without taking its end:
+    the log stays where it is, for a later wait to read. Each exec stamps
+    the job as waited on, as a waiting call's do."""
+    while True:
+        nonce = _nonce()
+        reply = await _ask(
+            exec_fn,
+            watch_script(outcome.ref, WAIT_CHUNK_S, nonce),
+            WAIT_CHUNK_S + EXEC_MARGIN_S,
+            lambda r: parse_wait_reply(r, nonce),
+        )
+        if reply.status != "running":
+            return
 
 
 async def _settled(exec_fn: ExecFn, handle: JobHandle, reply: WaitReply) -> JobOutcome:
@@ -361,13 +482,18 @@ async def _finish(
     reply: WaitReply,
     wait_s: float | None,
     began: float,
+    until: Arrival | None = None,
 ) -> JobOutcome:
-    """Wait on in chunks until the job ends or ``wait_s`` from ``began`` runs out."""
+    """Wait on in chunks until the job ends, ``wait_s`` from ``began`` runs
+    out, or ``until`` says something arrived (``Running.woken``)."""
     while reply.status == "running":
         left = None if wait_s is None else wait_s - (time.monotonic() - began)
         if left is not None and left <= 0:
             break
-        reply = await _wait_once(exec_fn, handle.ref, _chunk(left))
+        next_reply = await _wait(exec_fn, handle.ref, _chunk(left), until)
+        if next_reply is None:
+            return Running(handle, woken=True)
+        reply = next_reply
     return await _settled(exec_fn, handle, reply)
 
 
@@ -378,8 +504,10 @@ async def run_job(
     *,
     upload: UploadFn | None = None,
     handle: JobHandle | None = None,
+    until: Arrival | None = None,
 ) -> JobOutcome:
-    """Launch ``spec`` and wait up to ``wait_s`` for it (None: until it ends).
+    """Launch ``spec`` and wait up to ``wait_s`` for it (None: until it ends),
+    or until ``until`` says something arrived.
 
     ``handle`` names the job as the caller holds it; by default it starts
     now and carries nothing. The launch is idempotent, so ``exec_fn`` may
@@ -397,6 +525,8 @@ async def run_job(
             await exec_fn(f"{_PREAMBLE}mkdir -p {dirs}", EXEC_MARGIN_S)
         await upload(spec.files)
     chunk = _chunk(wait_s)
+    if until is not None:
+        chunk = min(chunk, ARRIVAL_LAUNCH_S)
     nonce = _nonce()
     script = launch_script(
         spec, chunk, nonce, inline_files=inline, at=int(handle.started_at.timestamp())
@@ -406,7 +536,7 @@ async def run_job(
     )
     if reply.status == "nolaunch":
         raise JobNotLaunched(spec, disk_full=reply.disk_full)
-    return await _finish(exec_fn, handle, reply, wait_s, began)
+    return await _finish(exec_fn, handle, reply, wait_s, began, until)
 
 
 async def run_foreground(exec_fn: ExecFn, spec: JobSpec, limit: int) -> ForegroundReply:
@@ -424,14 +554,21 @@ async def run_foreground(exec_fn: ExecFn, spec: JobSpec, limit: int) -> Foregrou
 
 
 async def continue_job(
-    exec_fn: ExecFn, outcome: Running, wait_s: float | None
+    exec_fn: ExecFn,
+    outcome: Running,
+    wait_s: float | None,
+    *,
+    until: Arrival | None = None,
 ) -> JobOutcome:
     """Wait up to ``wait_s`` more for a job still running (None: until it
-    ends). What it returns keeps the job's handle: its start, and what the
-    call's earlier attempts called, ahead of the job's own trace."""
+    ends), or until ``until`` says something arrived. What it returns keeps
+    the job's handle: its start, and what the call's earlier attempts
+    called, ahead of the job's own trace."""
     began = time.monotonic()
-    reply = await _wait_once(exec_fn, outcome.ref, _chunk(wait_s))
-    return await _finish(exec_fn, outcome.handle, reply, wait_s, began)
+    reply = await _wait(exec_fn, outcome.ref, _chunk(wait_s), until)
+    if reply is None:
+        return Running(outcome.handle, woken=True)
+    return await _finish(exec_fn, outcome.handle, reply, wait_s, began, until)
 
 
 async def read_job_states(

@@ -54,6 +54,7 @@ from ptc_agent.core.sandbox import PTCSandbox
 from ptc_agent.core.sandbox.execution import app_command
 from ptc_agent.core.sandbox.grep_render import GrepLine
 from ptc_agent.core.sandbox.jobs import (
+    Arrival,
     Ended,
     Failed,
     JobContext,
@@ -707,13 +708,16 @@ class SandboxBackend(SandboxBackendProtocol):
         working_dir: str | None = None,
         wait_s: float | None,
         context: JobContext = JobContext(),
+        until: Arrival | None = None,
     ) -> JobOutcome:
-        """Start a bash command as a job; wait up to ``wait_s`` (None: until it ends)."""
+        """Start a bash command as a job; wait up to ``wait_s`` (None: until it
+        ends), or until ``until`` says something arrived."""
         return await self.sandbox.start_bash_job(
             command,
             working_dir=working_dir,
             wait_s=wait_s,
             context=context,
+            until=until,
         )
 
     async def run_foreground(self, spec: JobSpec, timeout: int) -> Ended | Failed:
@@ -726,17 +730,26 @@ class SandboxBackend(SandboxBackendProtocol):
         *,
         wait_s: float | None,
         context: JobContext = JobContext(),
+        until: Arrival | None = None,
     ) -> JobOutcome:
-        """Start Python code as a job; wait up to ``wait_s`` (None: until it ends)."""
+        """Start Python code as a job; wait up to ``wait_s`` (None: until it
+        ends), or until ``until`` says something arrived."""
         return await self.sandbox.start_code_job(
             code,
             wait_s=wait_s,
             context=context,
+            until=until,
         )
 
-    async def continue_job(self, outcome: Running, wait_s: float | None) -> JobOutcome:
+    async def continue_job(
+        self, outcome: Running, wait_s: float | None, *, until: Arrival | None = None
+    ) -> JobOutcome:
         """Keep waiting on a job a start returned still running."""
-        return await self.sandbox.continue_job(outcome, wait_s)
+        return await self.sandbox.continue_job(outcome, wait_s, until=until)
+
+    async def watch_job(self, outcome: Running) -> None:
+        """Return once a job is no longer running, leaving its end unread."""
+        await self.sandbox.watch_job(outcome)
 
     async def read_ended_job(self, outcome: Running) -> JobOutcome:
         """Read a job a stop found already ended; a failed read raises."""

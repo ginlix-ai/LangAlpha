@@ -791,6 +791,26 @@ export async function sendSubagentMessage(threadId: string, taskId: string, cont
 }
 
 /**
+ * Asks for a waiting steer to be read now: a command the agent waits on moves
+ * to the background, and nothing is stopped. False when the message was
+ * already read or settled, which leaves nothing to do: its delivery clears it.
+ */
+export async function sendSteerNow(threadId: string, requestKey: string): Promise<boolean> {
+  const { data } = await api.post(
+    `/api/v1/threads/${encodeURIComponent(threadId)}/steers/${encodeURIComponent(requestKey)}/send-now`,
+  );
+  return data?.sent_now === true;
+}
+
+/** {@link sendSteerNow} for a message to a background task, by its `input_id`. */
+export async function sendSubagentMessageNow(threadId: string, taskId: string, inputId: string): Promise<boolean> {
+  const { data } = await api.post(
+    `/api/v1/threads/${encodeURIComponent(threadId)}/tasks/${encodeURIComponent(taskId)}/messages/${encodeURIComponent(inputId)}/send-now`,
+  );
+  return data?.sent_now === true;
+}
+
+/**
  * Durable terminal state of a single subagent task from the run ledger.
  * Used to hydrate a stale detail view (a settled task whose live stream
  * drained while the tab was backgrounded) without a full thread reload.

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -59,6 +59,16 @@ def _with_preloaded(prompt: str, preloaded: str) -> str:
     if not preloaded:
         return prompt
     return f"{prompt.rstrip()}\n\n<preloaded_skills>\n{preloaded}\n</preloaded_skills>\n"
+
+
+class SandboxTools(Protocol):
+    """Builds a subagent's own code and shell tools, limited to ``allowed``
+    connectors. Without ``sets_aside`` the code tool waits on its run rather
+    than set it aside for a message, since no shell could reach it after."""
+
+    def __call__(
+        self, allowed: frozenset[str] | None, *, sets_aside: bool
+    ) -> list[Any]: ...
 
 
 class _StandIn(str):
@@ -140,7 +150,7 @@ class SubagentCompiler:
         skill_dirs: list[str] | None = None,
         project: ProjectContext | None = None,
         search_tool: Callable[..., Any] | None = None,
-        sandbox_tools: Callable[[frozenset[str]], list[Any]] | None = None,
+        sandbox_tools: SandboxTools | None = None,
         context: SubagentContext | None = None,
         prompt_vars: Mapping[str, bool] | None = None,
         drive: bool = False,
@@ -183,13 +193,14 @@ class SubagentCompiler:
         self._skill_dirs = skill_dirs
         # A subagent whose search or connector access differs from the main
         # agent's runs its own copy of those tools. The builders take the
-        # setting (``search_tool(provider=, depth=)``, ``sandbox_tools(allowed)``);
+        # setting (``search_tool(provider=, depth=)``,
+        # ``sandbox_tools(allowed, sets_aside=)``);
         # without them every subagent shares the main agent's. Copies are
         # made once per distinct setting for this build.
         self._make_search_tool = search_tool
         self._make_sandbox_tools = sandbox_tools
         self._search_tools: dict[tuple[str, str], Any] = {}
-        self._sandbox_tools: dict[frozenset[str], dict[str, Any]] = {}
+        self._sandbox_tools: dict[tuple[frozenset[str] | None, bool], dict[str, Any]] = {}
 
     @property
     def _files_mounted(self) -> bool:
@@ -465,11 +476,18 @@ class SubagentCompiler:
             # Connectors are a Code capability, as the settings show them: a
             # shell alone reaches none, though it could start Python.
             allowed = self._allowed_servers(defn) if "execute_code" in defn.tools else frozenset()
-            if allowed is not None:
-                limited = self._sandbox_tools.get(allowed)
+            # A command a message cuts short is set aside for Bash's
+            # ``wait_for``, so with no shell to reach it the code is waited on.
+            sets_aside = "bash" in defn.tools
+            if allowed is not None or not sets_aside:
+                key = (allowed, sets_aside)
+                limited = self._sandbox_tools.get(key)
                 if limited is None:
-                    limited = {t.name: t for t in self._make_sandbox_tools(allowed)}
-                    self._sandbox_tools[allowed] = limited
+                    limited = {
+                        t.name: t
+                        for t in self._make_sandbox_tools(allowed, sets_aside=sets_aside)
+                    }
+                    self._sandbox_tools[key] = limited
                 own.update(limited)
         return own
 

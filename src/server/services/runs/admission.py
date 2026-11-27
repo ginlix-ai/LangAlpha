@@ -286,6 +286,18 @@ def steer_idempotency_key(request_key: str) -> str:
     return f"steer:{request_key}"
 
 
+async def send_steer_now(thread_id: str, request_key: str, user_id: str) -> bool:
+    """Mark the user's own queued steer Send now; false once it was read or
+    settled."""
+    from src.server.database.runs import outbox as outbox_db
+
+    return await outbox_db.send_steer_now(
+        ordering_key=outbox_db.steer_ordering_key(thread_id),
+        idempotency_key=steer_idempotency_key(request_key),
+        user_id=user_id,
+    )
+
+
 def steer_job_run_id(job: Dict[str, Any]) -> tuple[Optional[str], bool]:
     """The run a steer job names, and whether the message went into it as a
     steer: the turn it became (its own input, so not steered), else the run

@@ -169,3 +169,19 @@ async def send_subagent_message(
         input_id=request.input_id,
         written_by=written_by,
     )
+
+
+@router.post("/{thread_id}/tasks/{task_id}/messages/{input_id}/send-now")
+async def send_subagent_message_now(
+    thread_id: str,
+    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
+    input_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,64}$")],
+    x_user_id: RunUserId,
+):
+    """Send a queued message to a background task now: a command it waits
+    on is set aside, still running, however busy it is. ``sent_now`` is
+    false once the task read or settled it."""
+    await thread_access(thread_id, x_user_id)
+    from src.server.services.report_back.task_steer import send_task_message_now
+
+    return {"sent_now": await send_task_message_now(thread_id, task_id, input_id, x_user_id)}

@@ -969,6 +969,17 @@ export function returnedTaskInstruction(
   return { inputId: typeof event.input_id === 'string' ? event.input_id : undefined, content };
 }
 
+/**
+ * Marks a pending instruction the server now holds, which only then has an
+ * entry for Send now to name. False once it was settled meanwhile.
+ */
+export function acceptTaskInstruction(taskRefs: TaskRefs, inputId: string): boolean {
+  const idx = pendingInstructionIndex(taskRefs.messages, inputId);
+  if (idx === -1) return false;
+  taskRefs.messages = taskRefs.messages.map((m, i) => (i === idx ? { ...m, steerAccepted: true } : m));
+  return true;
+}
+
 /** Whether the instruction is still waiting on the subagent, neither delivered nor returned. */
 export function hasPendingInstruction(taskRefs: TaskRefs, inputId: string): boolean {
   return pendingInstructionIndex(taskRefs.messages, inputId) !== -1;

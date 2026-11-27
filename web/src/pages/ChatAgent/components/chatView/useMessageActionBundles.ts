@@ -56,6 +56,11 @@ export interface MessageActionSources {
   onRegenerate: (messageId: string, modelOptions?: ModelOptions) => unknown;
   onRetry: (modelOptions?: ModelOptions) => unknown;
   onForkFromTurn?: Action<'onForkFromTurn'>;
+  /** Send now for a steer of the main transcript, by its request key. */
+  onSendSteerNow?: Action<'onSendNow'>;
+  /** Send now for an instruction to the task the subagent transcript shows,
+   *  by its input id. */
+  onSendTaskMessageNow?: Action<'onSendNow'>;
   /** Created once by the session, so already identity-stable. */
   editDrafts: EditDraftStore;
   chatInputRef: RefObject<ChatInputHandle | null>;
@@ -77,7 +82,8 @@ export function useMessageActionBundles(src: MessageActionSources): {
 } {
   const {
     reportThreadId, feedbackLoading, editDrafts, widgetPrompts, chatInputRef,
-    onOpenArtifactComment, onEditMessage, onRegenerate, onRetry, ...handlers
+    onOpenArtifactComment, onEditMessage, onRegenerate, onRetry,
+    onSendSteerNow, onSendTaskMessageNow, ...handlers
   } = src;
   const modelOptions = () => chatInputRef.current?.getModelOptions?.();
   const stable = useStableActions({
@@ -86,7 +92,9 @@ export function useMessageActionBundles(src: MessageActionSources): {
     onEditMessage: (id: string, content: string) => { onEditMessage(id, content, modelOptions()); },
     onRegenerate: (id: string) => { onRegenerate(id, modelOptions()); },
     onRetry: () => { onRetry(modelOptions()); },
+    onSendNow: onSendSteerNow,
   });
+  const task = useStableActions({ onSendNow: onSendTaskMessageNow });
   const openComment = stable.onOpenArtifactComment;
   const openArtifactComment = useMemo(
     () => (openComment ? { file: openComment, chart: openComment } : undefined),
@@ -107,7 +115,8 @@ export function useMessageActionBundles(src: MessageActionSources): {
 
   // The subagent transcript is a DIFFERENT surface: its cards belong to a task,
   // not to the main thread's turn, so the main thread's approve/reject/edit
-  // handlers must not be reachable from it. Navigation only.
+  // handlers must not be reachable from it. Navigation only, and Send now for
+  // the reader's own instruction to that task.
   // No onRevealFiles: it moves the main transcript, and the settle-aware
   // observer that follows an unfolding deck is only attached there.
   const subagentMessageActions = useMemo<MessageActions>(() => ({
@@ -117,7 +126,8 @@ export function useMessageActionBundles(src: MessageActionSources): {
     downloadKeyFor: stable.downloadKeyFor,
     onToolCallDetailClick: stable.onToolCallDetailClick,
     onOpenChart: stable.onOpenChart,
-  }), [stable]);
+    onSendNow: task.onSendNow,
+  }), [stable, task]);
 
   return { messageActions, subagentMessageActions };
 }

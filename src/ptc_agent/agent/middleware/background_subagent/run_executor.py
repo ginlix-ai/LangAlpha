@@ -18,6 +18,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from ptc_agent.agent.tools.command_handoff import run_shelf
 from ptc_agent.agent.middleware.background_subagent.context import (
     current_background_token_tracker,
 )
@@ -200,7 +201,9 @@ async def _run_background_task(
         current_background_token_tracker.set(tracker)
         set_tool_tracker(tool_tracker)
         try:
-            async with _child_credit_lane(task, tracker, tool_tracker, label):
+            # The commands its calls set aside for a message sent to it, which
+            # stop when the run does, as every command of a subagent's does.
+            async with run_shelf(), _child_credit_lane(task, tracker, tool_tracker, label):
                 return await handler(request)
         finally:
             # The astream loop sends a held delta only once it is due, so the

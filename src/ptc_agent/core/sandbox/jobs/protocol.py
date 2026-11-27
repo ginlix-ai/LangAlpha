@@ -239,7 +239,8 @@ _STATUS_SH = (
 # ``jw DIR SECONDS [NEW]`` waits while the job runs, at most SECONDS. The first
 # checks come quickly, so a command of a few milliseconds is not held to a
 # polling interval; after them it checks ten times a second and reads the
-# clock once a second.
+# clock once a second. A wait given ``LET`` also stops once that file exists
+# (``release_script``).
 _WAIT_SH = (
     'jw() { js "$1" "$3"; [ "$s" = running ] && [ "$2" -gt 0 ] || return 0; '
     "local end k t; end=$(( $(date +%s) + $2 )); "
@@ -247,6 +248,7 @@ _WAIT_SH = (
     'js "$1" "$3"; [ "$s" = running ] || return 0; done; '
     "k=0; while :; do sleep 0.1; "
     'js "$1" "$3"; [ "$s" = running ] || return 0; '
+    '[ -z "$LET" ] || [ ! -e "$LET" ] || return 0; '
     "k=$((k+1)); [ $k -lt 10 ] && continue; k=0; "
     '[ "$(date +%s)" -lt $end ] || return 0; done; }\n'
 )
@@ -259,7 +261,7 @@ _OUTBOX_SH = (
     f'[ $c = 0 ] || head -c {OUTBOX_READ_MAX} "$1/{OUTBOX_FILE}"; }}\n'
 )
 
-# ``jr DIR LOG TRACE [NEW]`` reports the job. One that ended prints its output
+# ``jr DIR LOG TRACE [NEW]`` reports the job (``jx``, under a lock). One that ended prints its output
 # and a small trace with it, its ``raised`` record (``RAISED_FILE``) when it
 # wrote one, and its outbox (``jo``) when it wrote to it, and is reaped unless
 # its output was cut, in which case the log is what the agent reads and the
@@ -267,7 +269,14 @@ _OUTBOX_SH = (
 # directory: out of the agent's way at once, and still there for a retried
 # call to report again, as the outbox, which never leaves it, is.
 _REPORT_SH = _OUTBOX_SH + (
-    'jr() { js "$1" "$4"; local o t z y; '
+    # One report at a time: a wait given up can still be reporting as the
+    # read that released it starts, and a reap between one's size and its
+    # tail would hand the other an empty log. A lock left by a killed shell
+    # is broken after five seconds.
+    'jr() { local i=0; while [ -d "$1" ] && ! mkdir "$1/rd" 2>/dev/null; do '
+    'i=$((i+1)); [ $i -lt 50 ] || { rmdir "$1/rd" 2>/dev/null; i=0; }; sleep 0.1; done; '
+    'jx "$@"; rmdir "$1/rd" 2>/dev/null; return 0; }\n'
+    'jx() { js "$1" "$4"; local o t z y; '
     "case $s in done|vanished|reaped) ;; "
     '*) printf "\\n%s H %s %s - -\\n" "$N" "$s" "${e:--}"; return 0;; esac; '
     'o=$2; t=$3; if [ $s = reaped ]; then o=$1/log; t=$1/trace; fi; '
@@ -492,11 +501,49 @@ def launch_script(
     )
 
 
-def wait_script(ref: JobRef, wait_s: int, nonce: str) -> str:
-    """Wait up to ``wait_s`` more for a job already launched, then report it."""
+def wait_script(
+    ref: JobRef, wait_s: int, nonce: str, *, releasing: str | None = None
+) -> str:
+    """Wait up to ``wait_s`` more for a job already launched, then report it.
+
+    A wait released (``release_script``) ends without a report: the report
+    reaps a job that ended, moving its log into its state, and a released
+    wait's exec was given up by the call that ran it, so nobody would read
+    the output it took. ``releasing`` releases that earlier wait first, so a
+    call that gave one up reads the job in the same exec."""
+    released = f"{_let(releasing)}\n" if releasing else ""
     return (
         f"{_PREAMBLE}N={nonce}\n{_STATUS_SH}{_WAIT_SH}{_REPORT_SH}{_paths_sh(ref)}"
-        f'{_WAITED_SH}jw "$J" {int(wait_s)}; jr "$J" "$L" "$T"\n'
+        f'{released}LET="$J/let.$N"\n{_WAITED_SH}jw "$J" {int(wait_s)}\n'
+        '[ ! -e "$LET" ] || { rm -f -- "$LET"; exit 0; }\n'
+        'jr "$J" "$L" "$T"\n'
+    )
+
+
+def release_script(ref: JobRef, wait_nonce: str) -> str:
+    """Release the wait run with ``wait_nonce``, whose exec its call gave up.
+
+    A provider's exec cut from the server's side can leave its shell
+    running, and that wait would go on to reap the job if it ended. Safe to
+    run after that wait is gone: the file is then left to the job's prune.
+    """
+    return f"{_PREAMBLE}{_paths_sh(ref)}{_let(wait_nonce)}\n"
+
+
+def _let(wait_nonce: str) -> str:
+    return f'[ ! -d "$J" ] || : > "$J/let.{wait_nonce}"'
+
+
+def watch_script(ref: JobRef, wait_s: int, nonce: str) -> str:
+    """Wait up to ``wait_s`` more for a job, then report only its status.
+
+    For a caller that follows a job to its end without taking its output:
+    nothing is reaped, so the log stays where the agent was told it is, and
+    an exec given up leaves nothing to release."""
+    return (
+        f"{_PREAMBLE}N={nonce}\n{_STATUS_SH}{_WAIT_SH}{_paths_sh(ref)}"
+        f'{_WAITED_SH}jw "$J" {int(wait_s)}; js "$J"\n'
+        'printf "\\n%s H %s %s - -\\n" "$N" "$s" "${e:--}"\n'
     )
 
 
