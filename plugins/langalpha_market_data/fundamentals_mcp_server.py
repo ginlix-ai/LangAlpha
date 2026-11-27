@@ -754,8 +754,9 @@ async def get_insider_trades(
         dict: {symbol, count, data, source, data_type}. data is {trades, stats},
         each a list; count is the total across both. trades fields, newest
         first: filingDate, transactionDate, reportingName, transactionType,
-        securitiesTransacted, price. Only "P-Purchase" and "S-Sale" are
-        open-market trades; others are awards, exercises or tax withholding.
+        securitiesTransacted, price (null when the filing states none). Only
+        "P-Purchase" and "S-Sale" are open-market trades; others are awards,
+        exercises or tax withholding.
         stats, one row per calendar quarter: year, quarter, totalPurchases,
         totalSales (counts of P and S trades), totalAcquired, totalDisposed
         (shares, all transaction types). Field names are FMP-native camelCase;

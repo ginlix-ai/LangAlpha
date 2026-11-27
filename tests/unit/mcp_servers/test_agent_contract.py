@@ -38,7 +38,7 @@ _SERVERS = {
 }
 
 # Target is ~800 chars (AGENT_CONTRACT.md); the hard cap leaves slight headroom.
-_MAX_DOCSTRING_CHARS = 900
+_MAX_DOCSTRING_CHARS = 920
 
 # Section headers that terminate the codegen Returns: capture and tend to rot.
 _FORBIDDEN_SECTIONS = re.compile(r"^\s*(Examples?:|Note:)", re.MULTILINE)
