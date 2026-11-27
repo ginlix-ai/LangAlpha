@@ -329,9 +329,9 @@ async def resolve_preview(
                         )
                         return cached_url
 
-            # A different worker does not have the provider session in its local
-            # map. The durable owner claim lets it reuse the healthy process rather
-            # than treating the workspace's own server as a port collision.
+            # The claim lets a worker reuse the workspace's healthy server
+            # without listing the machine's sessions, and is all that knows a
+            # server from before session ids named their workspace.
             if owner == workspace_id and await sandbox._is_preview_reachable(port):
                 preview_info = await sandbox.get_preview_url(port, expires_in)
                 return await _publish_and_cache(
@@ -370,12 +370,12 @@ async def resolve_preview(
             except PreviewPortInUse as e:
                 # `owner` is the claim read before this try made its own.
                 if owner == workspace_id:
-                    # This workspace's own claim: what holds the port is most
-                    # likely its own app, still starting or listening only on
-                    # loopback, which a worker that did not start it cannot
-                    # tell from another program's. It stays a failure, not
-                    # a port another program holds, and the claim stays, so
-                    # the next try reads the port the same way.
+                    # This workspace's own claim, on a port no session of its
+                    # own holds: most likely a server its agent started by
+                    # hand, or one from before session ids named their
+                    # workspace. It stays a failure, not a port another
+                    # workspace holds, and the claim stays, so the next try
+                    # reads the port the same way.
                     raise RuntimeError(str(e)) from e
                 await delete_preview_owner(sandbox.sandbox_id, port)
                 raise

@@ -6,6 +6,7 @@ semantics are unchanged.
 """
 
 import asyncio
+import hashlib
 import uuid
 from typing import Any
 
@@ -18,6 +19,7 @@ from ptc_agent.core.sandbox.runtime import (
     PreviewInfo,
     PreviewPortInUse,
     SessionCommandResult,
+    SessionState,
 )
 
 from typing import TYPE_CHECKING
@@ -26,6 +28,73 @@ if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
+
+
+def _owner_tag(owner: str) -> str:
+    """A fixed-length, dash-free stand-in for the owner, so it sits inside a
+    session id whatever the owner's own spelling."""
+    return hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+
+
+def _preview_session_id(port: int, owner: str | None) -> str:
+    """A preview session's id, naming the workspace whose app it runs.
+
+    The machine lists the id to every worker alike and keeps it while the
+    session runs, so it says whose session holds a port after the process
+    that started it, and that process's own record, are gone.
+    """
+    tag = "" if owner is None else f"{_owner_tag(owner)}-"
+    return f"preview-{port}-{tag}{uuid.uuid4().hex[:12]}"
+
+
+def _session_owner_tag(session_id: str, port: int) -> str | None:
+    """The owner tag in a preview session's id; None for one started with no
+    owner, or before ids carried one."""
+    tag, sep, _rest = session_id.removeprefix(f"preview-{port}-").partition("-")
+    return tag if sep else None
+
+
+async def _owned_port_sessions(
+    sandbox: "PTCSandbox", port: int, owner: str | None
+) -> list[SessionState]:
+    """The owner's preview sessions on *port*, running or stopped, whichever
+    process started them.
+
+    The machine's list is the only one read: a process's own record goes stale
+    the moment another worker replaces the session. Raises
+    ``PreviewPortInUse`` while any other session runs there, one whose id
+    names no owner included: what answers on the port may be that one, and
+    nothing says whose it is. Stopped ones are the owner's to delete, since
+    every start mints a new id and nothing else would. With no owner, none is
+    provably the caller's, so none is listed.
+    """
+    if owner is None:
+        return []
+    assert sandbox.runtime is not None
+    states = await sandbox._runtime_call(
+        sandbox.runtime.list_sessions, retry_policy=RetryPolicy.SAFE
+    )
+    mine = _owner_tag(owner)
+    on_port = [
+        (state, _session_owner_tag(state.session_id, port))
+        for state in states
+        if state.session_id.startswith(f"preview-{port}-")
+    ]
+    if any(state.running and tag != mine for state, tag in on_port):
+        raise PreviewPortInUse(port)
+    return [state for state, tag in on_port if tag == mine]
+
+
+async def _delete_session_quietly(sandbox: "PTCSandbox", session_id: str) -> None:
+    assert sandbox.runtime is not None
+    try:
+        await sandbox._runtime_call(
+            sandbox.runtime.delete_session,
+            session_id,
+            retry_policy=RetryPolicy.SAFE,
+        )
+    except Exception:
+        logger.debug("Preview session cleanup failed", session_id=session_id)
 
 
 async def get_preview_url(
@@ -84,6 +153,37 @@ async def get_preview_link(
     return result
 
 
+async def _create_session(sandbox: "PTCSandbox", session_id: str) -> None:
+    assert sandbox.runtime is not None
+    try:
+        await sandbox._runtime_call(
+            sandbox.runtime.create_session,
+            session_id,
+            retry_policy=RetryPolicy.SAFE,
+        )
+    except Exception as e:
+        if "already exists" not in str(e).lower():
+            raise
+        # A retried create whose first attempt landed: delete and recreate,
+        # so the session never inherits a command running in it.
+        try:
+            await sandbox._runtime_call(
+                sandbox.runtime.delete_session,
+                session_id,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            await sandbox._runtime_call(
+                sandbox.runtime.create_session,
+                session_id,
+                retry_policy=RetryPolicy.SAFE,
+            )
+        except Exception:
+            logger.debug(
+                "Stale preview session cleanup failed, reusing",
+                session_id=session_id,
+            )
+
+
 async def start_preview_server(
     sandbox: "PTCSandbox",
     command: str,
@@ -103,65 +203,32 @@ async def start_preview_server(
     await sandbox._wait_ready()
     assert sandbox.runtime is not None
 
-    session_id = f"preview-{port}-{uuid.uuid4().hex[:12]}"
+    session_id = _preview_session_id(port, owner)
 
-    # Tear down stale session for this port if one exists
-    if port in sandbox._preview_sessions:
-        prior_owner = sandbox._preview_owners.get(port)
-        if owner is not None and prior_owner is not None and prior_owner != owner:
-            raise PreviewPortInUse(port)
-        old_sid, _old_cmd = sandbox._preview_sessions[port]
-        try:
-            await sandbox._runtime_call(
-                sandbox.runtime.delete_session,
-                old_sid,
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception:
-            logger.debug("Stale preview session cleanup failed", port=port)
-        del sandbox._preview_sessions[port]
-        sandbox._preview_owners.pop(port, None)
+    # Replace what runs on the port: the session this process started, and
+    # every one of the owner's, another worker's included.
+    owned = await _owned_port_sessions(sandbox, port, owner)
+    known = sandbox._preview_sessions.pop(port, None)
+    stale = [state.session_id for state in owned] + ([known] if known else [])
+    for prior in dict.fromkeys(stale):
+        await _delete_session_quietly(sandbox, prior)
 
     try:
-        await sandbox._runtime_call(
-            sandbox.runtime.create_session,
+        await _create_session(sandbox, session_id)
+        cmd_id = await sandbox._runtime_call(
+            sandbox.runtime.session_execute,
             session_id,
-            retry_policy=RetryPolicy.SAFE,
+            command,
+            retry_policy=RetryPolicy.UNSAFE,
+            total_timeout=30,
         )
-    except Exception as e:
-        if "already exists" in str(e).lower():
-            # Stale session from a previous server process: delete and
-            # recreate to avoid inheriting a running command from the old
-            # session.
-            try:
-                await sandbox._runtime_call(
-                    sandbox.runtime.delete_session,
-                    session_id,
-                    retry_policy=RetryPolicy.SAFE,
-                )
-                await sandbox._runtime_call(
-                    sandbox.runtime.create_session,
-                    session_id,
-                    retry_policy=RetryPolicy.SAFE,
-                )
-            except Exception:
-                logger.debug(
-                    "Stale preview session cleanup failed, reusing",
-                    session_id=session_id,
-                )
-        else:
-            raise
-
-    cmd_id = await sandbox._runtime_call(
-        sandbox.runtime.session_execute,
-        session_id,
-        command,
-        retry_policy=RetryPolicy.UNSAFE,
-        total_timeout=30,
-    )
-    sandbox._preview_sessions[port] = (session_id, cmd_id)
-    if owner is not None:
-        sandbox._preview_owners[port] = owner
+    except BaseException:
+        # A session with no command lists as running, which would hold the
+        # port against every other workspace. A cancel or a lost reply can
+        # leave one made by either call.
+        await asyncio.shield(_delete_session_quietly(sandbox, session_id))
+        raise
+    sandbox._preview_sessions[port] = session_id
     logger.info(
         "Preview server started",
         cmd_id=cmd_id,
@@ -215,7 +282,8 @@ async def start_and_get_preview_url(
             retry_policy=RetryPolicy.SAFE,
         )
         if occupied.exit_code == 0:
-            if owner is None or sandbox._preview_owners.get(port) != owner:
+            owned = await _owned_port_sessions(sandbox, port, owner)
+            if not any(state.running for state in owned):
                 raise PreviewPortInUse(port)
             if await sandbox._is_preview_reachable(port):
                 return await sandbox.get_preview_url(port, expires_in)
@@ -261,45 +329,41 @@ async def start_and_get_preview_url(
 async def get_preview_server_logs(sandbox: "PTCSandbox", port: int) -> dict[str, Any]:
     """Get logs for the preview server running on the given port.
 
+        A preview session runs one command, so its latest is the server.
+
         Returns:
             Dict with keys: success, is_running, stdout, stderr, port.
         """
-    entry = sandbox._preview_sessions.get(port)
-    if not entry:
-        return {
-            "success": False,
-            "is_running": False,
-            "stdout": "",
-            "stderr": f"No preview session for port {port}",
-            "port": port,
-        }
-    session_id, cmd_id = entry
+    session_id = sandbox._preview_sessions.get(port)
+    missing = {
+        "success": False,
+        "is_running": False,
+        "stdout": "",
+        "stderr": f"No preview session for port {port}",
+        "port": port,
+    }
+    if session_id is None:
+        return missing
     await sandbox._wait_ready()
     assert sandbox.runtime is not None
     try:
-        result: SessionCommandResult = await sandbox._runtime_call(
-            sandbox.runtime.session_command_logs,
+        result: SessionCommandResult | None = await sandbox._runtime_call(
+            sandbox.runtime.session_logs,
             session_id,
-            cmd_id,
             retry_policy=RetryPolicy.SAFE,
         )
-        is_running = result.exit_code is None
-        return {
-            "success": True,
-            "is_running": is_running,
-            "exit_code": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "port": port,
-        }
     except Exception as e:
-        return {
-            "success": False,
-            "is_running": False,
-            "stdout": "",
-            "stderr": f"Failed to get logs: {e!s}",
-            "port": port,
-        }
+        return {**missing, "stderr": f"Failed to get logs: {e!s}"}
+    if result is None:
+        return missing
+    return {
+        "success": True,
+        "is_running": result.exit_code is None,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "port": port,
+    }
 
 
 async def stop_preview_server(sandbox: "PTCSandbox", port: int) -> bool:
@@ -307,10 +371,9 @@ async def stop_preview_server(sandbox: "PTCSandbox", port: int) -> bool:
 
         Returns True if the session was found and deleted.
         """
-    entry = sandbox._preview_sessions.get(port)
-    if not entry:
+    session_id = sandbox._preview_sessions.get(port)
+    if session_id is None:
         return False
-    session_id, _cmd_id = entry
     await sandbox._wait_ready()
     assert sandbox.runtime is not None
     try:
@@ -323,5 +386,4 @@ async def stop_preview_server(sandbox: "PTCSandbox", port: int) -> bool:
     except Exception:
         logger.debug("Failed to delete preview session", session_id=session_id)
     sandbox._preview_sessions.pop(port, None)
-    sandbox._preview_owners.pop(port, None)
     return True
