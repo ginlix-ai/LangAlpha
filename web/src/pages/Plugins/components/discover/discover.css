@@ -216,7 +216,7 @@
 /* A catalog entry's page */
 .discover-pair {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
   column-gap: 40px;
   row-gap: 32px;
 }

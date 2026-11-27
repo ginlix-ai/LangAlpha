@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Select } from '@/components/ui/select';
@@ -41,6 +41,9 @@ export function GeneralPanel() {
   const languageId = useId();
   // The pick shows at once; the account catches up when the save lands.
   const [timezoneDraft, setTimezoneDraft] = useState<string | null>(null);
+  // Counts the picks, so a failed save clears only a draft no later pick has
+  // replaced, even one naming the same zone.
+  const timezonePicks = useRef(0);
   const timezone = timezoneDraft ?? ((authUser?.timezone as string) || '');
   const [shareLinkOpen, setShareLinkOpenState] = useState(getShareLinkOpen);
 
@@ -75,7 +78,14 @@ export function GeneralPanel() {
             value={timezone}
             onChange={(next: string) => {
               setTimezoneDraft(next);
-              void saveUser({ timezone: next });
+              const pick = ++timezonePicks.current;
+              const saved = updateUser({ timezone: next });
+              // A pick that did not save goes back to the account's zone, unless
+              // a later pick has taken its place.
+              saved.catch(() => {
+                if (timezonePicks.current === pick) setTimezoneDraft(null);
+              });
+              void reportFailure(saved);
             }}
             home={{ zone: deviceTimezone(), label: t('timezone.thisDevice') }}
             placeholder={t('settings:selectTimezone')}
