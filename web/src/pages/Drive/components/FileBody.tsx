@@ -12,6 +12,7 @@ import type { DriveEntry } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
 import { DriveHtml } from './DriveHtml';
 import { DriveLoading } from './DriveLoading';
+import { ExtractedText, type TextSource } from './ExtractedText';
 import { PaneProblem } from './PaneProblem';
 
 const CodeEditor = React.lazy(() => import('@/pages/ChatAgent/components/viewers/CodeEditor'));
@@ -44,6 +45,8 @@ export type BodyView =
     /** The version shown in place of the head, which a download takes. */
     seq: number | null;
   }
+  /** A Word file, shown as the text the server reads out of it; `source` names the bytes it should come from. */
+  | { kind: 'extract'; entry: DriveEntry; seq: number; sha: string; source: TextSource }
   | { kind: 'loading' }
   | { kind: 'failure'; name: string; gone: boolean; onRetry: () => void }
   /** The version the URL names is not kept (expired or cleared). */
@@ -102,6 +105,17 @@ export function FileBody({ view, imageLoader, onOpenLink }: {
       return <DriveHtml content={view.content} name={view.name} source={view.source} />;
     case 'loading':
       return <DriveLoading />;
+    case 'extract':
+      return (
+        <ExtractedText
+          entryId={view.entry.id}
+          name={view.entry.name}
+          seq={view.seq}
+          sha={view.sha}
+          source={view.source}
+          onDownload={() => void actions.download(view.entry, view.seq === view.entry.version ? null : view.seq)}
+        />
+      );
     case 'failure':
       return <PaneProblem line={view.gone ? t('drive:errors.missing', { name: view.name }) : t('drive:errors.loadFailed')} onRetry={view.gone ? undefined : view.onRetry} />;
     case 'versionGone':

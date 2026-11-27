@@ -46,7 +46,10 @@
     "version": "v{{seq}}",
     "changed": "changed {{when}} by {{who}}",
     "source": "Source",
-    "page": "Page"
+    "page": "Page",
+    "textOnly": "Text only: the formatting, tables and images are in the download.",
+    "textCut": "The text stops here; download the file for the rest.",
+    "textNone": "This document has no text to show."
   },
   "edit": {
     "unsaved": "Unsaved changes",

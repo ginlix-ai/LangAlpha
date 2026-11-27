@@ -585,6 +585,7 @@
 }
 /* What a pane shows arrives with a short fade rather than a cut. */
 .drive-viewer,
+.drive-extract,
 .drive-html-frame.is-shown,
 .drive-file-view {
   animation: drive-fade-in var(--motion-quick) var(--ease-out) backwards;
@@ -636,6 +637,26 @@
   color: var(--color-text-tertiary);
   text-align: center;
 }
+
+/* A Word file read as its text: a quiet line on what is missing, then the paragraphs. */
+.drive-extract-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px 6px 16px;
+  border-bottom: 1px solid var(--color-border-muted);
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.drive-extract-text {
+  padding: 20px 24px 48px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+}
+.drive-extract-text > p + p { margin-top: 0.75em; }
+.drive-extract-empty { color: var(--color-text-tertiary); }
 
 /* A memo's status beside a row's name; the memo rules are in Memo.css. */
 .drive-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }

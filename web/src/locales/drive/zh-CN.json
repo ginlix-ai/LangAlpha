@@ -45,7 +45,10 @@
     "version": "v{{seq}}",
     "changed": "{{who}}于{{when}}修改",
     "source": "源码",
-    "page": "页面"
+    "page": "页面",
+    "textOnly": "仅显示文字：格式、表格和图片请下载文件查看。",
+    "textCut": "文字到此为止，其余部分请下载文件查看。",
+    "textNone": "这份文档没有可显示的文字。"
   },
   "edit": {
     "unsaved": "有未保存的修改",
