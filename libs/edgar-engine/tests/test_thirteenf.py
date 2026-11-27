@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from edgar_engine.thirteenf import (check_units, consensus_prices, holding_rows, parse_13f, read_13f_dataset,
-                                    resolve_amendments, ticker_for_cusip)
+                                    resolve_amendments, ticker_for_cusip, value_multiplier)
 from edgar_engine.thirteenf.cusip import check_digit_ok, class_ticker
 
 PRIMARY = """<?xml version="1.0" encoding="UTF-8"?>
@@ -267,6 +267,40 @@ def test_a_data_set_report_filed_under_the_dollar_schema_reads_dollars(tmp_path)
     _, rows = read_13f_dataset(tmp_path, period="2022-09-30")
     usd = rows.set_index("accession").value_usd
     assert usd["L-1"] == 2_100_000 and usd["O-1"] == 2_100_000
+
+
+def test_value_multiplier_rescales_what_is_filed_in_thousands_and_leaves_the_rest():
+    usual = parse_13f(report(ROWS))
+    assert value_multiplier(usual) == (1.0, "as_filed")
+
+    before_2023 = parse_13f(report(ROWS).replace("X0202", "X0101").replace("06-30-2024", "06-30-2022"))
+    assert value_multiplier(before_2023) == (1000.0, "rescaled")
+
+    cheap = [(f"ISSUER {i}", f"{i:09d}", 500, 10_000) for i in range(12)]
+    unambiguous = parse_13f(report(cheap))
+    assert unambiguous.value_unit.unit == "thousands" and not unambiguous.value_unit.ambiguous
+    assert value_multiplier(unambiguous) == (1000.0, "rescaled")
+
+    few = parse_13f(report(cheap[:3]))
+    assert few.value_unit.unit == "thousands" and few.value_unit.ambiguous
+    assert value_multiplier(few) == (1.0, "as_filed")
+
+
+def test_the_confidential_omission_flag_is_read_from_the_summary_page_and_the_data_set(tmp_path):
+    flagged = report(ROWS).replace("</summaryPage>", "<isConfidentialOmitted>true</isConfidentialOmitted></summaryPage>")
+    assert parse_13f(flagged).confidential_omitted is True and parse_13f(report(ROWS)).confidential_omitted is None
+    (tmp_path / "SUBMISSION.tsv").write_text(
+        "ACCESSION_NUMBER\tFILING_DATE\tSUBMISSIONTYPE\tCIK\tPERIODOFREPORT\n"
+        + "".join(f"{a}\t14-AUG-2024\t13F-HR\t44444{i}\t30-JUN-2024\n" for i, a in enumerate(("Y-1", "N-1", "U-1"))))
+    (tmp_path / "COVERPAGE.tsv").write_text("ACCESSION_NUMBER\tAMENDMENTNO\tAMENDMENTTYPE\tFILINGMANAGER_NAME\tREPORTTYPE\n")
+    (tmp_path / "SUMMARYPAGE.tsv").write_text(
+        "ACCESSION_NUMBER\tTABLEENTRYTOTAL\tTABLEVALUETOTAL\tISCONFIDENTIALOMITTED\nY-1\t0\t0\tY\nN-1\t0\t0\tN\nU-1\t0\t0\t\n")
+    (tmp_path / "INFOTABLE.tsv").write_text(
+        "ACCESSION_NUMBER\tINFOTABLE_SK\tNAMEOFISSUER\tTITLEOFCLASS\tCUSIP\tFIGI\tVALUE\tSSHPRNAMT\tSSHPRNAMTTYPE\tPUTCALL\t"
+        "INVESTMENTDISCRETION\tOTHERMANAGER\tVOTING_AUTH_SOLE\tVOTING_AUTH_SHARED\tVOTING_AUTH_NONE\n")
+    flags = read_13f_dataset(tmp_path)[0].set_index("accession").confidential_omitted
+    assert str(flags.dtype) == "boolean" and flags.fillna(False).to_dict() == {"Y-1": True, "N-1": False, "U-1": False}
+    assert flags.isna().to_dict() == {"Y-1": False, "N-1": False, "U-1": True}
 
 
 def test_summary_numbers_past_int_range_read_as_none():

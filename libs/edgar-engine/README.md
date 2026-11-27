@@ -214,7 +214,9 @@ prices, schema, period); `check_units` takes a period's rows from every filer an
 share with the median price the other filers imply for the same CUSIP (one vote per filer, never the report's
 own), and flags a report 100x or more away; a report whose rows split between scales reads `mixed`, since one
 multiplier would break its correct rows.
-Each catches errors the other misses, so `unit_flags` takes either. `checks` adds generic summary-page checks: a
+Each catches errors the other misses, so `unit_flags` takes either. `value_multiplier` turns a report's unit into
+the factor for whole dollars: 1000 (status `rescaled`) when its schema and period say thousands or its own rows'
+implied prices say so unambiguously, else 1 (`as_filed`). `checks` adds generic summary-page checks: a
 row count or value total that disagrees with the summary page (another manager's table attached, a truncated or
 transposed table) and nil tables.
 
@@ -223,7 +225,18 @@ RESTATEMENT is the base, and a NEW HOLDINGS amendment filed on or after it adds 
 most of its rows repeat a row held so far (CUSIP, shares, type and put or call) and those repeats cover most of the
 holdings (some filers mark a full re-filing as NEW HOLDINGS). Reports filed the same day go original first, then
 by amendment number. `get_13f_holdings` leaves out, with a warning, a report whose information table is missing
-or unreadable, so it can never replace a readable one.
+or unreadable, so it can never replace a readable one. `get_13f_reports` returns the same reports with the
+accessions it left out (`unreadable`, `other_filer`) and warns about none, for a caller that acts on them.
+
+**Confidential omissions.** A manager may leave holdings out of a report while it asks the SEC to keep them
+confidential, and says so on the summary page (`isConfidentialOmitted`). Each report's `confidential_omitted`, and
+the same column of `read_13f_dataset`, carries that flag; `portfolio(..., omits_confidential=True)` then leaves
+`change` unknown and lists no `sold_out` rows, since a position missing from the report may still be held.
+
+**Periods.** `edgar_engine.periods` (also exported by `edgar_engine.thirteenf`, and importable without edgartools):
+`period_deadline` gives the day every 13F-HR for a quarter is due (45 days after it, rolled to a
+business day) and `expected_period(today)` the latest quarter whose deadline is `SETTLE_DAYS` (3) behind, since late
+filings keep landing for a few days.
 
 **Tickers.** `ticker_for_cusip` looks a CUSIP up in edgartools' bundled CUSIP snapshot. A CUSIP whose check digit
 fails (a typo, an option series' pseudo-CUSIP) maps to nothing, and class tickers come back in exchange form

@@ -3,7 +3,7 @@ and cache."""
 from __future__ import annotations
 
 import warnings
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pandas as pd
@@ -13,7 +13,7 @@ from .cache import SectionsCache, SubmissionCache
 from .filings import _company, list_filings, pick_ref, select_filing
 from .ownership import OwnershipFiling, belongs_to_issuer, parse_ownership
 from .sections.model import FilingSections, View
-from .submission import fetch_submission
+from .submission import decode, fetch_submission, header
 from .thirteenf import ThirteenFFiling, holding_rows, parse_13f, resolve_amendments
 
 OWNERSHIP_XML_FROM = "2003-06-30"
@@ -90,40 +90,61 @@ def get_insider_filings(company: Any, *, start: str | None = None, end: str | No
     return sorted(out, key=lambda f: (f.filed or "", accepted.get(f.accession, ""), f.accession or ""), reverse=True)
 
 
-def get_13f_holdings(filer: Any, period: str, *, submissions: SubmissionCache | None = None) -> list[ThirteenFFiling]:
+@dataclass(frozen=True)
+class ThirteenFReports:
+    """The reports that make up a filer's holdings for a period (filer_cik's), and the reports left out: unreadable,
+    those listed for the period whose document or information table could not be read (one that declares zero
+    entries is read), and other_filer, (accession, CIK) for those filed under another filer's CIK."""
+    filer_cik: int
+    reports: tuple[ThirteenFFiling, ...]
+    unreadable: tuple[str, ...]
+    other_filer: tuple[tuple[str, int], ...]
+
+
+def get_13f_reports(filer: Any, period: str, *, submissions: SubmissionCache | None = None) -> ThirteenFReports:
     """The reports that make up one filer's holdings for a period (YYYY-MM-DD), after amendment resolution, in
-    filing order. Each report costs one request, or none when submissions holds it. A report whose information
-    table is missing or unreadable (and that does not declare zero entries) is left out with a warning, so it can
-    never replace a readable one. A report EDGAR serves cut short twice raises TruncatedSubmission, since resolving
-    amendments without it could return the wrong holdings."""
+    filing order, with the reports left out and why. Each report costs one request, or none when submissions holds
+    it. A report with no readable 13F document is placed by its header's period of report, and counts for the period
+    asked when that is missing too. An unreadable report never replaces a readable one, but the holdings may be incomplete when it is not
+    superseded, so a caller decides what to do with unreadable. A report EDGAR serves cut short twice raises
+    TruncatedSubmission, since resolving amendments without it could return the wrong holdings."""
     company = _company(filer)
     listed = company.get_filings(form=["13F-HR", "13F-HR/A"])
     if listed is None:
-        return []
-    reports = []
+        return ThirteenFReports(int(company.cik), (), (), ())
+    reports, unreadable, other_filer = [], [], []
     for row in listed.data.to_pylist():
         if str(row.get("reportDate") or "")[:10] not in ("", period):
             continue
         accession = row["accession_number"]
-        f = parse_13f(fetch_submission(company.cik, accession, submissions), accession=accession)
-        if f is None:
-            warnings.warn(f"{accession}: no readable 13F document", stacklevel=2)
+        body = fetch_submission(company.cik, accession, submissions)
+        f = parse_13f(body, accession=accession)
+        if (f.period if f is not None else header(decode(body)).get("period") or period) != period:
             continue
-        if f.period != period:
-            continue
-        if not f.has_information_table and f.declared_entries != 0:
-            warnings.warn(f"{accession}: no readable information table", stacklevel=2)
-            continue
-        if f.filer_cik is not None and f.filer_cik != int(company.cik):
-            warnings.warn(f"{accession}: filed under CIK {f.filer_cik}, not {int(company.cik)}", stacklevel=2)
-            continue
-        reports.append(replace(f, filer_cik=int(company.cik)))
+        if f is None or (not f.has_information_table and f.declared_entries != 0):
+            unreadable.append(accession)
+        elif f.filer_cik is not None and f.filer_cik != int(company.cik):
+            other_filer.append((accession, f.filer_cik))
+        else:
+            reports.append(replace(f, filer_cik=int(company.cik)))
     if not reports:
-        return []
+        return ThirteenFReports(int(company.cik), (), tuple(unreadable), tuple(other_filer))
     filings = pd.DataFrame([{"accession": f.accession, "filer_cik": f.filer_cik, "period": f.period, "form": f.form,
                              "filed": f.filed, "amendment_type": f.amendment_type, "amendment_no": f.amendment_no}
                             for f in reports])
     rows = pd.DataFrame([r for f in reports for r in holding_rows(f)])
     order = {a: i for i, a in enumerate(resolve_amendments(filings, rows if len(rows) else None))}
-    return sorted((f for f in reports if f.accession in order), key=lambda f: order[f.accession])
+    kept = sorted((f for f in reports if f.accession in order), key=lambda f: order[f.accession])
+    return ThirteenFReports(int(company.cik), tuple(kept), tuple(unreadable), tuple(other_filer))
 
+
+def get_13f_holdings(filer: Any, period: str, *, submissions: SubmissionCache | None = None) -> list[ThirteenFFiling]:
+    """The reports of get_13f_reports, with a warning naming each report it left out: one whose document or
+    information table is missing or unreadable (and that does not declare zero entries), or one filed under another
+    CIK. Use get_13f_reports to act on those instead."""
+    got = get_13f_reports(filer, period, submissions=submissions)
+    for accession in got.unreadable:
+        warnings.warn(f"{accession}: no readable 13F document or information table", stacklevel=2)
+    for accession, cik in got.other_filer:
+        warnings.warn(f"{accession}: filed under CIK {cik}, not {got.filer_cik}", stacklevel=2)
+    return list(got.reports)

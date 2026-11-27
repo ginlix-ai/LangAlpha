@@ -19,7 +19,7 @@ import pandas as pd
 from edgar.thirteenf import units as _edgartools_units
 from edgar.thirteenf.units import resolve_value_unit as _edgartools_resolver
 
-from .model import UnitResolution
+from .model import ThirteenFFiling, UnitResolution
 
 MIN_FILERS = 5        # a CUSIP needs this many other filers for a consensus price
 MIN_ROWS = 3          # a report needs this many comparable rows to be judged
@@ -35,6 +35,16 @@ def resolve_value_unit(rows: Iterable[tuple], schema_version: str | None, period
     df["PutCall"] = df.PutCall.astype(object).fillna("")
     r = _edgartools_resolver(df, schema_version, datetime.strptime(period, "%Y-%m-%d") if period else None)
     return UnitResolution(r.unit, r.source, bool(r.ambiguous), int(r.priceable_rows or 0))
+
+
+def value_multiplier(filing: ThirteenFFiling) -> tuple[float, str]:
+    """What a report's value column is multiplied by for whole dollars, and the status of that: 1000.0 and "rescaled"
+    when its schema and period say thousands (before the 2023 schema) or its own rows' implied prices say thousands
+    unambiguously, else 1.0 and "as_filed" (whole dollars since the 2023 schema)."""
+    by_filing = _by_metadata(filing.schema_version, filing.period).unit == "thousands"
+    unit = filing.value_unit
+    mult = 1000.0 if by_filing or (unit.unit == "thousands" and not unit.ambiguous) else 1.0
+    return mult, "as_filed" if mult == 1.0 else "rescaled"
 
 
 @lru_cache(maxsize=None)

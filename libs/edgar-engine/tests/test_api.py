@@ -52,3 +52,35 @@ def test_a_13f_report_that_does_not_parse_is_left_out_with_a_warning(monkeypatch
     monkeypatch.setattr(api, "parse_13f", lambda body, accession: None)
     with pytest.warns(UserWarning, match="a1: no readable 13F document"):
         assert api.get_13f_holdings(1, "2024-06-30") == []
+
+
+def test_13f_reports_name_the_reports_left_out_without_warning(monkeypatch, recwarn):
+    reports = {"a1": _Report("a1", None, "13F-HR", "2024-08-14"), "a2": None,
+               "a3": _Report("a3", None, "13F-HR/A", "2024-09-01", "RESTATEMENT", 1, has_information_table=False),
+               "a4": _Report("a4", 999, "13F-HR", "2024-08-15"),
+               "a5": _Report("a5", None, "13F-HR", "2024-08-16", period="2024-03-31")}
+    listed = SimpleNamespace(data=SimpleNamespace(to_pylist=lambda: [
+        {"accession_number": a, "reportDate": ""} for a in reports]))
+    monkeypatch.setattr(api, "_company", lambda filer: SimpleNamespace(cik=1067983, get_filings=lambda form: listed))
+    monkeypatch.setattr(api, "fetch_submission", lambda cik, accession, cache: accession)
+    monkeypatch.setattr(api, "parse_13f", lambda body, accession: reports[accession])
+    monkeypatch.setattr(api, "holding_rows", lambda f: [])
+    got = api.get_13f_reports(1067983, "2024-06-30")
+    assert ([f.accession for f in got.reports], got.unreadable, got.other_filer) == (["a1"], ("a2", "a3"), (("a4", 999),))
+    assert not recwarn.list
+    with pytest.warns(UserWarning) as caught:
+        assert [f.accession for f in api.get_13f_holdings(1067983, "2024-06-30")] == ["a1"]
+    assert [str(w.message) for w in caught] == ["a2: no readable 13F document or information table",
+                                                "a3: no readable 13F document or information table",
+                                                "a4: filed under CIK 999, not 1067983"]
+
+
+def test_an_unreadable_13f_listed_with_no_period_counts_only_for_the_period_its_header_names(monkeypatch):
+    bodies = {"q1": "<SEC-HEADER>\nCONFORMED PERIOD OF REPORT:\t20240331\n</SEC-HEADER>",
+              "q2": "<SEC-HEADER>\nCONFORMED PERIOD OF REPORT:\t20240630\n</SEC-HEADER>", "none": ""}
+    listed = SimpleNamespace(data=SimpleNamespace(to_pylist=lambda: [
+        {"accession_number": a, "reportDate": ""} for a in bodies]))
+    monkeypatch.setattr(api, "_company", lambda filer: SimpleNamespace(cik=1, get_filings=lambda form: listed))
+    monkeypatch.setattr(api, "fetch_submission", lambda cik, accession, cache: bodies[accession])
+    monkeypatch.setattr(api, "parse_13f", lambda body, accession: None)
+    assert api.get_13f_reports(1, "2024-06-30").unreadable == ("q2", "none")
