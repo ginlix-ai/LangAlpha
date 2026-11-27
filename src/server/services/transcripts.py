@@ -280,9 +280,14 @@ async def behind_in_store(threads: list[tuple[str, str | None]]) -> list[Behind]
     tasks: dict[str, dict[str, dict[str, Any]]] = {}
     for row in await list_thread_tasks(ids):
         tasks.setdefault(str(row["thread_id"]), {})[row["task_id"]] = row
+    # A task a fork carries is rendered in the thread holding its lane, whose
+    # files the fork's manifest names, until the fork holds the lane itself.
+    borrowed = await _borrowed_lanes(tasks)
     behind = []
     for thread_id, checkpoint_id in threads:
-        mine = tasks.get(thread_id, {})
+        mine = {
+            k: row for k, row in tasks.get(thread_id, {}).items() if (thread_id, k) not in borrowed
+        }
         wanted = {"": _fingerprint(checkpoint_id)} | {
             TranscriptTarget(thread_id, task_id).prefix: _fingerprint(
                 _task_print(_task_run(task_id, row))
@@ -295,6 +300,28 @@ async def behind_in_store(threads: list[tuple[str, str | None]]) -> list[Behind]
         if agents or gone:
             behind.append(Behind(thread_id, checkpoint_id, mine, agents, gone))
     return behind
+
+
+async def _borrowed_lanes(
+    tasks: dict[str, dict[str, dict[str, Any]]],
+) -> frozenset[tuple[str, str]]:
+    """The (thread, task) pairs a fork carries without holding their lane:
+    its latest run is a carried one (``borrowed``) and no resume wrote the
+    lane in, which a refused resume can do without a run."""
+    from src.server.database.thread_fork import lanes_held
+    from src.server.services.forks.materialize import checkpointer_pool
+
+    carried = [
+        (thread_id, task_id)
+        for thread_id, rows in tasks.items()
+        for task_id, row in rows.items()
+        if row.get("borrowed")
+    ]
+    if not carried:
+        return frozenset()
+    async with checkpointer_pool().connection() as conn:
+        held = await lanes_held(conn, carried)
+    return frozenset(carried) - held
 
 
 async def _render_and_save(target: _Target, job: _Job) -> bool:

@@ -120,6 +120,29 @@ class BorrowedSegment(BaseModel):
     runs_through: int
 
 
+class BorrowedTask(BaseModel):
+    """A finished task a fork carries as ledger rows under its own run ids,
+    its lane read in the thread that holds it until a resume writes it into
+    the fork (``forks.tasks``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    #: The thread whose checkpoints hold the lane.
+    thread_id: str
+    #: Where the carried runs ended there, which a later run of the task in
+    #: that thread moves past.
+    checkpoint_id: str
+    #: Each carried run, by the fork's id, to the id the lane names it by.
+    runs: dict[str, str] = {}
+
+    @property
+    def lane_to_fork(self) -> dict[str, str]:
+        """The lane's run ids to the fork's, which what the fork reads of the
+        lane is rewritten to: its ledger knows only its own."""
+        return {lane: own for own, lane in self.runs.items()}
+
+
 class ForkHead(BaseModel):
     """The transcript window at the cut (``transcript.identity.Window``)
     taken over every message there, the source's trimmed ones and the ones
@@ -174,6 +197,11 @@ class Borrowing(BaseModel):
     ancestors: tuple[BorrowedSegment, ...] = ()
     #: The transcript window at the cut.
     head: ForkHead = ForkHead()
+    #: The finished tasks it carried, each with where its lane was then.
+    task_lanes: tuple[BorrowedTask, ...] = ()
+
+    def task_lane(self, task_id: str) -> Optional[BorrowedTask]:
+        return next((t for t in self.task_lanes if t.task_id == task_id), None)
 
     def owns(self, turn_index: int) -> bool:
         return turn_index >= self.turn_base

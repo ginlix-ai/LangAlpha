@@ -78,6 +78,12 @@ class FakeLedger:
     async def get_latest_run(self, task_id: str):
         return None
 
+    async def carry_task_lane(self, task_id: str, fence=None) -> None:
+        """No task here is carried from another chat."""
+
+    async def carried_task(self, task_id: str) -> None:
+        return None
+
     async def start_task_run(self, **kwargs) -> str:
         self.started.append(kwargs)
         if self.reject:

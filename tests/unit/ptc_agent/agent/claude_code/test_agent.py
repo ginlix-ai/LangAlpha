@@ -568,7 +568,9 @@ async def test_a_task_another_model_last_answered_is_not_resumed_on_claude_code(
         await task_graph.ainvoke({"messages": [HumanMessage(prompt, id=str(uuid.uuid4()))]}, config)
 
     registry = BackgroundTaskRegistry("t-1")
-    registry.run_ledger = SimpleNamespace(start_task_run=AsyncMock(return_value="tr-3"))
+    registry.run_ledger = SimpleNamespace(
+        carry_task_lane=AsyncMock(), start_task_run=AsyncMock(return_value="tr-3")
+    )
     mw = BackgroundSubagentMiddleware(
         subagent_types=["research"], registry=registry, checkpointer=saver,
         run_on={"research": RunOn(claude_code=Admitted() if on_claude_code else None)},
