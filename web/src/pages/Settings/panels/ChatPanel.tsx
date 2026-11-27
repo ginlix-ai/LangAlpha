@@ -57,8 +57,8 @@ export function ChatPanel() {
           value={toolCallLayout}
           onChange={(v) => { if (v !== toolCallLayout) void write(toolCallLayoutPatch(v)); }}
           options={[
-            { value: 'rows', label: t('settings:toolCallLayoutRows') },
             { value: 'status', label: t('settings:toolCallLayoutStatus') },
+            { value: 'rows', label: t('settings:toolCallLayoutRows') },
           ]}
         />
         <SegmentedRow

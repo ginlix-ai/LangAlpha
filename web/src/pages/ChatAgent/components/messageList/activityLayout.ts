@@ -1,9 +1,9 @@
 /**
  * What an activity block draws: the slot above its rows, where the summary
  * goes, and the rows under it. A block lays itself out one of two ways, and
- * the two never mix: a row per step (the default), or the status line (opt-in,
- * `tool_call_layout: 'status'`), one row naming the step in flight under a
- * count of the finished ones.
+ * the two never mix: the status line (the default), one row naming the step
+ * in flight under a count of the finished ones, or a row per step (opt-out,
+ * `tool_call_layout: 'rows'`).
  */
 import { type ActivityItem, type PreparingCall, isRunning } from './activityTypes';
 import { groupFileToolRuns } from './groupFileToolRuns';
