@@ -8,7 +8,6 @@ import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { useWorkspaceText } from '@/hooks/useWorkspaceLabel';
 import { HomeRowIcon } from '@/hooks/useHomeWorkspace';
 import { isHomeWorkspace } from '@/lib/homeWorkspace';
-import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
 import type { Workspace } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { WidgetCardMeta } from '../framework/widgetCardSlots';
@@ -178,10 +177,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
         <span>{workspaces.length}</span>
         <button
           type="button"
-          onClick={() => {
-            clearChatSession();
-            navigate('/chat');
-          }}
+          onClick={() => navigate('/chat')}
           className="dash-link widget-drag-cancel"
         >
           {t('dashboard:widgets.workspacePicker.viewAll')}
@@ -216,10 +212,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  clearChatSession();
-                  navigate('/chat');
-                }}
+                onClick={() => navigate('/chat')}
                 className="text-[0.6875rem] uppercase tracking-wider underline-offset-4 hover:underline"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
@@ -234,10 +227,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
                 key={ws.workspace_id}
                 workspace={ws}
                 index={i}
-                onOpen={() => {
-                  clearChatSession();
-                  navigate(`/chat/${ws.workspace_id}`);
-                }}
+                onOpen={() => navigate(`/chat/${ws.workspace_id}`)}
               />
             ))}
           </div>

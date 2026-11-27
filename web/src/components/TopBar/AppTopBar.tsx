@@ -3,7 +3,7 @@ import { Globe, Plus, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { NAV_ITEMS, NEW_CHAT_ITEM, SETTINGS_ITEM, type NavItem } from '@/components/nav/navItems';
+import { NAV_ITEMS, SETTINGS_ITEM } from '@/components/nav/navItems';
 import { useDesktopNavItems } from '@/components/nav/useNavItems';
 import {
   DropdownMenu,
@@ -22,7 +22,6 @@ import {
 import { SidebarCorner } from '@/components/Sidebar/SidebarCorner';
 import type { SidebarPeek } from '@/components/Sidebar/useSidebarPeek';
 import { cn } from '@/lib/utils';
-import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
 import './TopBar.css';
 
 const ROUTE_ITEMS = [...NAV_ITEMS, SETTINGS_ITEM];
@@ -43,13 +42,6 @@ function PageTabStrip({ tabs, actions }: { tabs: PageTabsState; actions: PageTab
   useEffect(() => {
     listRef.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [tabs.activeId]);
-  const openPlace = (item: NavItem) => {
-    // A new chat starts at the gallery. Arriving at the chat from another page
-    // otherwise reads as coming back to it, and reopens the thread last left.
-    // Cleared only once the tab opens, so a full strip or a declined leave
-    // keeps the way back to that thread.
-    actions.open(item.key, item === NEW_CHAT_ITEM ? clearChatSession : undefined);
-  };
   return (
     <div className="page-tabs">
       {/* The tabs scroll once they reach their narrowest; the new-tab button
@@ -117,7 +109,7 @@ function PageTabStrip({ tabs, actions }: { tabs: PageTabsState; actions: PageTab
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="min-w-44">
           {places.map((item) => (
-            <DropdownMenuItem key={item.labelKey} onSelect={() => openPlace(item)}>
+            <DropdownMenuItem key={item.labelKey} onSelect={() => actions.open(item.key)}>
               <item.icon className="h-4 w-4 text-(--color-icon-muted)" aria-hidden="true" />
               {t(item.labelKey)}
             </DropdownMenuItem>

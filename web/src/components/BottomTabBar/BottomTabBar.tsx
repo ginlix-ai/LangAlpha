@@ -1,6 +1,6 @@
 import { useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { SETTINGS_ITEM } from '../nav/navItems';
+import { SETTINGS_ITEM, type NavItem } from '../nav/navItems';
 import { useNavActive } from '../nav/useNavActive';
 import { useNavItems } from '../nav/useNavItems';
 import './BottomTabBar.css';
@@ -13,9 +13,9 @@ export default function BottomTabBar() {
   // Settings rides at the end of whichever primary items this user can see.
   const navItems = useNavItems();
   const menuItems = [...navItems, SETTINGS_ITEM];
-  const handleItemClick = (path: string) => {
-    if (location.pathname === path) return;
-    navigate(path);
+  const handleItemClick = (item: NavItem) => {
+    if (location.pathname === item.key) return;
+    navigate(item.key, { state: item.state });
   };
 
   return (
@@ -29,7 +29,7 @@ export default function BottomTabBar() {
             <button
               key={item.key}
               className={`bottom-tab-item ${active ? 'active' : ''}`}
-              onClick={() => handleItemClick(item.key)}
+              onClick={() => handleItemClick(item)}
               aria-label={t(item.labelKey)}
               aria-current={active ? 'page' : undefined}
             >

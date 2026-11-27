@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { queryKeys } from '../../lib/queryKeys';
 import { threadGalleryQuery } from './utils/threadGalleryQuery';
-import { getChatSession } from './hooks/utils/chatSessionRestore';
+import { asksToResume, getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
 import { useThreadRoute } from './hooks/useThreadRoute';
 import { useDeletedThreads } from '@/lib/deletedThreads';
@@ -68,14 +68,14 @@ function ChatAgent(): React.ReactElement | null {
 
   useCloseComputersOnLeave();
 
-  // Session restore: when landing at /chat (gallery) with a saved session,
-  // navigate to the deep route. This creates the natural history stack:
+  // Session restore: when the phone's Chat tab lands at /chat (gallery) with a
+  // saved session, navigate to the deep route. This creates the natural history stack:
   // [previous page] → /chat → /chat/:workspaceId or /chat/t/:threadId
   // so Safari's back gesture goes to WorkspaceGallery, not the previous page.
   // Read session synchronously (before WorkspaceGallery mounts and clears it).
   const pendingSessionRef = useRef<ReturnType<typeof getChatSession>>(undefined as any);
   if (pendingSessionRef.current === undefined) {
-    pendingSessionRef.current = (!urlWorkspaceId && !threadId) ? getChatSession() : null;
+    pendingSessionRef.current = (!urlWorkspaceId && !threadId && asksToResume(state)) ? getChatSession() : null;
   }
   useEffect(() => {
     const session = pendingSessionRef.current;

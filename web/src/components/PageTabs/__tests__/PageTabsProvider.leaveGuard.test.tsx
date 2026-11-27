@@ -74,9 +74,6 @@ describe('PageTabsProvider when the strip is full', () => {
     expect(seen.tabs!.tabs).toHaveLength(MAX_TABS);
     expect(seen.path).toBe(`/p${MAX_TABS - 1}`);
     expect(toast).toHaveBeenCalledTimes(1);
-    const then = vi.fn();
-    act(() => seen.actions!.open('/one-more', then));
-    expect(then).not.toHaveBeenCalled();
   });
 
   it("reopens a closed tab on Back rather than putting its page in the tab in front", () => {
@@ -139,16 +136,6 @@ describe('PageTabsProvider leave guard', () => {
     act(() => asked[0]());
     expect(seen.path).toBe('/dashboard');
     expect(localStorage.getItem('user:u2:app-page-tabs') ?? '').not.toContain('/market');
-  });
-
-  it('runs what goes with an open only once the tab opens', () => {
-    const { asked, guard } = heldGuard();
-    mount(guard);
-    const then = vi.fn();
-    act(() => seen.actions!.open('/chat', then));
-    expect(then).not.toHaveBeenCalled();
-    act(() => asked[0]());
-    expect(then).toHaveBeenCalledTimes(1);
   });
 
   it('asks nothing once the page withdraws its guard', () => {

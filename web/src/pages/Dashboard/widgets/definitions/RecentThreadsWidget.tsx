@@ -11,7 +11,6 @@ import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
 import { HomeRowIcon } from '@/hooks/useHomeWorkspace';
 import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { recentThreadsQuery, workspaceThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
-import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
 import { threadName } from '@/pages/ChatAgent/components/messageList/sentMessage';
 import type { Thread, Workspace } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
@@ -352,10 +351,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
         <span>{threads.length}</span>
         <button
           type="button"
-          onClick={() => {
-            if (viewAllTarget === '/chat') clearChatSession();
-            navigate(viewAllTarget);
-          }}
+          onClick={() => navigate(viewAllTarget)}
           className="dash-link widget-drag-cancel"
         >
           {t('dashboard:widgets.recentThreads.viewAll')}
