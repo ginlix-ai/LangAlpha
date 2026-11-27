@@ -20,6 +20,8 @@ const mockResetPasswordForEmail = vi.fn().mockResolvedValue({ data: {}, error: n
 const mockResend = vi.fn().mockResolvedValue({ data: { user: null, session: null }, error: null });
 const mockVerifyOtp = vi.fn().mockResolvedValue({ data: { user: null, session: null }, error: null });
 const mockUpdateUser = vi.fn().mockResolvedValue({ data: { user: null }, error: null });
+const mockGetUser = vi.fn();
+const mockSignOut = vi.fn().mockResolvedValue({ error: null });
 
 vi.mock('../../lib/supabase', () => ({
   supabase: {
@@ -29,7 +31,8 @@ vi.mock('../../lib/supabase', () => ({
       signInWithPassword: vi.fn(),
       signUp: (...args: unknown[]) => mockSignUp(...args),
       signInWithOAuth: vi.fn(),
-      signOut: vi.fn(),
+      signOut: (...args: unknown[]) => mockSignOut(...args),
+      getUser: (...args: unknown[]) => mockGetUser(...args),
       signInWithOtp: (...args: unknown[]) => mockSignInWithOtp(...args),
       resetPasswordForEmail: (...args: unknown[]) => mockResetPasswordForEmail(...args),
       resend: (...args: unknown[]) => mockResend(...args),
@@ -44,6 +47,7 @@ vi.mock('../../lib/supabase', () => ({
 const mockPublishSession = vi.fn();
 const mockAdopt = vi.fn();
 const mockClearAuthToken = vi.fn();
+const mockGetAccessToken = vi.fn();
 
 vi.mock('../../lib/authToken', () => ({
   publishSession: (...args: unknown[]) => mockPublishSession(...args),
@@ -52,6 +56,8 @@ vi.mock('../../lib/authToken', () => ({
   // changed; here it only has to record what was adopted.
   sessionAdopter: () => (session: unknown) => mockAdopt(session),
   clearAuthToken: () => mockClearAuthToken(),
+  authGeneration: () => 0,
+  getAccessToken: () => mockGetAccessToken(),
 }));
 
 // The platform call a password change makes to sign connected apps out.
@@ -78,6 +84,7 @@ vi.mock('@/lib/navThreadsStore', async (importOriginal) => ({
 
 // Dynamic import so mocks and env stubs are applied first
 const { AuthProvider, useAuth } = await import('../AuthContext');
+const { AuthApiError } = await import('@supabase/supabase-js');
 type AuthContextValue = ReturnType<typeof useAuth>;
 
 function TestConsumer() {
@@ -368,6 +375,49 @@ describe('AuthContext', () => {
       });
 
       expect(mockClearAuthToken).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('rechecking the session when the portal says it is signed out', () => {
+    let auth: AuthContextValue;
+    function Capture() {
+      auth = useAuth();
+      return null;
+    }
+    const refused = () => ({ data: { user: null }, error: new AuthApiError('JWT is invalid', 401, 'bad_jwt') });
+
+    async function mount() {
+      renderWithQueryClient(
+        <AuthProvider>
+          <Capture />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(auth?.isInitialized).toBe(true));
+      mockSignOut.mockClear();
+    }
+
+    it('signs the refused session out, locally', async () => {
+      mockGetAccessToken.mockResolvedValue('old');
+      mockGetUser.mockResolvedValue(refused());
+      await mount();
+
+      await expect(auth.recheckSession()).resolves.toBe(false);
+      expect(mockGetUser).toHaveBeenCalledWith('old');
+      expect(mockSignOut).toHaveBeenCalledWith({ scope: 'local' });
+    });
+
+    it('keeps a session saved while the check was out', async () => {
+      // The same user signing in again in another tab does not move the
+      // generation, so only the token tells the two sessions apart.
+      mockGetAccessToken.mockResolvedValue('old');
+      mockGetUser.mockImplementation(async () => {
+        mockGetAccessToken.mockResolvedValue('new');
+        return refused();
+      });
+      await mount();
+
+      await expect(auth.recheckSession()).resolves.toBe(true);
+      expect(mockSignOut).not.toHaveBeenCalled();
     });
   });
 });
