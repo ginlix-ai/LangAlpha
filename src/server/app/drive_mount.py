@@ -34,12 +34,14 @@ from ptc_agent.core.sandbox.livefs_runtime.drive_protocol import (
     encode_frame,
 )
 from ptc_agent.core.sandbox.livefs_runtime.protocol import CALL_HEADER, PREFIX
-from src.server.app.drive_http import byte_range, etag_of, receive, status_of
+from src.server.app.drive_http import byte_range, etag_of, receive
 from src.server.app.mount_calls import caller, mutation
 from src.server.database.computer import get_computer
 from src.server.models.drive import UploadIn, UploadSignIn
 from src.server.services import drive
-from src.server.services.drive import Actor, DriveBusy, DriveError, Entry, Space, uploads
+from src.server.database.drive import aside
+from src.server.services.drive.errors import http_status
+from src.server.services.drive import Actor, DriveBusy, DriveError, Entry, Space, memo, uploads
 from src.server.services.livefs import drive_notices, outcomes
 from src.server.services.livefs.tokens import DRIVE, LivefsIdentity
 from src.server.services.persistence.transfer import kind_pulls_from_store
@@ -71,7 +73,7 @@ _caller = caller(DRIVE, "Drive")
 
 def _error(exc: DriveError, path: str = "") -> JSONResponse:
     body: dict[str, Any] = {"code": exc.code, "message": exc.message, "path": path, **exc.details}
-    return JSONResponse(body, status_code=status_of(exc))
+    return JSONResponse(body, status_code=http_status(exc.code))
 
 
 async def _json_body(request: Request) -> bytes:
@@ -120,18 +122,20 @@ def _actor(
     saves into a version and groups a burst of deletes into one trash item,
     is the turn's run, else the call, else the session of the process that
     made the change (``X-Drive-Process``); with none of them, each change
-    stands alone."""
+    stands alone. The command, which ties a memo renamed aside to a file
+    written at its name after (``aside``), is the call, else the session."""
+    session = f"process:{identity.computer_id}:{process}" if process else None
+    command = f"call:{call_id}" if call_id else session
     sitting = context.sitting if context is not None else None
-    if sitting is None and call_id:
-        sitting = f"call:{call_id}"
-    if sitting is None and process:
-        sitting = f"process:{identity.computer_id}:{process}"
+    if sitting is None:
+        sitting = command
     return Actor.of_call(
         context,
         user_id=identity.user_id,
         via="mount",
         sitting=sitting,
         computer_id=identity.computer_id,
+        command=command,
     )
 
 
@@ -385,7 +389,13 @@ async def write(
                 if_none_match=(request.headers.get("if-none-match") or "").strip() == "*",
                 bounds=bounds,
             )
-        return {"size": saved.size}, {"entry": _wire(saved), "cursor": await drive.cursor(sp)}
+        fields: dict[str, Any] = {"size": saved.size}
+        line = await memo.unchecked(
+            saved, drive_notices.shown(identity.root_dir, space, path), actor
+        )
+        if line is not None:
+            fields["report"] = line
+        return fields, {"entry": _wire(saved), "cursor": await drive.cursor(sp)}
 
     return await _mutation(request, identity, "write", space, path, save, _save_resent)
 
@@ -414,14 +424,26 @@ async def move(
     identity: LivefsIdentity = Depends(_caller),
 ) -> Any:
     async def rename(sp: Space, actor: Actor) -> tuple[dict[str, Any], Any]:
-        removed: list[str] = []
-        if replace:
-            moved, ended = await drive.replace(sp, src, dst, actor=actor)
-            removed = [ended] if ended else []
-        else:
-            moved = await drive.move(sp, src, dst)
+        renamed = await drive.rename(sp, src, dst, actor=actor, replace=bool(replace))
+        moved = renamed.entry
+        removed = [renamed.ended_id] if renamed.ended_id else []
         answer = {"entry": _wire(moved), "removed": removed, "cursor": await drive.cursor(sp)}
-        return {"from": drive_notices.shown(identity.root_dir, space, src)}, answer
+        shown_src = drive_notices.shown(identity.root_dir, space, src)
+        shown_dst = drive_notices.shown(identity.root_dir, space, dst)
+        fields: dict[str, Any] = {"from": shown_src}
+        lines = []
+        if not renamed.carried:
+            # The moved file's bytes landed as the destination's version: a
+            # memo moved there went to the trash, and a save to a memo by
+            # rename is a save to it, as a write is.
+            if renamed.trashed_memo is not None:
+                lines.append(aside.moved_onto_memo(shown_src, shown_dst, renamed.trashed_memo))
+            line = await memo.unchecked(moved, shown_dst, actor)
+            if line is not None:
+                lines.append(line)
+        if lines:
+            fields["report"] = "\n".join(lines)
+        return fields, answer
 
     return await _mutation(request, identity, "move", space, dst, rename)
 
@@ -538,9 +560,10 @@ async def begin_upload(
         })
         size = body.size
         sp = await drive.open(identity.user_id, space)
+        actor = _actor(identity, context, call_id, process)
         out = await uploads.begin(
             sp,
-            _actor(identity, context, call_id, process),
+            actor,
             body,
             direct=await _reaches_store(identity) and multipart_enabled(),
             report={"computer_id": identity.computer_id, "call_id": filed, "path": shown},
@@ -555,9 +578,12 @@ async def begin_upload(
             )
         return _upload_error(exc, path)
     if out["mode"] == "held":
-        await _file(
-            identity, filed, context, {"op": "write", "ok": True, "path": shown, "size": size}
-        )
+        # Saved here, so this files what the upload's own end would have.
+        outcome: dict[str, Any] = {"op": "write", "ok": True, "path": shown, "size": size}
+        line = await memo.unchecked(out["entry"], shown, actor)
+        if line is not None:
+            outcome["report"] = line
+        await _file(identity, filed, context, outcome)
         return _upload_json(out, await drive.cursor(sp))
     return _upload_json(out)
 

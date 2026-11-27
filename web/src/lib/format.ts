@@ -274,10 +274,29 @@ const monthDayClockTime = createDateFormatter({ month: 'short', day: 'numeric', 
 const fullMonthDayClockTime = createDateFormatter({ year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 export const fullDateTime = createDateFormatter({ dateStyle: 'full', timeStyle: 'long' });
 
-function localDayStart(ms: number): number {
+/** Midnight of the local day `ms` falls on: two times share a day when these match. */
+export function localDayStart(ms: number): number {
   const d = new Date(ms);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
+}
+
+const dayOfMonth = createDateFormatter({ day: 'numeric' });
+const yearMonthDay = createDateFormatter({ year: 'numeric', month: 'short', day: 'numeric' });
+
+/**
+ * The two ends of a span of days, the second as short as the first leaves
+ * it: "Nov 26" and "27" in one month, "Nov 30" and "Dec 2" across months,
+ * with years across years. Null when both fall on one local day. The caller
+ * joins them in its own words ("{{from}} to {{to}}").
+ */
+export function dayRangeEnds(fromMs: number, toMs: number, locale: string): { from: string; to: string } | null {
+  if (localDayStart(fromMs) === localDayStart(toMs)) return null;
+  const a = new Date(fromMs);
+  const b = new Date(toMs);
+  if (a.getFullYear() !== b.getFullYear()) return { from: yearMonthDay(a, locale), to: yearMonthDay(b, locale) };
+  if (a.getMonth() !== b.getMonth()) return { from: shortMonthDay(a, locale), to: shortMonthDay(b, locale) };
+  return { from: shortMonthDay(a, locale), to: dayOfMonth(b, locale) };
 }
 
 /** A chat message's time against `now`: the clock alone today ("8:43 PM"),

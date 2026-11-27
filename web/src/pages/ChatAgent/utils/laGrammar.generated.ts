@@ -29,6 +29,14 @@ export interface CommandSpec {
   flags?: FlagSpecs;
 }
 
+/** An operand spec read: ``name``, ``name...`` (takes the rest of the words), either with a ``?`` after it (may be left out). */
+export function operandSpec(spec: string): { name: string; rest: boolean; optional: boolean } {
+  const optional = spec.endsWith("?");
+  const bare = optional ? spec.slice(0, -1) : spec;
+  const rest = bare.endsWith("...");
+  return { name: rest ? bare.slice(0, -3) : bare, rest, optional };
+}
+
 export interface Parsed {
   operands: string[];
   values: Map<string, string | number | true>;
@@ -113,9 +121,7 @@ export function bind(command: CommandSpec, parsed: Parsed): Map<string, string> 
   const specs = command.operands ?? [];
   const operands = new Map<string, string>();
   specs.forEach((spec, i) => {
-    const rest = spec.endsWith("...");
-    const optional = spec.endsWith("?");
-    const name = rest ? spec.slice(0, -3) : optional ? spec.slice(0, -1) : spec;
+    const { name, rest, optional } = operandSpec(spec);
     const value = rest ? parsed.operands.slice(i).join(" ").trim() : parsed.operands[i];
     if (!value && optional) return;
     if (!value) throw new GrammarError(`Missing <${name}>`);
@@ -123,7 +129,7 @@ export function bind(command: CommandSpec, parsed: Parsed): Map<string, string> 
   });
   if (parsed.values.has("wait") && parsed.values.has("detach")) throw new GrammarError("Pass --wait or --detach, not both");
   const extra = parsed.operands[specs.length];
-  if (extra !== undefined && !specs.at(-1)?.endsWith("...")) throw new GrammarError(`Unexpected argument "${extra}"`);
+  if (extra !== undefined && !(specs.length && operandSpec(specs.at(-1)!).rest)) throw new GrammarError(`Unexpected argument "${extra}"`);
   for (const [name, flag] of Object.entries(command.flags ?? {})) {
     if (flag.required && !parsed.values.has(name)) throw new GrammarError(`Missing ${flagName(name, flag)}`);
   }
@@ -209,9 +215,17 @@ export const LA_COMMANDS: readonly CommandSpec[] = [
   {"words":["drive","history","clear"],"operands":["path"],"flags":{"before":{"type":"int"},"space":{"type":"string"}}},
   {"words":["drive","history"],"operands":["path"],"flags":{"space":{"type":"string"}}},
   {"words":["drive","usage"],"operands":[],"flags":{"space":{"type":"string"}}},
-  {"words":["drive","restore"],"operands":["path"],"flags":{"rev":{"type":"int","required":true},"space":{"type":"string"}}},
+  {"words":["drive","restore"],"operands":["path"],"flags":{"rev":{"type":"int","required":true},"note":{"type":"string"},"space":{"type":"string"}}},
   {"words":["drive","trash","restore"],"operands":["trash_id"],"flags":{"space":{"type":"string"}}},
   {"words":["drive","trash"],"operands":[],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","memo","mark"],"operands":["path"],"flags":{"status":{"type":"string"},"tickers":{"type":"string"},"note":{"type":"string"},"space":{"type":"string"}}},
+  {"words":["drive","memo","unmark"],"operands":["path"],"flags":{"note":{"type":"string"},"space":{"type":"string"}}},
+  {"words":["drive","memo","set"],"operands":["path"],"flags":{"status":{"type":"string"},"tickers":{"type":"string"},"note":{"type":"string"},"space":{"type":"string"}}},
+  {"words":["drive","memos"],"operands":[],"flags":{"status":{"type":"string"},"ticker":{"type":"string"},"sort":{"type":"string"},"limit":{"type":"int"},"space":{"type":"string"}}},
+  {"words":["drive","record"],"operands":["path"],"flags":{"limit":{"type":"int"},"space":{"type":"string"}}},
+  {"words":["drive","checkout"],"operands":["path","reason...?"],"flags":{"continue":{"type":"bool"},"space":{"type":"string"}}},
+  {"words":["drive","checkin"],"operands":["path","reason...?"],"flags":{"space":{"type":"string"}}},
+  {"words":["drive","undo"],"operands":["path"],"flags":{"note":{"type":"string"},"space":{"type":"string"}}},
   {"words":["skills","save"],"operands":["name"],"flags":{"workspace":{"type":"string","short":"w"}}},
   {"words":["models","list"],"operands":[],"flags":{}},
 ];

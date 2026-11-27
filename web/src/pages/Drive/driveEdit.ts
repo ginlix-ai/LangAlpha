@@ -27,6 +27,8 @@ export interface SaveRequest {
   path: string;
   text: string;
   ifMatch: string;
+  /** Why, on a memo: the person's optional "What changed?", kept with the version. */
+  note?: string | null;
 }
 
 /** Where a save stands: none in flight, one sent, or one waiting out a busy server to go again. */
@@ -52,13 +54,17 @@ export interface EditSession {
   savedAt: number | null;
   /** A save found the file changed underneath, or the person asked to review the change. */
   conflict: boolean;
+  /** What changed, as the person put it beside Save on a memo: the next save's. */
+  note: string;
 }
 
 export type EditState = { mode: 'viewing' } | EditSession;
 
 export type EditAction =
-  | { type: 'open'; path: string; sitting: string; modelPath: string; base: Content }
+  /** `note`: a kept draft's, coming back with it. */
+  | { type: 'open'; path: string; sitting: string; modelPath: string; base: Content; note?: string }
   | { type: 'change'; draft: string }
+  | { type: 'note'; note: string }
   | { type: 'saving'; req: SaveRequest }
   /** The server was busy; the same request goes again. */
   | { type: 'retrying'; req: SaveRequest }
@@ -95,6 +101,7 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       save: 'idle',
       savedAt: null,
       conflict: false,
+      note: action.note ?? '',
     };
   }
   if (state.mode !== 'editing') return state;
@@ -102,6 +109,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
   switch (action.type) {
     case 'change':
       return { ...state, draft: action.draft };
+    case 'note':
+      return { ...state, note: action.note };
     case 'saving':
       return { ...state, save: 'saving' };
     case 'retrying':
@@ -114,6 +123,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         base: { sha: action.sha, content: action.req.text },
         replaced: state.base.sha,
         conflict: false,
+        // The note went with this save; one typed while it was on its way is the next save's.
+        note: action.req.note && state.note.trim() === action.req.note ? '' : state.note,
       };
     case 'save-failed':
       return { ...state, save: 'idle' };
@@ -124,7 +135,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     case 'keep-mine':
       return { ...state, base: action.theirs, conflict: false, save: 'saving' };
     case 'take-theirs':
-      return { ...state, base: action.theirs, draft: action.theirs.content, conflict: false };
+      // The note told of the edits just thrown away.
+      return { ...state, base: action.theirs, draft: action.theirs.content, conflict: false, note: '' };
     case 'rebase':
       // Only a clean draft follows the file; a dirty one waits for the person.
       if (state.draft !== state.base.content || state.save !== 'idle') return state;

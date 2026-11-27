@@ -65,6 +65,9 @@ class CallContext:
     run_id: str | None = None
     #: ``main`` or the subagent's name, read per call as ``run_id`` is.
     agent: str | None = None
+    #: The turn's subagents with no Bash tool. A call that names none of them
+    #: (the main agent, or a save a command made through the mount) can run ``la``.
+    no_bash: tuple[str, ...] = ()
 
     def for_call(self, config: Mapping[str, Any] | None) -> CallContext:
         """This context as one tool call runs it, with the run and the agent
@@ -74,6 +77,11 @@ class CallContext:
         run_id = metadata.get("run_id") or (config or {}).get("run_id")
         agent = metadata.get("subagent_type") or "main"
         return replace(self, run_id=str(run_id) if run_id else None, agent=str(agent))
+
+    @property
+    def can_run_la(self) -> bool:
+        """Whether this caller has a Bash tool to run ``la`` with."""
+        return self.agent not in self.no_bash
 
     @property
     def sitting(self) -> str | None:

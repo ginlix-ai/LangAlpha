@@ -7,7 +7,7 @@ import { getEntry, saveFile } from '@/api/drive';
 import { runAuthResets } from '@/lib/authResets';
 import type { FileBody } from '@/pages/ChatAgent/components/filePanel/fileBody';
 import { renderHookWithProviders } from '@/test/utils';
-import type { DriveEntry } from '@/types/drive';
+import type { DriveEntry, DriveMemoMark } from '@/types/drive';
 import { useDriveEditor } from '../useDriveEditor';
 
 vi.mock('@/api/drive', async (importOriginal) => ({
@@ -22,7 +22,7 @@ function entryAt(sha: string, path = 'notes/q3.md'): DriveEntry {
   return {
     id: path === 'notes/q3.md' ? 'e1' : 'e2', path, name: path.split('/').pop()!, kind: 'file', size: 4, sha256: sha,
     content_type: 'text/markdown', is_text: true, version: 1,
-    created_at: '2026-11-01T00:00:00Z', modified_at: '2026-11-01T00:00:00Z', modified_by: null, deleted_at: null,
+    created_at: '2026-11-01T00:00:00Z', modified_at: '2026-11-01T00:00:00Z', modified_by: null, deleted_at: null, memo: null, undo_until: null,
   };
 }
 
@@ -41,9 +41,11 @@ function refused412() {
  * renders. The editor's model stands in as Monaco's does: a write to it
  * reports a change, as typing does.
  */
-function setup({ version = null }: { version?: number | null } = {}) {
-  const page = { path: 'notes/q3.md', entry: entryAt(SHA.base), head: headAt(SHA.base, 'base') };
-  const view = renderHookWithProviders(() => useDriveEditor('space-1', page.path, page.entry, page.head, version));
+const MARK: DriveMemoMark = { marked: true, status: 'draft', tickers: [], final_seq: null, final_at: null };
+
+function setup({ atHeadDocument = true, memo = false }: { atHeadDocument?: boolean; memo?: boolean } = {}) {
+  const page = { path: 'notes/q3.md', entry: { ...entryAt(SHA.base), memo: memo ? MARK : null }, head: headAt(SHA.base, 'base') };
+  const view = renderHookWithProviders(() => useDriveEditor('space-1', page.path, page.entry, page.head, atHeadDocument));
   let value = '';
   const model = {
     getValue: () => value,
@@ -68,7 +70,12 @@ function setup({ version = null }: { version?: number | null } = {}) {
     page.entry = entryAt(SHA.base, path);
     view.rerender();
   };
-  return { ...view, start, type, moveHead, openFile };
+  /** The mark taken off while the editor stays open. */
+  const unmark = () => {
+    page.entry = { ...page.entry, memo: { ...MARK, marked: false } };
+    view.rerender();
+  };
+  return { ...view, start, type, moveHead, openFile, unmark };
 }
 
 beforeEach(() => {
@@ -90,6 +97,46 @@ describe('useDriveEditor: a save that lands', () => {
     expect(result.current.behind).toBe(false);
     expect(result.current.theirs).toBeNull();
     expect(result.current.session).toMatchObject({ draft: 'mine', base: { sha: SHA.saved, content: 'mine' } });
+  });
+});
+
+describe('useDriveEditor: what changed, on a memo', () => {
+  it('sends the note with the save that carries it, then starts the next one empty', async () => {
+    const { result, start, type } = setup({ memo: true });
+    start();
+    type('mine');
+    act(() => result.current.setNote('  cut the risks section '));
+    vi.mocked(saveFile).mockResolvedValueOnce(entryAt(SHA.saved));
+    await act(() => result.current.save());
+    expect(saveFile).toHaveBeenCalledWith('space-1', 'notes/q3.md', expect.any(Blob), expect.objectContaining({ note: 'cut the risks section' }));
+    expect(result.current.session?.note).toBe('');
+
+    type('mine, again');
+    vi.mocked(saveFile).mockResolvedValueOnce(entryAt('d'.repeat(64)));
+    await act(() => result.current.save());
+    expect(vi.mocked(saveFile).mock.calls[1][3]).toMatchObject({ note: null });
+  });
+
+  it('never sends a note on a file that is no longer a memo', async () => {
+    const { result, start, type, unmark } = setup({ memo: true });
+    start();
+    expect(result.current.asksWhy).toBe(true);
+    type('mine');
+    act(() => result.current.setNote('typed while it was a memo'));
+    unmark();
+    expect(result.current.asksWhy).toBe(false);
+    vi.mocked(saveFile).mockResolvedValueOnce(entryAt(SHA.saved));
+    await act(() => result.current.save());
+    expect(vi.mocked(saveFile).mock.calls[0][3]).toMatchObject({ note: null });
+  });
+
+  it('belongs to its session: a new one starts without it', () => {
+    const { result, start } = setup();
+    start();
+    act(() => result.current.setNote('draft note'));
+    act(() => result.current.close());
+    start();
+    expect(result.current.session?.note).toBe('');
   });
 });
 
@@ -155,6 +202,19 @@ describe('useDriveEditor: a save refused because the file moved on', () => {
     expect(result.current.session).toMatchObject({ conflict: false, draft: 'theirs', base: { sha: SHA.theirs } });
     expect(result.current.dirty).toBe(false);
     expect(saveFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the note written for the edits theirs replaced', async () => {
+    const { result, start, type, moveHead } = setup();
+    start();
+    type('mine');
+    act(() => result.current.setNote('cut the risks section'));
+    vi.mocked(saveFile).mockRejectedValueOnce(refused412());
+    vi.mocked(getEntry).mockResolvedValueOnce(entryAt(SHA.theirs));
+    await act(() => result.current.save());
+    moveHead(SHA.theirs, 'theirs');
+    act(() => result.current.takeTheirs());
+    expect(result.current.session?.note).toBe('');
   });
 
   it('says the file is gone when the refusal finds no text file left', async () => {
@@ -258,6 +318,19 @@ describe('useDriveEditor: unsaved text kept while the person is away', () => {
     expect(result.current.dirty).toBe(true);
   });
 
+  it('keeps the note typed beside the draft, and sends it with the save', async () => {
+    const away = setup({ memo: true });
+    away.start();
+    away.type('mine');
+    act(() => away.result.current.setNote('trimmed the valuation'));
+    away.unmount();
+    const { result } = setup({ memo: true });
+    expect(result.current.session?.note).toBe('trimmed the valuation');
+    vi.mocked(saveFile).mockResolvedValueOnce(entryAt(SHA.saved));
+    await act(() => result.current.save());
+    expect(vi.mocked(saveFile).mock.calls.at(-1)?.[3]).toMatchObject({ note: 'trimmed the valuation' });
+  });
+
   it('saves the draft over the content it was started from, even after the file moved on', async () => {
     leaveDirty();
     const { result, moveHead } = setup();
@@ -301,8 +374,8 @@ describe('useDriveEditor: unsaved text kept while the person is away', () => {
     expect(setup().result.current.session).toBeNull();
   });
 
-  it('never opens a past version from the draft', () => {
+  it('opens only over the head\'s document: never a past version, a record or a comparison', () => {
     leaveDirty();
-    expect(setup({ version: 1 }).result.current.session).toBeNull();
+    expect(setup({ atHeadDocument: false }).result.current.session).toBeNull();
   });
 });

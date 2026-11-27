@@ -8,7 +8,7 @@ import dataclasses
 
 import pytest
 
-from src.server.database.drive.writes import same_sitting
+from src.server.database.drive.policy import same_sitting
 from src.server.services.drive import Actor
 
 USER = "user-1"

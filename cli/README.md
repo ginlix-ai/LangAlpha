@@ -119,7 +119,16 @@ langalpha drive mv <from> <to> [--space SPACE]
 langalpha drive rm <path> [--space SPACE]
 langalpha drive history <path> [--space SPACE]
 langalpha drive history clear <path> [--before N] [--space SPACE]
-langalpha drive restore <path> --rev N [--space SPACE]
+langalpha drive restore <path> --rev N [--note WHY] [--space SPACE]
+langalpha drive undo <path> [--note WHY] [--space SPACE]
+langalpha drive memos [--status S] [--ticker T] [--sort revised|name|path|status] [--limit N] [--space SPACE]
+langalpha drive memo mark <path> [--status draft|final] [--tickers A,B] [--note WHY] [--space SPACE]
+langalpha drive memo unmark <path> [--note WHY] [--space SPACE]
+langalpha drive memo set <path> [--status draft|final|none] [--tickers A,B] [--note WHY] [--space SPACE]
+langalpha drive record <path> [--limit N] [--space SPACE]
+langalpha drive checkout <path> <reason...> [--space SPACE]
+langalpha drive checkout <path> --continue [--space SPACE]
+langalpha drive checkin <path> [<reason...>] [--space SPACE]
 langalpha drive trash [--space SPACE]
 langalpha drive trash restore <trash_id> [--space SPACE]
 langalpha drive usage [--space SPACE]
@@ -139,9 +148,22 @@ renames it into place; run it again to continue an interrupted download. `rm` mo
 a trash kept 14 days (`drive trash restore` undoes it, emptying it is done only in the
 app), and `put --new` or `--if-match SHA256` exit 5 rather than overwrite a file that
 is there or has changed (the hash is `sha256` in `drive ls --json`). `--rev N` reads
-an older version. `history` says when each earlier version goes: a text file keeps
-every version, another file under 100 MiB keeps them 30 days and at most 10, and a
-larger one keeps none, so saving over it replaces it. `history clear` deletes a file's
+an older version. A file keeps one earlier copy, for 7 days after a save (none when the
+file is 100 MiB or more), and `undo` puts it back as a new version; `history` shows it with
+the day it goes. A memo is a file marked with `memo mark`, in any format: it keeps every
+version, with who made it and why, and `record` lists them with the status and mark
+changes. A memo takes a status (`draft` or `final`, which pins the current version) and
+tickers with `memo set`; `memos` lists every memo in the Drive; `memo unmark` keeps the
+versions already made. An agent changes a memo inside a check-out: `checkout <path> '<what you are changing and why>'`
+before editing, kept as the reason of every version made under it (single quotes, so the
+shell leaves `$` alone; a reason that starts with a dash goes after `--`). The check-out
+covers the conversation's later edits to that memo and ends by itself an hour after it goes
+quiet. `checkout <path> --continue` carries on with the conversation's earlier change, and
+`checkin <path> ['<reason>']` ends the change and can reword its reason for all its versions,
+for a finished change that deserves a more exact reason than it started with. A save without a check-out is refused (exit 5)
+with the commands to run. `record` shows a change's versions as one entry. The reason is
+cut to 500 characters. Every `drive` command also takes a path as the agent's computer
+shows it, `.agents/drive/<space>/<path>` or a path from `/`, `~/`, `./` or `../` that reaches it, as the Drive path it stands for. `history clear` deletes a file's
 earlier versions for good and prints the room it freed (`--before N` keeps version N
 and later). `usage` shows the space the Drive counts, live files and their earlier
 versions, against its allowance, and the trash apart: the trash does not count, and

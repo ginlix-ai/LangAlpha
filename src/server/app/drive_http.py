@@ -1,6 +1,5 @@
 """The Drive over HTTP, for both its surfaces (the REST API and the mount's
-actions): the status each refusal answers with, entity tags, byte ranges,
-and receiving a save's body."""
+actions): entity tags, byte ranges, and receiving a save's body."""
 
 from __future__ import annotations
 
@@ -14,35 +13,7 @@ from src.server.services import drive
 from src.server.services.drive import DriveError, Limits
 from src.server.utils.uploads import read_body
 
-#: The HTTP status each ``DriveError`` code answers with.
-STATUS: dict[str, int] = {
-    "not_found": 404,
-    "exists": 409,
-    "is_folder": 409,
-    "not_folder": 409,
-    "not_empty": 409,
-    "changed": 412,
-    "too_large": 413,
-    "invalid_range": 416,
-    "invalid_path": 422,
-    "over_quota": 507,
-    "too_many_entries": 507,
-    "forbidden": 403,
-    "unavailable": 503,
-    # Not 429, which a client reads as throttling to retry after a pause:
-    # this lasts until one of the person's own uploads ends.
-    "too_many_uploads": 409,
-    "upload_ended": 409,
-    "parts_missing": 409,
-    "bad_part": 422,
-    "bad_digest": 422,
-}
-
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
-
-
-def status_of(error: DriveError) -> int:
-    return STATUS.get(error.code, 400)
 
 
 def etag_of(header: str | None) -> str | None:

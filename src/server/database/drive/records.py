@@ -31,6 +31,10 @@ ErrorCode = Literal[
     "bad_part",
     "bad_digest",
     "mismatch",
+    "checkout_required",
+    "not_memo",
+    "not_text",
+    "invalid",
 ]
 
 #: How long the source of a rename over a file is kept as a delete notice.
@@ -89,6 +93,10 @@ class Actor:
     workspace_id: str | None = None
     computer_id: str | None = None
     sitting: str | None = None
+    #: The shell command a change through the mount came from (its call,
+    #: else its process session), which ties a memo renamed aside to a file
+    #: written at its name after (``aside``). Never stored on a version.
+    command: str | None = None
 
     @classmethod
     def of_call(
@@ -99,6 +107,7 @@ class Actor:
         via: Via,
         sitting: str | None,
         computer_id: str | None = None,
+        command: str | None = None,
     ) -> Actor:
         """The agent, as the tool call ``context`` was filed for (None: a
         change no call filed, still the agent's, for no thread)."""
@@ -112,16 +121,26 @@ class Actor:
             workspace_id=context.workspace_id if context is not None else None,
             computer_id=computer_id,
             sitting=sitting,
+            command=command,
         )
 
 
 class DriveError(Exception):
-    def __init__(self, code: ErrorCode, message: str, details: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        details: dict[str, Any] | None = None,
+        *,
+        retry_after: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code: ErrorCode = code
         self.message = message
         #: More the refusal says, which every surface adds to its answer.
         self.details = details or {}
+        #: Seconds an ``unavailable`` caller waits before asking again.
+        self.retry_after = retry_after
 
 
 class DriveBusy(DriveError):
@@ -139,6 +158,24 @@ class Space:
     #: The owner of a personal space.
     user_id: str | None
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class MemoMark:
+    """A file's mark as a memo. ``marked`` False: it was one and was
+    un-marked, its record kept."""
+
+    marked: bool
+    status: Literal["draft", "final"] | None
+    tickers: tuple[str, ...]
+    #: The version pinned when the status last became final.
+    final_seq: int | None
+    #: When that pin was set.
+    final_at: datetime | None = None
+    #: The head when the mark was last put on or taken off. Versions up to
+    #: it stay as written (no save folds into them), and are a former
+    #: memo's record.
+    kept_through_seq: int = 0
 
 
 @dataclass(frozen=True)
@@ -163,6 +200,24 @@ class Entry:
     deleted_by: str | None
     #: Who wrote the head version; None for a folder.
     modified_by: Actor | None
+    #: None for a file that was never a memo, and for a folder.
+    memo: MemoMark | None = None
+    #: Why the head version was made, as it says.
+    head_note: str | None = None
+    #: Until when Undo is offered; None when it is not.
+    undo_until: datetime | None = None
+    #: The agent's change (check-out) the head version was made under.
+    head_change_id: str | None = None
+
+    @property
+    def is_memo(self) -> bool:
+        """A live memo, which keeps every version and needs the agent's reasons."""
+        return self.memo is not None and self.memo.marked
+
+    @property
+    def has_record(self) -> bool:
+        """It is or was a memo, so it has a record of its mark."""
+        return self.memo is not None
 
 
 @dataclass(frozen=True)
@@ -175,10 +230,14 @@ class Version:
     note: str | None
     restored_from: int | None
     actor: Actor
-    #: Held as text in the database, which keeps every version.
+    #: Held as text in the database.
     is_text: bool = False
-    #: When this old version goes; None for the head and one kept without limit.
+    #: When this old version goes (an ordinary file's undo copy); None for
+    #: the head and for a version a memo keeps.
     expires_at: datetime | None = None
+    #: The agent's change (check-out) it was made under; its note is that
+    #: change's reason.
+    change_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -236,85 +295,113 @@ class Changes:
     resync: bool
 
 
-def history_sql(scope: Literal["entry", "space", "spaces"]) -> str:
-    """The history rule, the one place it is written: for each version in
-    ``scope`` (one entry, one space, or a batch of them), ``too_large`` (a copy
-    not kept once replaced) and ``goes_at`` (when it goes: now or earlier
-    when it is due, NULL for the head, for text and for one kept without a
-    time limit). Trimming deletes what is due, the listing shows ``goes_at``
-    as ``expires_at``, the sweep looks for spaces with something due.
+@dataclass(frozen=True)
+class MemoEvent:
+    """A change to a file's mark, in its record beside its versions."""
 
-    Params: ``entry``, ``space`` or ``spaces`` by scope, and the rule as ``max``,
-    ``keep`` and ``days`` (``HistoryRule.params``). An old version goes a
-    rule's days after the save that replaced it; the count keeps the newest
-    ``keep`` kept-by-time versions, text and too-large copies not counted.
-    """
-    spaces = {
-        "entry": None,
-        "space": "ARRAY[%(space)s::uuid]",
-        "spaces": "%(spaces)s::uuid[]",
-    }[scope]
-    if spaces is None:
-        where = "v.entry_id = %(entry)s::uuid"
-    else:
-        # Only entries with a version not held as text have anything due,
-        # found by the index on those versions, a space at a time.
-        where = (
-            f"v.space_id = ANY({spaces}) AND v.entry_id IN (SELECT b.entry_id"
-            f" FROM drive_versions b WHERE b.space_id = ANY({spaces}) AND NOT b.is_text)"
-        )
-    return f"""
-        WITH versions AS (
-            SELECT v.entry_id, v.space_id, v.seq, v.sha256, v.is_text,
-                   v.seq = e.head_seq AS is_head,
-                   (NOT v.is_text AND %(max)s::bigint IS NOT NULL
-                    AND v.byte_len >= %(max)s::bigint) AS too_large,
-                   min(v.created_at) OVER (
-                       PARTITION BY v.entry_id ORDER BY v.seq DESC
-                       ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS replaced_at
-              FROM drive_versions v JOIN drive_entries e ON e.entry_id = v.entry_id
-             WHERE {where}),
-        ranked AS (
-            SELECT *, count(*) FILTER (WHERE NOT (is_head OR is_text OR too_large)) OVER (
-                       PARTITION BY entry_id ORDER BY seq DESC
-                       ROWS UNBOUNDED PRECEDING) AS rank
-              FROM versions),
-        history AS (
-            SELECT entry_id, space_id, seq, sha256, is_head, too_large,
-                   CASE
-                       WHEN is_head OR is_text THEN NULL
-                       WHEN too_large OR rank > %(keep)s::int THEN now()
-                       ELSE replaced_at + make_interval(days => %(days)s::int)
-                   END AS goes_at
-              FROM ranked)
-    """
+    event_id: int
+    kind: Literal["mark", "unmark", "update", "clear"]
+    created_at: datetime
+    actor: Actor
+    note: str | None
+    #: The file's head when it happened.
+    head_seq: int | None
+    status_before: str | None
+    status_after: str | None
+    tickers_before: tuple[str, ...] | None
+    tickers_after: tuple[str, ...] | None
+    #: The version this event pinned, if it pinned one.
+    final_seq: int | None
+    #: Versions a ``clear`` dropped.
+    cleared: int | None
 
 
-#: The old versions clearing a file's history drops (all, or those below
-#: ``before``): shared by the clear and the listing's ``history_bytes``, so
-#: the listing says what the clear frees. Params ``id``, ``head``, ``before``.
-CLEARING_SQL = """
-    dropped AS (
-        SELECT seq, sha256 FROM drive_versions
-         WHERE entry_id = %(id)s AND seq IS DISTINCT FROM %(head)s
-           AND (%(before)s::int IS NULL OR seq < %(before)s::int))
-"""
+@dataclass(frozen=True)
+class MemoChange:
+    """One check-out of a memo by one chat: the agent's versions under it
+    carry its reason as their note."""
+
+    change_id: str
+    entry_id: str
+    thread_id: str | None
+    computer_id: str | None
+    reason: str
+    opened_at: datetime
+    touched_at: datetime
+    #: When it was checked in, or ended by a newer change; None while it may
+    #: be open (``policy.is_open`` decides).
+    ended_at: datetime | None
+    versions: int = 0
+    first_seq: int | None = None
+    last_seq: int | None = None
+
+
+def a_file(found: Entry | None) -> Entry:
+    """``found`` when it is a live file: ``not_found`` for nothing there,
+    ``is_folder`` for a folder."""
+    if found is None:
+        raise DriveError("not_found", "No such entry")
+    if found.kind != "file":
+        raise DriveError("is_folder", f"{found.path} is a folder")
+    return found
+
+
+@dataclass(frozen=True)
+class RecordVersion:
+    version: Version
+    #: Lines added and removed against the version before; None until counted.
+    added: int | None
+    removed: int | None
+
+
+@dataclass(frozen=True)
+class RecordPage:
+    #: Newest first.
+    items: list[RecordVersion | MemoEvent]
+    #: Opaque; the page after this one, None at the end.
+    next: str | None
+    #: The time for counting lines ran out: the next read counts on.
+    counting: bool = False
+
+
+@dataclass(frozen=True)
+class MemoPage:
+    #: Each live memo with its number of versions.
+    items: list[tuple[Entry, int]]
+    next: str | None
+
+
+@dataclass(frozen=True)
+class VersionText:
+    seq: int
+    sha256: str
+    source: Literal["text", "extracted"]
+    status: Literal["ok", "empty", "failed", "too_large"]
+    text: str | None
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class Attribution:
+    seq: int
+    sha256: str
+    line_count: int
+    #: ``(start_line, count, seq)``, 1-based: which version wrote each run.
+    runs: list[tuple[int, int, int]]
+    #: Only the versions the runs name.
+    versions: list[Version]
 
 
 @dataclass(frozen=True)
 class HistoryRule:
-    """Which old versions a file keeps (``drive.history`` in config)."""
+    """What an ordinary file keeps of its history (``drive.history`` in
+    config): the copy before its last save, for ``undo_days``, unless that
+    copy is ``max_bytes`` or more. A memo keeps every version."""
 
     #: A replaced copy this size or larger is not kept; None keeps every size.
     max_bytes: int | None = 100 * 1024 * 1024
-    keep_days: int | None = 30
-    keep_max: int | None = 10
+    undo_days: int = 7
     grace_seconds: int = 3600
-
-    @property
-    def params(self) -> dict[str, Any]:
-        """The rule as ``history_sql`` takes it."""
-        return {"max": self.max_bytes, "keep": self.keep_max, "days": self.keep_days}
 
 
 @dataclass(frozen=True)
@@ -359,16 +446,33 @@ ENTRY_COLUMNS = (
     "e.entry_id::text AS entry_id, e.space_id::text AS space_id, e.path, e.parent,"
     " e.name, e.kind, e.head_seq, v.sha256, v.byte_len AS size, v.content_type,"
     " v.is_text, e.created_at, e.modified_at, e.changed_seq, e.deleted_at,"
-    f" e.trash_id::text AS trash_id, e.deleted_by, {_BY}"
+    f" e.trash_id::text AS trash_id, e.deleted_by, {_BY},"
+    " m.is_memo AS memo_marked, m.status AS memo_status, m.tickers AS memo_tickers,"
+    " m.final_seq AS memo_final_seq, m.final_at AS memo_final_at,"
+    " m.kept_through_seq AS memo_kept_through_seq, v.note AS head_note,"
+    " e.undo_until, v.change_id::text AS head_change_id"
 )
 ENTRY_FROM = (
     "drive_entries e LEFT JOIN drive_versions v"
     " ON v.entry_id = e.entry_id AND v.seq = e.head_seq"
+    " LEFT JOIN drive_memos m ON m.entry_id = e.entry_id"
 )
 #: Columns named as ``Version``'s fields, read ``FROM drive_versions v``.
 VERSION_COLUMNS = (
     "v.seq, v.sha256, v.byte_len AS size, v.content_type, v.created_at, v.note,"
-    f" v.restored_from, v.is_text, {_BY}"
+    f" v.restored_from, v.is_text, v.change_id::text AS change_id, {_BY}"
+)
+
+
+#: Columns named as ``MemoEvent``'s fields, read ``FROM drive_memo_events v``;
+#: an event has no sitting.
+EVENT_COLUMNS = (
+    "v.event_id, v.kind, v.created_at, v.note, v.head_seq, v.status_before,"
+    " v.status_after, v.tickers_before, v.tickers_after, v.final_seq, v.cleared, "
+    + ", ".join(
+        "NULL AS by_sitting" if name == "sitting" else f"v.{col} AS by_{name}"
+        for name, col in _ACTOR_COLUMNS.items()
+    )
 )
 
 
@@ -379,9 +483,35 @@ def _actor(row: dict[str, Any]) -> Actor | None:
 
 def entry_from_row(row: dict[str, Any]) -> Entry:
     row = dict(row)
-    return Entry(modified_by=_actor(row), **row)
+    marked = row.pop("memo_marked")
+    status, tickers, final_seq, final_at = (
+        row.pop("memo_status"),
+        row.pop("memo_tickers"),
+        row.pop("memo_final_seq"),
+        row.pop("memo_final_at"),
+    )
+    kept_through_seq = row.pop("memo_kept_through_seq")
+    memo = None
+    if marked is not None:
+        memo = MemoMark(
+            marked=marked,
+            status=status,
+            tickers=tuple(tickers or ()),
+            final_seq=final_seq,
+            final_at=final_at,
+            kept_through_seq=kept_through_seq or 0,
+        )
+    return Entry(modified_by=_actor(row), memo=memo, **row)
 
 
 def version_from_row(row: dict[str, Any]) -> Version:
     row = dict(row)
     return Version(actor=_actor(row), **row)
+
+
+def event_from_row(row: dict[str, Any]) -> MemoEvent:
+    row = dict(row)
+    for side in ("tickers_before", "tickers_after"):
+        if row[side] is not None:
+            row[side] = tuple(row[side])
+    return MemoEvent(actor=_actor(row), **row)

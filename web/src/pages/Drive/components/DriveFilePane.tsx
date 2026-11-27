@@ -5,7 +5,6 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
 import { apiErrorStatus } from '@/api/errors';
 import { HeaderButton } from '@/components/mcp/McpPrimitives';
-import { useDriveVersions } from '@/hooks/useDrive';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { relativeTime } from '@/lib/format';
@@ -13,23 +12,21 @@ import { cn } from '@/lib/utils';
 import type { FileBody as Body } from '@/pages/ChatAgent/components/filePanel/fileBody';
 import type { FileError } from '@/pages/ChatAgent/components/filePanel/fileErrors';
 import type { OpenFileHandler } from '@/pages/ChatAgent/utils/fileLocation';
-import type { DriveEntry, DriveVersion } from '@/types/drive';
+import type { DriveEntry, DriveVersion, DriveVersions } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
 import { atVersion, driveBodyMode, tooLargeToPreview, useDriveBody } from '../driveBody';
 import { nameOf } from '../drivePaths';
+import { fileAddress, memoState, resolveFileView, type FileView, type MemoView } from '../memoMarks';
 import type { DriveEditor } from '../useDriveEditor';
 import { whoLabel } from '../who';
 import { DriveBar } from './DriveBar';
-import { DriveHistory } from './DriveHistory';
 import { FileBody, type BodyView } from './FileBody';
 import { FileHeader } from './FileHeader';
-
-/**
- * What a diff sets beside what: the editor's draft beside the head it
- * conflicts with, or a past version beside the current file or the one
- * before it.
- */
-type DiffWith = 'theirs' | 'current' | 'previous';
+import { MemoAuthors } from './MemoAuthors';
+import { MemoChanges } from './MemoChanges';
+import { MemoHeader } from './MemoHeader';
+import { MemoRecord } from './MemoRecord';
+import { UndoSave } from './UndoSave';
 
 function bodyError(err: unknown): FileError | null {
   if (!err) return null;
@@ -38,17 +35,19 @@ function bodyError(err: unknown): FileError | null {
 
 /**
  * The open file: its header, a bar when something needs saying, then the
- * file. History sits beside it on a wide screen and takes its place on a
- * phone.
+ * file. A memo's header carries its status and its views (the document, its
+ * record, the changes between versions, who wrote what); an ordinary file
+ * whose last save can be undone says so under its header.
  */
-export function DriveFilePane({ path, entry, entryError, onRetry, version, showHistory, mobile, editor, head, imageLoader, onOpenLink }: {
+export function DriveFilePane({ path, entry, entryError, onRetry, fileView, versions: versionsQuery, mobile, editor, head, imageLoader, onOpenLink }: {
   path: string;
   entry: DriveEntry | undefined;
   entryError: 'gone' | 'failed' | null;
   onRetry: () => void;
-  /** The version shown in place of the head, from the URL. */
-  version: number | null;
-  showHistory: boolean;
+  /** The view, version and comparison the address names, as `resolveFileView` read it for this file. */
+  fileView: FileView;
+  /** The file's versions, which the address may name; read only for a file with a record. */
+  versions: UseQueryResult<DriveVersions>;
   mobile: boolean;
   editor: DriveEditor;
   /** The head's body, read for the viewer and the editor alike. */
@@ -59,44 +58,49 @@ export function DriveFilePane({ path, entry, entryError, onRetry, version, showH
   const { t } = useTranslation();
   const locale = useLocale();
   const now = useNow();
-  const { space, actions, go } = useDriveContext();
+  const { space, actions, go, leaveEditor, ask } = useDriveContext();
   const { session } = editor;
   const [htmlSource, setHtmlSource] = useState(false);
+  const [comparing, setComparing] = useState<string | null>(null);
 
-  // A diff belongs to what it was opened on: another version, or an editor
-  // that has settled its conflict, starts without one.
-  const diffKey = session ? `edit:${session.sitting}:${session.conflict}` : `view:${version ?? ''}`;
-  const [diffState, setDiffState] = useState<{ key: string; with: DiffWith } | null>(null);
-  const diff = diffState?.key === diffKey ? diffState.with : null;
-  const toggleDiff = (next: DiffWith) => setDiffState(diff === next ? null : { key: diffKey, with: next });
-
-  const versionsQuery = useDriveVersions(space, entry?.id ?? null, !!entry && (showHistory || version !== null));
-  const listing = versionsQuery.data;
-  const versions = listing?.versions;
-  const viewed: DriveVersion | null = version !== null ? versions?.find((v) => v.seq === version) ?? null : null;
-  const shownSeq = viewed?.seq ?? versions?.[0]?.seq ?? entry?.version ?? null;
-  const previous: DriveVersion | null = shownSeq !== null ? versions?.find((v) => v.seq < shownSeq) ?? null : null;
+  const state = memoState(entry);
+  const mark = state.kind === 'memo' ? state.mark : null;
+  const versions = versionsQuery.data?.versions;
+  const kept = versions?.map((v) => v.seq);
+  const { view, version, against } = fileView;
+  const docVersion = view === 'document' ? version : null;
+  const viewed: DriveVersion | null = docVersion !== null ? versions?.find((v) => v.seq === docVersion) ?? null : null;
 
   // A past version opens by its own size and kind of bytes.
   const shownEntry = entry ? atVersion(entry, viewed) : null;
   const old = useDriveBody(space, entry && viewed ? shownEntry : null, viewed ? { seq: viewed.seq, sha: viewed.sha256 } : null);
-  const prev = useDriveBody(
-    space,
-    entry && diff === 'previous' && previous ? atVersion(entry, previous) : null,
-    diff === 'previous' && previous ? { seq: previous.seq, sha: previous.sha256 } : null,
-  );
   const shown = viewed ? old : head;
   const mode = shownEntry ? driveBodyMode(shownEntry) : 'none';
   const isText = !!shownEntry?.is_text && mode !== 'none';
   const isHtml = mode === 'html';
-  const historyOpen = showHistory && !session;
 
-  const setVersion = (seq: number | null) => go({ file: path, history: showHistory, version: seq });
-  const toggleHistory = (open: boolean) => go({ file: path, history: open, version: open ? version : null }, { replace: true });
+  // A comparison with theirs belongs to the conflict it was opened on.
+  const conflictKey = session ? `${session.sitting}:${session.conflict}` : null;
+  const compareTheirs = !!conflictKey && comparing === conflictKey;
+
+  const headSeq = entry?.version ?? null;
+  /** Every move between views and versions, written as the address reads it. */
+  const goTo = (next: { view?: MemoView; version?: number | null; against?: number | null }) => {
+    const nextView = next.view ?? view;
+    const to = resolveFileView(entry, { tab: nextView === 'document' ? null : nextView, version: next.version ?? null, against: next.against ?? null }, false, kept);
+    const move = () => go({ file: path, ...fileAddress(to) });
+    if (session) leaveEditor(move);
+    else move();
+  };
+  const pickVersion = (v: DriveVersion) => {
+    // A memo's version opens in Changes when its text can be compared (the
+    // server says, per version); any other opens as it was.
+    goTo({ view: mark && v.text !== 'none' ? 'changes' : 'document', version: v.seq });
+  };
 
   const restore = async () => {
     if (!entry || !viewed) return;
-    if (await actions.restoreVersion(entry, viewed.seq)) setVersion(null);
+    if (await actions.restoreVersion(entry, viewed.seq)) goTo({ view: 'document', version: null });
   };
 
   const theirsBy = whoLabel(t, entry?.modified_by);
@@ -108,8 +112,8 @@ export function DriveFilePane({ path, entry, entryError, onRetry, version, showH
         role="alert"
         actions={(
           <>
-            <HeaderButton variant="ghost" onClick={() => toggleDiff('theirs')}>
-              {diff === 'theirs' ? t('drive:conflict.hideCompare') : t('drive:conflict.compare')}
+            <HeaderButton variant="ghost" onClick={() => setComparing(compareTheirs ? null : conflictKey)}>
+              {compareTheirs ? t('drive:conflict.hideCompare') : t('drive:conflict.compare')}
             </HeaderButton>
             <HeaderButton onClick={editor.takeTheirs}>{t('drive:conflict.takeTheirs')}</HeaderButton>
             <HeaderButton variant="primary" onClick={editor.keepMine} disabled={session.save !== 'idle'}>{t('drive:conflict.keepMine')}</HeaderButton>
@@ -126,44 +130,35 @@ export function DriveFilePane({ path, entry, entryError, onRetry, version, showH
       </DriveBar>,
     );
   }
-  if (!session && viewed) {
-    const compare = (target: DiffWith, label: string) => (
-      <HeaderButton
-        variant="ghost"
-        onClick={() => toggleDiff(target)}
-        className={cn(diff === target && 'drive-btn-on')}
-        aria-pressed={diff === target}
-      >
-        {label}
-      </HeaderButton>
-    );
+  if (!session && viewed && view === 'document') {
     bars.push(
       <DriveBar
         key="version"
         actions={(
           <>
-            {isText && compare('current', t('drive:history.compareCurrent'))}
-            {isText && previous && compare('previous', t('drive:history.comparePrevious', { seq: previous.seq }))}
-            <HeaderButton icon={RotateCcw} onClick={() => void restore()} disabled={actions.pending.restoreVersion} title={t('drive:history.restoreHint')}>
+            <HeaderButton icon={RotateCcw} onClick={() => void restore()} disabled={actions.pending.restoreVersion} title={t('drive:versions.restoreHint')}>
               {t('drive:actions.restore')}
             </HeaderButton>
-            <HeaderButton variant="ghost" onClick={() => setVersion(null)}>{t('drive:history.backToCurrent')}</HeaderButton>
+            <HeaderButton variant="ghost" onClick={() => goTo({ view: 'document', version: null })}>{t('drive:versions.backToCurrent')}</HeaderButton>
           </>
         )}
       >
-        {t('drive:history.viewing', { seq: viewed.seq, when: relativeTime(viewed.created_at, locale, now), who: whoLabel(t, viewed.actor) })}
+        {t('drive:versions.viewing', { seq: viewed.seq, when: relativeTime(viewed.created_at, locale, now), who: whoLabel(t, viewed.actor) })}
+      </DriveBar>,
+    );
+  }
+  if (!session && entry && state.kind !== 'memo' && view === 'document') bars.push(<UndoSave key="undo" entry={entry} />);
+  if (entry && state.kind === 'former' && view === 'record') {
+    bars.push(
+      <DriveBar key="was-memo" role="status" actions={<HeaderButton variant="ghost" onClick={() => goTo({ view: 'document' })}>{t('drive:record.backToFile')}</HeaderButton>}>
+        {t('drive:record.wasMemo')}
       </DriveBar>,
     );
   }
 
-  const pair = session || !diff || diff === 'theirs'
-    ? null
-    : diff === 'current'
-      ? { original: old.data?.content, modified: head.data?.content, reads: [old, head] }
-      : { original: prev.data?.content, modified: shown.data?.content, reads: [prev, shown] };
   const name = entry?.name ?? nameOf(path);
 
-  const view = ((): BodyView => {
+  const documentView = ((): BodyView => {
     // An open editor keeps its text on screen even when the file goes from under it.
     if (session && entry) {
       return {
@@ -171,7 +166,7 @@ export function DriveFilePane({ path, entry, entryError, onRetry, version, showH
         name: entry.name,
         draft: session.draft,
         original: editor.theirs?.content ?? session.base.content,
-        compare: diff === 'theirs',
+        compare: compareTheirs,
         modelPath: session.modelPath,
         editorRef: editor.editorRef,
         onChange: editor.change,
@@ -180,17 +175,10 @@ export function DriveFilePane({ path, entry, entryError, onRetry, version, showH
     if (entryError) return { kind: 'failure', name, gone: entryError === 'gone', onRetry };
     if (!entry || !space) return { kind: 'loading' };
     // A version the URL names that the listing cannot show is never stood in for by the head.
-    if (version !== null && !viewed) {
+    if (docVersion !== null && !viewed) {
       if (versionsQuery.error) return { kind: 'failure', name, gone: false, onRetry: () => void versionsQuery.refetch() };
       if (versionsQuery.isPending) return { kind: 'loading' };
-      return { kind: 'versionGone', onBack: () => setVersion(null) };
-    }
-    if (pair) {
-      const failed = pair.reads.find((r) => r.error);
-      if (failed) return { kind: 'failure', name: entry.name, gone: false, onRetry: () => void failed.refetch() };
-      return pair.original == null || pair.modified == null
-        ? { kind: 'loading' }
-        : { kind: 'comparison', name: entry.name, original: pair.original, modified: pair.modified };
+      return { kind: 'versionGone', onBack: () => goTo({ view: 'document', version: null }) };
     }
     const content = shown.data?.content;
     if (isHtml && content != null) return { kind: 'html', name: entry.name, content, source: htmlSource };
@@ -208,46 +196,20 @@ export function DriveFilePane({ path, entry, entryError, onRetry, version, showH
     };
   })();
 
-  const header = (
-    <FileHeader
-      path={path}
-      entry={entry}
-      mobile={mobile}
-      editor={editor}
-      canEdit={isText && version === null && !!head.data?.version}
-      html={isHtml && version === null ? { source: htmlSource, toggle: () => setHtmlSource((s) => !s) } : null}
-      historyOpen={historyOpen}
-      onToggleHistory={() => toggleHistory(!showHistory)}
-    />
-  );
-  const history = (
-    <DriveHistory
-      name={name}
-      versions={versions}
-      historyBytes={listing?.history_bytes ?? 0}
-      tooLarge={!!listing?.too_large_for_history}
-      onClear={entry ? () => actions.clearHistory(entry) : undefined}
-      clearing={actions.pending.clearHistory}
-      loading={versionsQuery.isPending}
-      failed={!!versionsQuery.error}
-      onRetry={() => void versionsQuery.refetch()}
-      viewing={version}
-      // On a phone the history gives way to the version picked, in one step: two would leave the second's version.
-      onView={(seq) => (mobile ? go({ file: path, history: false, version: seq }) : setVersion(seq))}
-      onClose={() => toggleHistory(false)}
-    />
-  );
-  // On a phone the history takes the pane; on a wide screen it sits beside the file.
-  if (mobile && historyOpen) {
-    return (
-      <section className="drive-file" aria-label={name}>
-        {header}
-        {history}
-      </section>
-    );
+  let main: React.ReactNode;
+  let fill = false;
+  if (view === 'document' || !entry) {
+    main = <FileBody view={documentView} imageLoader={imageLoader} onOpenLink={onOpenLink} />;
+    fill = !!session || (isHtml && !htmlSource);
+  } else if (view === 'record') {
+    main = <MemoRecord entry={entry} onPick={pickVersion} />;
+  } else if (view === 'changes') {
+    main = <MemoChanges entry={entry} version={version} against={against} onPick={(v, vs) => goTo({ view: 'changes', version: v, against: vs })} />;
+    fill = true;
+  } else {
+    main = <MemoAuthors entry={entry} onPick={(seq) => goTo({ view: 'changes', version: seq })} />;
   }
 
-  const fill = !!session || !!pair || (isHtml && !htmlSource);
   return (
     <section
       className="drive-file"
@@ -259,13 +221,32 @@ export function DriveFilePane({ path, entry, entryError, onRetry, version, showH
         }
       }}
     >
-      {header}
+      <FileHeader
+        path={path}
+        entry={entry}
+        mobile={mobile}
+        editor={editor}
+        canEdit={view === 'document' && isText && docVersion === null && !!head.data?.version}
+        html={view === 'document' && isHtml && docVersion === null ? { source: htmlSource, toggle: () => setHtmlSource((s) => !s) } : null}
+      >
+        {mark && entry && (
+          <MemoHeader
+            mark={mark}
+            head={headSeq}
+            // Who wrote what reads the head's own text, as the server's attribution does.
+            isText={versions?.find((v) => v.seq === headSeq)?.text === 'text'}
+            view={view}
+            onView={(next) => goTo({ view: next, version: next === 'document' || next === 'changes' ? version : null })}
+            onEdit={() => ask.memo(entry, 'edit')}
+            onViewFinal={() => goTo({ view: 'document', version: mark.final_seq })}
+            onMakeFinal={() => void actions.setMemo(entry, { status: 'final', ifMatch: entry.sha256 })}
+            busy={actions.pending.setMemo}
+          />
+        )}
+      </FileHeader>
       {bars}
       <div className="drive-file-body">
-        <div className={cn('drive-file-main', fill && 'is-fill')}>
-          <FileBody view={view} imageLoader={imageLoader} onOpenLink={onOpenLink} />
-        </div>
-        {historyOpen && !mobile && history}
+        <div className={cn('drive-file-main', fill && 'is-fill')}>{main}</div>
       </div>
     </section>
   );

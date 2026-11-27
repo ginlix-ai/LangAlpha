@@ -48,7 +48,7 @@ describe('useDriveUpload: replacing a file too large to keep a copy of', () => {
     const usage = { bytes: 90 * MB, entries: 1, max_bytes: 100 * MB, max_entries: 100, max_file_bytes: 200 * MB, max_upload_bytes: 200 * MB };
     const existing = {
       id: 'e1', path: 'in/Data.parquet', name: 'Data.parquet', kind: 'file', size: 80 * MB, sha256: 'a'.repeat(64), content_type: null,
-      is_text: false, version: 1, created_at: '', modified_at: '', modified_by: null, deleted_at: null,
+      is_text: false, version: 1, created_at: '', modified_at: '', modified_by: null, deleted_at: null, memo: null, note: null, undo_until: null,
     };
     vi.mocked(listVersions).mockResolvedValue({ versions: [], history_bytes: 0, too_large_for_history: true } as never);
     const { result, queryClient } = renderHookWithProviders(() => useDriveUpload({ space: 'personal', usage }));

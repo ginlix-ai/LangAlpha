@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, ApiError } from '@/api/client';
 import { runAuthResets } from '@/lib/authResets';
-import { busyRetryDelay, saveFile } from '../drive';
+import { busyRetryDelay, clearHistory, saveFile } from '../drive';
 
 function refusal(status: number, headers: Record<string, string> = {}) {
   const data = { detail: { type: status === 503 ? 'unavailable' : 'changed', message: 'x' } };
@@ -76,5 +76,16 @@ describe('saveFile on a busy server', () => {
     const put = vi.spyOn(api, 'put').mockRejectedValue(refusal(412));
     await expect(saveFile('personal', 'a.md', new Blob(['x']))).rejects.toMatchObject({ response: { status: 412 } });
     expect(put).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('clearHistory', () => {
+  it('clears only below the head the caller saw, so a version saved since stays', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: { dropped: 2, freed_bytes: 10 }, status: 200, statusText: 'OK', headers: {} });
+    await clearHistory('personal', 'e1', { head: 7, final: 5 });
+    expect(post).toHaveBeenLastCalledWith(expect.stringContaining('versions/clear'), { id: 'e1', before: 7, final_seq: 5 });
+    // No pinned final is said too: the clear is refused if one has appeared.
+    await clearHistory('personal', 'e1', { head: 7, final: null });
+    expect(post).toHaveBeenLastCalledWith(expect.stringContaining('versions/clear'), { id: 'e1', before: 7, final_seq: null });
   });
 });

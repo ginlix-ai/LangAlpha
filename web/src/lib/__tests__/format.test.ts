@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { chatTime, createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, formatTokenPrice, formatUnitList, nameCollator, relativeTime, signedFixed2 } from '@/lib/format';
+import { chatTime, createFormatter, dayRangeEnds, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, formatTokenPrice, formatUnitList, nameCollator, relativeTime, signedFixed2 } from '@/lib/format';
 
 describe('createFormatter', () => {
   it('formats numbers in the given locale', () => {
@@ -184,6 +184,24 @@ describe('formatList', () => {
   it('spaces a Chinese conjunction from the Latin names beside it, not the enumeration comma', () => {
     expect(formatList(['moomoo', 'Webull'], 'zh-CN')).toBe('moomoo 和 Webull');
     expect(formatList(['moomoo', 'Webull', 'IBKR'], 'zh-CN')).toBe('moomoo、Webull 和 IBKR');
+  });
+});
+
+describe('dayRangeEnds', () => {
+  const at = (y: number, m: number, d: number, h = 12) => new Date(y, m, d, h).getTime();
+
+  it('is null within one local day', () => {
+    expect(dayRangeEnds(at(2026, 10, 26, 1), at(2026, 10, 26, 23), 'en-US')).toBeNull();
+  });
+
+  it('drops the month from the second end within one month', () => {
+    expect(dayRangeEnds(at(2026, 10, 26), at(2026, 10, 27), 'en-US')).toEqual({ from: 'Nov 26', to: '27' });
+    expect(dayRangeEnds(at(2026, 10, 26), at(2026, 10, 27), 'zh-CN')).toEqual({ from: '11月26日', to: '27日' });
+  });
+
+  it('keeps the month across months and the year across years', () => {
+    expect(dayRangeEnds(at(2026, 10, 30), at(2026, 11, 2), 'en-US')).toEqual({ from: 'Nov 30', to: 'Dec 2' });
+    expect(dayRangeEnds(at(2026, 11, 31), at(2027, 0, 1), 'en-US')).toEqual({ from: 'Dec 31, 2026', to: 'Jan 1, 2027' });
   });
 });
 

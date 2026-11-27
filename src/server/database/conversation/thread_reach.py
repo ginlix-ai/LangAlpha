@@ -255,3 +255,26 @@ async def _visibility(cur, thread_id: str) -> Optional[Visibility]:
     )
     row = await cur.fetchone()
     return Visibility(**row) if row else None
+
+
+async def titled(
+    thread_ids: Iterable[str], user_id: str
+) -> dict[str, tuple[str | None, str, str]]:
+    """Of ``thread_ids``, those whose live workspace is ``user_id``'s own or
+    a shared one, by id: the title, the workspace's owner and the
+    workspace, the thread's own rule (:func:`visible_sql`) applied. Whether
+    the caller reaches a shared workspace is theirs to ask, per workspace,
+    of what comes back."""
+    ids = {i for i in (normalize_uuid(t) for t in thread_ids) if i}
+    if not ids:
+        return {}
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT t.conversation_thread_id::text, t.title, w.user_id, w.workspace_id::text"
+                " FROM conversation_threads t JOIN workspaces w ON w.workspace_id = t.workspace_id"
+                " WHERE t.conversation_thread_id = ANY(%(ids)s::uuid[]) AND w.status <> 'deleted'"
+                f" AND {visible_sql('t', 'w.user_id', '%(user)s')}",
+                {"ids": sorted(ids), "user": user_id},
+            )
+            return {row[0]: (row[1], row[2], row[3]) for row in await cur.fetchall()}

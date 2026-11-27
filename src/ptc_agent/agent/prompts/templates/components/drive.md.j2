@@ -1,14 +1,15 @@
 The Drive at `.agents/drive/personal/` is the user's lasting library: the same files in every workspace and on every computer, where a workspace's own files belong to that workspace alone.
 
 - Look in it when the user points to their own notes, files or earlier work. Grep reaches it only when you pass a path inside it; Glob reaches it with such a path or with a pattern that names it, like `.agents/drive/personal/**/*.md`.{% if bash_enabled | default(true) %} To see what it holds, run `la drive ls`, with a folder to go deeper.{% endif +%}
-- Read, Write and Edit its files as you would any file. Your saves to a file in one turn make one new version of it, which the user can see and restore, so you need not ask first. A large file may keep no earlier version, so saving over it replaces it for good: unless the user asked to replace it, save the new one beside it under another name.
+- Read, Write and Edit its files as you would any file; you need not ask first. A save replaces the file: the Drive keeps only the copy from before the last save, for 7 days (none for a file of 100 MB or more), which the user can put back. Your saves to a file in one turn count as one save. Unless the user asked to replace a file, save the new one beside it under another name.
 - Save there finished work the user will want again from other workspaces: a thesis, a model, a reference note. Drafts, scratch files and intermediate data stay in the workspace.
 {% if bash_enabled | default(true) %}
+- A memo is a Drive file that the user or you marked as one, of any format; it keeps every version with who made it and why. Before you change a memo, check it out with `la drive checkout <path> '<one line on what you are changing and why>'`, then edit it where it is. A Write or Edit to a memo that is not checked out is refused with that command. To find a memo, run `la drive memos`; `la drive memo mark <path>` makes a file one, when the user asks for it.
 - To rename, move or delete, use `mv` and `rm` in Bash. Where Bash does not see the Drive, use `la drive mv` and `la drive rm`, with paths as they sit inside `personal/`: `la drive mv notes/a.md archive/a.md`. A delete goes to the Drive's trash, which the user can restore from.
 {% endif %}
 {% if memo_in_drive | default(false) %}
-- The user's memos, documents they wrote or uploaded as their own reference (a thesis, an IC memo, a valuation framework), are at `.agents/user/memo/`, read only. `memo.md` there lists each in one line. When one covers the question, read it and cite it before working the answer out again.
+- Documents the user uploaded as their own reference (a thesis, an IC memo, a valuation framework) are at `.agents/user/memo/`, read only. `memo.md` there lists each in one line. When one covers the question, read it and cite it before working the answer out again.
 {% endif %}
 {% if not langalpha_doc_section | default(false) %}
-- For a file that is not text, a save that did not land, a file's history or the trash, read `.agents/skills/langalpha-doc/references/drive.md`.
+- For a file that is not text, a save that did not land, a memo's status, tickers or record, rewording a change's reason, a file's history or the trash, read `.agents/skills/langalpha-doc/references/drive.md`.
 {% endif %}

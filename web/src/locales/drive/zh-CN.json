@@ -7,7 +7,9 @@
   "dropHere": "松开即可上传到 {{folder}}",
   "backToRoot": "回到 Drive",
   "backToDrive": "返回 Drive",
+  "loadMore": "显示更多",
   "backToFolder": "返回文件夹",
+  "backToMemos": "返回备忘录",
   "retrying": "服务器繁忙，正在重试",
   "columns": {
     "modified": "修改时间",
@@ -18,7 +20,9 @@
     "you": "你",
     "agent": "Agent",
     "subagent": "子 Agent {{name}}",
-    "system": "系统"
+    "system": "系统",
+    "inThread": "<who/>，来自对话 <thread/>",
+    "aThread": "一个对话"
   },
   "actions": {
     "newFolder": "新建文件夹",
@@ -31,7 +35,10 @@
     "download": "下载",
     "trash": "移到回收站",
     "more": "{{name}} 的更多操作",
-    "restore": "恢复"
+    "restore": "恢复",
+    "markMemo": "标为备忘录",
+    "unmarkMemo": "取消备忘录标记",
+    "record": "记录"
   },
   "file": {
     "version": "v{{seq}}",
@@ -47,7 +54,8 @@
     "discard": "放弃修改",
     "changedUnder": "你编辑期间{{who}}改了这个文件，你的修改都还在。",
     "review": "查看",
-    "leaveBody": "这个文件的修改还没有保存。"
+    "leaveBody": "这个文件的修改还没有保存。",
+    "whatChanged": "改了什么？"
   },
   "conflict": {
     "title": "没有保存。",
@@ -57,27 +65,145 @@
     "keepMine": "保留我的",
     "takeTheirs": "用对方的"
   },
-  "history": {
-    "title": "历史版本",
-    "close": "关闭历史版本",
-    "current": "当前",
-    "restoredFrom": "由 v{{seq}} 恢复",
-    "openThread": "打开对应对话",
+  "memo": {
+    "chip": "备忘录",
+    "status": {
+      "draft": "草稿",
+      "final": "定稿",
+      "none": "无状态"
+    },
+    "finalAt": "定稿 v{{seq}}",
+    "finalAtOn": "定稿 v{{seq}} · {{date}}",
+    "revisedSince": "之后有修改",
+    "viewFinal": "查看定稿",
+    "makeFinal": "将 v{{seq}} 定稿",
+    "editDetails": "状态和代码",
+    "tabs": {
+      "label": "备忘录视图",
+      "document": "文档",
+      "record": "记录",
+      "changes": "改动",
+      "who": "逐行作者",
+      "whoTextOnly": "只适用于文本备忘录"
+    },
+    "marked": "已将 {{name}} 标为备忘录，从现在起保留每个版本。",
+    "unmarked": "{{name}} 已不再是备忘录，它的记录仍然保留。",
+    "markFailed": "没能修改备忘录",
+    "whyPlaceholder": "选填，一行即可",
+    "dialog": {
+      "markTitle": "将 {{name}} 标为备忘录",
+      "markBody": "备忘录会保留每个版本，并记下是谁改的、为什么改。",
+      "editTitle": "{{name}} 的状态和代码",
+      "editBody": "状态和代码的改动会记入备忘录的记录。",
+      "unmarkTitle": "取消 {{name}} 的备忘录标记？",
+      "unmarkBody": "它的版本和记录都会保留。从下次保存起，和其他文件一样，只保留保存前的那一份。",
+      "unmarkSubmit": "取消标记",
+      "status": "状态",
+      "tickers": "代码",
+      "tickersPlaceholder": "AAPL, MSFT",
+      "why": "为什么？",
+      "badTickers": "不是有效的代码：{{tickers}}",
+      "tooManyTickers": "一个备忘录最多 {{max}} 个代码。"
+    }
+  },
+  "versions": {
     "viewing": "版本 {{seq}}，{{who}}于{{when}}修改",
-    "compareCurrent": "与当前版本对比",
-    "comparePrevious": "与 v{{seq}} 对比",
     "restoreHint": "会把这份内容另存为一个新版本。",
     "restored": "已将 v{{seq}} 恢复为 v{{next}}",
     "restoreFailed": "无法恢复这个版本",
-    "backToCurrent": "回到当前版本",
-    "goes": "保留到 {{date}}",
-    "kept": "长期保留",
-    "takes": "历史版本占用 {{size}}",
-    "clear": "清除历史",
-    "clearConfirm_other": "要永久删除 {{name}} 的 {{count}} 个历史版本吗？会释放 {{size}}，删除后无法恢复。",
-    "cleared": "已清除 {{name}} 的历史版本，释放了 {{size}}",
-    "clearFailed": "没能清除历史版本",
-    "tooLarge": "这么大的文件不保留历史版本，保存时会直接覆盖 {{name}}。"
+    "backToCurrent": "回到当前版本"
+  },
+  "undo": {
+    "savedBy": "{{who}}于{{when}}保存",
+    "savedByYou": "你于{{when}}保存",
+    "savedByIn": "<who/>于{{when}}在对话 <thread/> 中保存",
+    "savedByYouIn": "你于{{when}}在对话 <thread/> 中保存",
+    "kept_other": "保存前的那一份还会保留 {{count}} 天",
+    "action": "撤销这次保存",
+    "done": "已将 {{name}} 恢复到上次保存之前",
+    "failed": "没能撤销这次保存",
+    "nothing": "没有更早的一份可以恢复。"
+  },
+  "record": {
+    "versionAt": "v{{seq}} · {{when}}",
+    "changeAt": "v{{from}} 至 v{{to}} · {{when}}",
+    "dateRange": "{{from}}至{{to}}",
+    "versionCount_other": "{{count}} 个版本",
+    "changeVersions_other": "这次修改包含 {{count}} 个版本",
+    "current": "当前",
+    "restoredFrom": "由 v{{seq}} 恢复",
+    "marked": "{{who}}将它标为备忘录",
+    "markedStatus": "{{who}}将它标为备忘录，状态为{{status}}",
+    "markedStatusPinned": "{{who}}将它标为备忘录，状态为{{status}}，定稿为 v{{seq}}",
+    "unmarked": "{{who}}取消了备忘录标记",
+    "cleared_other": "{{who}}清除了 {{count}} 个早期版本",
+    "status": "{{who}}将状态从{{from}}改为{{to}}",
+    "statusPinned": "{{who}}将状态从{{from}}改为{{to}}，定稿为 v{{seq}}",
+    "repinned": "{{who}}将 v{{seq}} 定为定稿",
+    "tickers": "{{who}}将代码设为 {{tickers}}",
+    "tickersCleared": "{{who}}清空了代码",
+    "alsoTickers": "代码设为 {{tickers}}",
+    "alsoTickersCleared": "清空了代码",
+    "and": "，",
+    "tags": {
+      "memo": "备忘录",
+      "status": "状态",
+      "tickers": "代码",
+      "history": "历史"
+    },
+    "addWhy": "补充原因",
+    "whyFailed": "没能记下原因",
+    "older": "显示更早的",
+    "wasMemo": "这个文件曾是备忘录，它的记录仍然保留；之后的保存只保留上一次保存前的那一份。",
+    "backToFile": "回到文件",
+    "inThread": "来自对话 <thread/>",
+    "menu": "记录的更多操作",
+    "clear": "清除早期版本…",
+    "clearTitle": "清除 {{name}} 的早期版本？",
+    "clearConfirm_other": "{{count}} 个早期版本会被永久删除，释放 {{size}}。当前版本保留，记录里会注明这些版本已被清除。",
+    "clearConfirmFinal_other": "{{count}} 个早期版本会被永久删除，释放 {{size}}。当前版本和定稿（v{{seq}}）保留，记录里会注明这些版本已被清除。",
+    "clearSubmit": "清除版本",
+    "clearedToast_other": "已清除 {{name}} 的 {{count}} 个早期版本，释放了 {{size}}",
+    "clearFailed": "没能清除早期版本"
+  },
+  "changes": {
+    "showing": "版本",
+    "compareWith": "对比：",
+    "versionN": "版本 {{seq}}",
+    "anyVersion": "任意版本",
+    "option": "v{{seq}} · {{date}} · {{who}}",
+    "first": "版本 {{seq}} 是第一个版本，全部内容都是新的。",
+    "truncated": "只读到了文本的开头部分，对比到那里为止。",
+    "notText": "改动只适用于文本、Word 和 PDF 备忘录。可以从记录里打开某个版本查看。",
+    "stillReading": "仍在读取版本 {{seq}} 的文本，请稍后再试。",
+    "tooLarge": "版本 {{seq}} 太大，无法读取文本。",
+    "empty": "没能从版本 {{seq}} 中读出文本。",
+    "failed": "读取版本 {{seq}} 的文本失败。"
+  },
+  "authors": {
+    "label": "{{who}} · {{when}}",
+    "today": "今天",
+    "title": "版本 {{seq}}，{{when}}。点击查看改动。",
+    "notText": "逐行作者只适用于文本备忘录。",
+    "notMemo": "逐行作者只适用于备忘录。",
+    "busy": "仍在整理逐行作者，请稍后再试。"
+  },
+  "memos": {
+    "title": "备忘录",
+    "columns": {
+      "status": "状态",
+      "tickers": "代码",
+      "revised": "修改"
+    },
+    "revisedBy": "{{who}} · {{when}}",
+    "all": "全部",
+    "none": "还没有备忘录。可以从任意文件的菜单把它标为备忘录。",
+    "noneMatch": "没有符合条件的备忘录。",
+    "clearTicker": "取消按 {{ticker}} 筛选"
+  },
+  "views": {
+    "label": "Drive 视图",
+    "files": "文件"
   },
   "trash": {
     "title": "回收站",
@@ -103,7 +229,6 @@
     "deleted": "{{when}}删除",
     "removedIn_other": "{{count}} 天后彻底删除",
     "removedSoon": "今天彻底删除",
-    "loadMore": "显示更多",
     "newestOnly": "只显示最近的 {{count}} 项。恢复或删除一些后可查看其余内容。"
   },
   "newFolder": {
@@ -112,7 +237,7 @@
     "submit": "新建"
   },
   "rename": {
-    "description": "改名后，文件的历史版本都会保留。"
+    "description": "备忘录改名后，记录仍然保留。"
   },
   "move": {
     "title": "移动 {{name}}",
@@ -162,6 +287,7 @@
   },
   "errors": {
     "loadFailed": "加载失败，请检查网络后重试。",
+    "notLoaded": "没能加载。",
     "slash": "名称里不能有 /。",
     "gone": "它已经不在原处，可能被移动或删除了。",
     "trashFailed": "无法移到回收站",
@@ -175,6 +301,8 @@
     "taken": "这里已经有名为 {{name}} 的文件或文件夹。",
     "badName": "Drive 里不能使用 {{name}} 这个名称。",
     "noRoomFile": "{{name}} 需要 {{size}}，可 {{max}} 的空间只剩 {{left}}。先删掉一些文件腾出空间。",
-    "noRoom": "{{name}} 放不下：{{max}} 的空间只剩 {{left}}。先删掉一些文件腾出空间。"
+    "noRoom": "{{name}} 放不下：{{max}} 的空间只剩 {{left}}。先删掉一些文件腾出空间。",
+    "changed": "你上次查看后 {{name}} 又有了改动。请重新看一下再试。",
+    "notMemo": "{{name}} 已不再是备忘录。"
   }
 }

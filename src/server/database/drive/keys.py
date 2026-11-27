@@ -21,6 +21,20 @@ MAX_DEPTH = 32
 MAX_SEGMENT_BYTES = 255
 
 
+def split_path(path: str) -> tuple[str, str]:
+    """``path``'s parent folder and its name."""
+    parent, _, name = path.rpartition("/")
+    return parent, name
+
+
+def path_depth(path: str) -> int:
+    return path.count("/") + 1
+
+
+def path_bytes(path: str) -> int:
+    return len(path.encode("utf-8"))
+
+
 def _fold(segment: str) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", segment).casefold())
 

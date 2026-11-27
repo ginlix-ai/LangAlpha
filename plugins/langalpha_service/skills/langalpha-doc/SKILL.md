@@ -11,7 +11,7 @@ You run on a **computer**: one sandbox machine that belongs to the user. Each of
 
 - **Earlier work**: The user points back at an earlier conversation or at work done in another thread or workspace; a compaction summary; a background task's steps; a tool result saved to a file: `.agents/skills/langalpha-doc/references/history.md`.
 - **Files**: Where things live, how a path resolves, why Grep or Glob missed a file, memory and memo storage, what the user sees in the file panel: `.agents/skills/langalpha-doc/references/files.md`.
-- **The Drive**, the user's files kept across every workspace and computer: whether it is turned on, putting a file in it, files that are not text, a save that did not land, history and trash: `.agents/skills/langalpha-doc/references/drive.md`.
+- **The Drive**, the user's files kept across every workspace and computer: whether it is turned on, putting a file in it, files that are not text, a save that did not land, memos and their record, history and trash: `.agents/skills/langalpha-doc/references/drive.md`.
 - **The computer**: Processes, output and timeouts, CPUs and disk, installed packages, what survives a stop or a rebuild, data-server tools from code, secrets: `.agents/skills/langalpha-doc/references/computer.md`.
 - **Skills**: Installing a skill, an `npx skills add` command included, or writing, changing or saving one, here or for every workspace: `.agents/skills/langalpha-doc/references/skills.md`.
 - **Data sources and plugins**: The user wants a new data source, MCP server, brokerage connection or plugin, a server needs a key, or a server you expected is missing: `.agents/skills/langalpha-doc/references/plugins.md`.

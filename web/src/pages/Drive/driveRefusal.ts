@@ -73,6 +73,15 @@ export function driveRefusal(err: unknown, t: TFunction, ctx: RefusalContext): R
       return { toast: { title: t('drive:upload.tooManyUploads') } };
     case 'mismatch':
       return { toast: { title: t('drive:upload.mismatch') } };
+    case 'changed':
+      return { toast: { title: ctx.failed, description: t('drive:errors.changed', { name }) } };
+    case 'not_memo':
+      return { toast: { title: ctx.failed, description: t('drive:errors.notMemo', { name }) } };
+    case 'invalid':
+    case 'not_text': {
+      const said = driveErrorMessage(err);
+      return { toast: said ? { title: ctx.failed, description: said } : { title: ctx.failed } };
+    }
     default:
       break;
   }
@@ -93,4 +102,32 @@ export function driveRefusal(err: unknown, t: TFunction, ctx: RefusalContext): R
 /** A refusal as one line, for a place with room for only one (an upload row). */
 export function refusalLine(refusal: Refusal): string {
   return refusal.field ?? refusal.toast.description ?? refusal.toast.title;
+}
+
+/**
+ * A read that failed, in words: only a request that never got an answer
+ * points at the connection; one the server answered says it could not load.
+ */
+export function loadFailedLine(err: unknown, t: TFunction): string {
+  return apiErrorStatus(err) === null ? t('drive:errors.loadFailed') : t('drive:errors.notLoaded');
+}
+
+/** What a read's own refusals say, where the view has words for them. */
+export interface ReadCopy {
+  notText?: string;
+  notMemo?: string;
+  /** The server still at work (`unavailable`), after the read's own waits. */
+  busy: string;
+}
+
+/**
+ * A failed read of a memo view, in words and whether asking again can help:
+ * a refusal the view names, the server still at work, or a load failure.
+ */
+export function readProblem(err: unknown, t: TFunction, copy: ReadCopy): { line: string; retry: boolean } {
+  const type = driveErrorType(err);
+  if (type === 'not_text' && copy.notText) return { line: copy.notText, retry: false };
+  if (type === 'not_memo' && copy.notMemo) return { line: copy.notMemo, retry: false };
+  if (type === 'unavailable') return { line: copy.busy, retry: true };
+  return { line: loadFailedLine(err, t), retry: true };
 }

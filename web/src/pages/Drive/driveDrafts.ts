@@ -5,6 +5,8 @@ import type { Content } from './driveEdit';
 export interface DriveDraft {
   base: Content;
   draft: string;
+  /** The "What changed?" typed beside it, which goes with the draft. */
+  note: string;
 }
 
 /**

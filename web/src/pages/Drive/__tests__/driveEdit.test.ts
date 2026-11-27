@@ -120,4 +120,30 @@ describe('a Drive editing session', () => {
     }
     expect(editing(reopened)).toMatchObject({ base, save: 'idle', conflict: false, savedAt: null });
   });
+
+  describe('what changed, beside Save', () => {
+    it('starts empty, or with the note a kept draft comes back with', () => {
+      expect(editing(run(open())).note).toBe('');
+      expect(editing(run({ ...open(), note: 'trimmed the risks' } as EditAction)).note).toBe('trimmed the risks');
+    });
+
+    it('goes with the save that carried it; one typed meanwhile stays for the next', () => {
+      const first = { ...req('two\n'), note: 'cut the intro' };
+      const carried = run(open(), { type: 'note', note: ' cut the intro ' }, { type: 'saving', req: first }, { type: 'saved', req: first, sha: 'c'.repeat(64), at: 1 });
+      expect(editing(carried).note).toBe('');
+      const retyped = run(open(), { type: 'note', note: 'cut the intro' }, { type: 'saving', req: first }, { type: 'note', note: 'and the outro' }, { type: 'saved', req: first, sha: 'c'.repeat(64), at: 1 });
+      expect(editing(retyped).note).toBe('and the outro');
+    });
+
+    it('is dropped with the edits when theirs is taken', () => {
+      const s = run(open(), { type: 'change', draft: 'mine\n' }, { type: 'note', note: 'mine' }, { type: 'take-theirs', theirs });
+      expect(editing(s).note).toBe('');
+    });
+
+    it("is left alone by another session's save", () => {
+      const other = { ...req('x', base.sha, 'web-2'), note: 'theirs' };
+      const s = run(open(), { type: 'note', note: 'theirs' }, { type: 'saved', req: other, sha: 'c'.repeat(64), at: 1 });
+      expect(editing(s).note).toBe('theirs');
+    });
+  });
 });

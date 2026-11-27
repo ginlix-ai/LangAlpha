@@ -7,7 +7,9 @@
   "dropHere": "Drop to upload to {{folder}}",
   "backToRoot": "Go to Drive",
   "backToDrive": "Back to Drive",
+  "loadMore": "Show more",
   "backToFolder": "Back to folder",
+  "backToMemos": "Back to memos",
   "retrying": "Server busy, retrying",
   "columns": {
     "modified": "Changed",
@@ -18,7 +20,9 @@
     "you": "You",
     "agent": "Agent",
     "subagent": "{{name}} subagent",
-    "system": "System"
+    "system": "System",
+    "inThread": "<who/> in <thread/>",
+    "aThread": "a thread"
   },
   "actions": {
     "newFolder": "New folder",
@@ -31,7 +35,10 @@
     "download": "Download",
     "trash": "Move to trash",
     "more": "More for {{name}}",
-    "restore": "Restore"
+    "restore": "Restore",
+    "markMemo": "Mark as memo",
+    "unmarkMemo": "Remove memo mark",
+    "record": "Record"
   },
   "file": {
     "version": "v{{seq}}",
@@ -47,7 +54,8 @@
     "discard": "Discard",
     "changedUnder": "{{who}} changed this file while you were editing. Your changes are kept.",
     "review": "Review",
-    "leaveBody": "Your changes to this file have not been saved."
+    "leaveBody": "Your changes to this file have not been saved.",
+    "whatChanged": "What changed?"
   },
   "conflict": {
     "title": "Not saved.",
@@ -57,28 +65,152 @@
     "keepMine": "Keep mine",
     "takeTheirs": "Take theirs"
   },
-  "history": {
-    "title": "History",
-    "close": "Close history",
-    "current": "Current",
-    "restoredFrom": "Restored from v{{seq}}",
-    "openThread": "Open the thread",
+  "memo": {
+    "chip": "Memo",
+    "status": {
+      "draft": "Draft",
+      "final": "Final",
+      "none": "No status"
+    },
+    "finalAt": "Final v{{seq}}",
+    "finalAtOn": "Final v{{seq}} · {{date}}",
+    "revisedSince": "revised since",
+    "viewFinal": "View the final",
+    "makeFinal": "Make v{{seq}} final",
+    "editDetails": "Status and tickers",
+    "tabs": {
+      "label": "Memo views",
+      "document": "Document",
+      "record": "Record",
+      "changes": "Changes",
+      "who": "Who wrote what",
+      "whoTextOnly": "Shown for text memos only"
+    },
+    "marked": "Marked {{name}} as a memo. Every version is kept from now on.",
+    "unmarked": "{{name}} is no longer a memo. Its record is kept.",
+    "markFailed": "Could not change the memo",
+    "whyPlaceholder": "Optional, one line",
+    "dialog": {
+      "markTitle": "Mark {{name}} as a memo",
+      "markBody": "A memo keeps every version, with who made it and why.",
+      "editTitle": "Status and tickers of {{name}}",
+      "editBody": "Changes to the status and tickers go in the memo's record.",
+      "unmarkTitle": "Remove the memo mark from {{name}}?",
+      "unmarkBody": "Its versions and record are kept. From its next save it keeps only the copy from before that save, as other files do.",
+      "unmarkSubmit": "Remove mark",
+      "status": "Status",
+      "tickers": "Tickers",
+      "tickersPlaceholder": "AAPL, MSFT",
+      "why": "Why?",
+      "badTickers": "Not a ticker: {{tickers}}",
+      "tooManyTickers": "A memo takes at most {{max}} tickers."
+    }
+  },
+  "versions": {
     "viewing": "Version {{seq}}, {{when}} by {{who}}",
-    "compareCurrent": "Compare with current",
-    "comparePrevious": "Compare with v{{seq}}",
     "restoreHint": "Saves this content as a new version.",
     "restored": "Restored v{{seq}} as v{{next}}",
     "restoreFailed": "Could not restore this version",
-    "backToCurrent": "Back to current",
-    "goes": "kept until {{date}}",
-    "kept": "kept",
-    "takes": "Earlier versions take {{size}}",
-    "clear": "Clear history",
-    "clearConfirm_one": "Delete the earlier version of {{name}} for good? This frees {{size}} and cannot be undone.",
-    "clearConfirm_other": "Delete the {{count}} earlier versions of {{name}} for good? This frees {{size}} and cannot be undone.",
-    "cleared": "Cleared the history of {{name}}, freeing {{size}}",
-    "clearFailed": "Could not clear the history",
-    "tooLarge": "Files this large keep no earlier versions: saving over {{name}} replaces it."
+    "backToCurrent": "Back to current"
+  },
+  "undo": {
+    "savedBy": "Saved by {{who}} {{when}}",
+    "savedByYou": "You saved it {{when}}",
+    "savedByIn": "Saved by <who/> {{when}} in <thread/>",
+    "savedByYouIn": "You saved it {{when}} in <thread/>",
+    "kept_one": "The copy before is kept {{count}} more day",
+    "kept_other": "The copy before is kept {{count}} more days",
+    "action": "Undo this save",
+    "done": "Put back {{name}} as it was before its last save",
+    "failed": "Could not undo the save",
+    "nothing": "There is no earlier copy to go back to."
+  },
+  "record": {
+    "versionAt": "v{{seq}} · {{when}}",
+    "changeAt": "v{{from}} to v{{to}} · {{when}}",
+    "dateRange": "{{from}} to {{to}}",
+    "versionCount_one": "{{count}} version",
+    "versionCount_other": "{{count}} versions",
+    "changeVersions_one": "{{count}} version in this change",
+    "changeVersions_other": "{{count}} versions in this change",
+    "current": "Current",
+    "restoredFrom": "restored from v{{seq}}",
+    "marked": "{{who}} marked it as a memo",
+    "markedStatus": "{{who}} marked it as a memo with status {{status}}",
+    "markedStatusPinned": "{{who}} marked it as a memo with status {{status}}, pinning v{{seq}}",
+    "unmarked": "{{who}} removed the memo mark",
+    "cleared_one": "{{who}} cleared {{count}} earlier version",
+    "cleared_other": "{{who}} cleared {{count}} earlier versions",
+    "status": "{{who}} set status {{from}} → {{to}}",
+    "statusPinned": "{{who}} set status {{from}} → {{to}}, pinning v{{seq}}",
+    "repinned": "{{who}} made v{{seq}} the final",
+    "tickers": "{{who}} set tickers {{tickers}}",
+    "tickersCleared": "{{who}} cleared the tickers",
+    "alsoTickers": "set tickers {{tickers}}",
+    "alsoTickersCleared": "cleared the tickers",
+    "and": ", and ",
+    "tags": {
+      "memo": "memo",
+      "status": "status",
+      "tickers": "tickers",
+      "history": "history"
+    },
+    "addWhy": "Add why",
+    "whyFailed": "Could not record why",
+    "older": "Show older",
+    "wasMemo": "This file was a memo. Its record is kept; saves since keep only the copy from before the last one.",
+    "backToFile": "Back to the file",
+    "inThread": "in <thread/>",
+    "menu": "More for the record",
+    "clear": "Clear earlier versions…",
+    "clearTitle": "Clear the earlier versions of {{name}}?",
+    "clearConfirm_one": "{{count}} earlier version goes for good, freeing {{size}}. The current version stays, and the record will show that it was cleared.",
+    "clearConfirm_other": "{{count}} earlier versions go for good, freeing {{size}}. The current version stays, and the record will show that they were cleared.",
+    "clearConfirmFinal_one": "{{count}} earlier version goes for good, freeing {{size}}. The current version and the final (v{{seq}}) stay, and the record will show that it was cleared.",
+    "clearConfirmFinal_other": "{{count}} earlier versions go for good, freeing {{size}}. The current version and the final (v{{seq}}) stay, and the record will show that they were cleared.",
+    "clearSubmit": "Clear versions",
+    "clearedToast_one": "Cleared {{count}} earlier version of {{name}}, freeing {{size}}",
+    "clearedToast_other": "Cleared {{count}} earlier versions of {{name}}, freeing {{size}}",
+    "clearFailed": "Could not clear the earlier versions"
+  },
+  "changes": {
+    "showing": "Version",
+    "compareWith": "Compare with:",
+    "versionN": "version {{seq}}",
+    "anyVersion": "any version",
+    "option": "v{{seq}} · {{date}} · {{who}}",
+    "first": "Version {{seq}} is the first: all of it is new.",
+    "truncated": "Only the start of the text could be read, so the comparison stops there.",
+    "notText": "Changes are shown for text, Word and PDF memos. Open a version from the record to see it.",
+    "stillReading": "Still reading the text of version {{seq}}. Try again in a moment.",
+    "tooLarge": "Version {{seq}} is too large to read its text.",
+    "empty": "No text could be read out of version {{seq}}.",
+    "failed": "Reading the text of version {{seq}} failed."
+  },
+  "authors": {
+    "label": "{{who}} · {{when}}",
+    "today": "today",
+    "title": "Version {{seq}}, {{when}}. Open its changes.",
+    "notText": "Who wrote what is shown for text memos only.",
+    "notMemo": "Who wrote what is shown for memos only.",
+    "busy": "Still working out who wrote what. Try again in a moment."
+  },
+  "memos": {
+    "title": "Memos",
+    "columns": {
+      "status": "Status",
+      "tickers": "Tickers",
+      "revised": "Revised"
+    },
+    "revisedBy": "{{who}} · {{when}}",
+    "all": "All",
+    "none": "No memos yet. Mark any file as a memo from its menu.",
+    "noneMatch": "No memos match.",
+    "clearTicker": "Stop filtering by {{ticker}}"
+  },
+  "views": {
+    "label": "Drive views",
+    "files": "Files"
   },
   "trash": {
     "title": "Trash",
@@ -112,7 +244,6 @@
     "removedIn_one": "removed in {{count}} day",
     "removedIn_other": "removed in {{count}} days",
     "removedSoon": "removed today",
-    "loadMore": "Show more",
     "newestOnly": "Showing the newest {{count}}. Restore or delete some to see the rest."
   },
   "newFolder": {
@@ -121,7 +252,7 @@
     "submit": "Create"
   },
   "rename": {
-    "description": "The file keeps its history under the new name."
+    "description": "A memo keeps its record under the new name."
   },
   "move": {
     "title": "Move {{name}}",
@@ -178,6 +309,7 @@
   },
   "errors": {
     "loadFailed": "Could not load this. Check your connection and try again.",
+    "notLoaded": "Could not load this.",
     "slash": "A name cannot contain /.",
     "gone": "It is no longer there. It may have been moved or deleted.",
     "trashFailed": "Could not move it to trash",
@@ -191,6 +323,8 @@
     "taken": "Something named {{name}} is already there.",
     "badName": "The Drive cannot use the name {{name}}.",
     "noRoomFile": "{{name}} needs {{size}}, and only {{left}} of your {{max}} is free. Delete files to make room.",
-    "noRoom": "{{name}} does not fit: only {{left}} of your {{max}} is free. Delete files to make room."
+    "noRoom": "{{name}} does not fit: only {{left}} of your {{max}} is free. Delete files to make room.",
+    "changed": "{{name}} changed since you last looked. Look at it again, then try once more.",
+    "notMemo": "{{name}} is not a memo any more."
   }
 }

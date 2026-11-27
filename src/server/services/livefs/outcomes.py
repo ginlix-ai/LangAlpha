@@ -102,7 +102,9 @@ async def open_call(computer_id: str, call_id: str, context: CallContext) -> Non
         return
     try:
         await client.set(
-            _context_key(computer_id, call_id), json.dumps(asdict(context)), ex=_FILED_TTL_S
+            _context_key(computer_id, call_id),
+            json.dumps(asdict(context)),
+            ex=_FILED_TTL_S,
         )
     except Exception:
         logger.warning("livefs call context not recorded", exc_info=True)
@@ -266,11 +268,15 @@ def describe(outcomes: list[dict[str, Any]]) -> str:
     close(), which most never check. Also what a change did, when its file
     reports that (an automation's file names what it created, updated,
     deleted or renamed), and whether requests were refused as too many."""
-    reports = [
-        ("From an earlier command: " if o.get("late") else "") + str(o["report"])
-        for o in outcomes
-        if o.get("ok") and o.get("report")
-    ]
+    # A report said again (every save of one memo in a command says the
+    # same) is shown once, as from this command if any of them was.
+    said: dict[str, bool] = {}
+    for o in outcomes:
+        if o.get("ok") and o.get("report"):
+            text = str(o["report"])
+            # Said again, it is as recent as its last saying: the cap keeps the last.
+            said[text] = said.pop(text, True) and bool(o.get("late"))
+    reports = [("From an earlier command: " if late else "") + text for text, late in said.items()]
     sections = reports[-_REPORT_CAP:]
     if len(reports) > _REPORT_CAP:
         earlier = len(reports) - _REPORT_CAP

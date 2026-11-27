@@ -9,7 +9,7 @@ import type { DriveActions } from '../useDriveActions';
 
 const file = (name: string): DriveEntry => ({
   id: name, path: name, name, kind: 'file', size: 1, sha256: 'a'.repeat(64), content_type: null, is_text: true, version: 1,
-  created_at: '2026-11-01T00:00:00Z', modified_at: '2026-11-01T00:00:00Z', modified_by: null, deleted_at: null,
+  created_at: '2026-11-01T00:00:00Z', modified_at: '2026-11-01T00:00:00Z', modified_by: null, deleted_at: null, memo: null, undo_until: null,
 });
 
 afterEach(() => act(() => void i18n.changeLanguage('en-US')));
@@ -19,7 +19,7 @@ describe('DriveList', () => {
     await act(() => i18n.changeLanguage('en-US'));
     const ctx = {
       space: 'personal', actions: { moveInto: vi.fn(), pending: {} } as unknown as DriveActions, go: vi.fn(), open: vi.fn(),
-      trash: vi.fn(), leaveEditor: vi.fn(), ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn() },
+      trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
     } as DriveContextValue;
     renderWithProviders(
       <DriveContext value={ctx}>
@@ -36,7 +36,7 @@ describe('DriveList', () => {
   it('marks the open file when the URL spells it in another case', () => {
     const ctx = {
       space: 'personal', actions: { moveInto: vi.fn(), pending: {} } as unknown as DriveActions, go: vi.fn(), open: vi.fn(),
-      trash: vi.fn(), leaveEditor: vi.fn(), ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn() },
+      trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
     } as DriveContextValue;
     const { container } = renderWithProviders(
       <DriveContext value={ctx}>

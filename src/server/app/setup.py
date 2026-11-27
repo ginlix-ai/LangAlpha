@@ -1526,11 +1526,13 @@ app.add_middleware(
     allow_headers=["*"],  # Now allow all headers, but can be restricted further
     # A ranged file download is read by script, which sees only these past the
     # safelisted few when the app is served from another origin; the file panel
-    # words an unreachable computer's 503 from the last.
+    # words an unreachable computer's 503 from the last, and the Drive waits
+    # as long as ``Retry-After`` says for a text still being read out.
     expose_headers=[
         "Content-Range",
         "Accept-Ranges",
         "ETag",
+        "Retry-After",
         COMPUTER_UNREACHABLE_HEADER,
     ],
 )
@@ -1675,6 +1677,7 @@ from src.server.app.orders import router as orders_router
 from src.server.app.activity import router as activity_router
 from src.server.app.org_library import router as org_library_router
 from src.server.app.drive import router as drive_router
+from src.server.app.drive_memo import router as drive_memo_router
 from src.server.app.shared_workspaces import router as shared_workspaces_router
 from src.server.app.public import router as public_router
 from src.server.app.share_links import (
@@ -1832,6 +1835,7 @@ app.include_router(
     org_library_router
 )  # /api/v1/org-library - The organization library (flag org_library)
 app.include_router(drive_router)  # /api/v1/drive/* - The user's Drive (flag drive)
+app.include_router(drive_memo_router)  # /api/v1/drive/* - Its memos, records and undo
 app.include_router(
     shared_workspaces_router
 )  # /api/v1/shared-workspaces, /api/v1/workspaces/{id}/members (flag shared_workspaces)

@@ -4,23 +4,30 @@ Every route answers 404 unless the ``drive`` feature is on for the caller,
 and 404 for a space the caller cannot reach, so neither tells a caller
 anything it may not see. Tokens reach the routes through their scopes
 (``drive:read``, ``drive:write``); a computer's token holds both, and what
-it writes is recorded as its agent's. Moving to the trash is undoable, so a
-token may do it; emptying the trash is for a signed-in person only, and
-clearing a file's earlier versions for the person (signed in, or their own
-CLI login), never a computer's token.
+it writes is recorded as its agent's, and the agent changes a memo only
+inside a check-out (``memo/checkout``), whose reason each version carries,
+or with a note sent with the save (``checkout_required``). Moving to the
+trash is undoable, so a token may do it, as it may mark a memo and undo a
+save. A person may say afterwards why they made a version; an agent says
+why only through its check-out. Emptying the trash is for a signed-in
+person only, and clearing a file's earlier versions for the person (signed
+in, or their own CLI login), never a computer's token. The memo, record and
+undo routes are ``drive_memo``'s, under the same prefix.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
-from typing import Annotated, Any
+from collections.abc import Iterable
+from typing import Annotated, Any, TypeVar
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from src.config.core import get_infrastructure_config
-from src.server.app.drive_http import byte_range, etag_of, receive, status_of
+from src.server.app.drive_http import byte_range, etag_of, receive
 from src.server.database.pool import DATABASE_UNAVAILABLE
 from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import Principal, computer_call, require_scopes
@@ -30,6 +37,7 @@ from src.server.models.drive import (
     EntryOut,
     HistoryClearedOut,
     HistoryClearIn,
+    ModifiedByOut,
     MoveIn,
     PathIn,
     PurgedOut,
@@ -41,12 +49,15 @@ from src.server.models.drive import (
     TrashOut,
     UploadIn,
     UploadSignIn,
+    VersionOut,
     VersionRestoreIn,
     VersionsOut,
 )
 from src.server.services import drive
-from src.server.services.drive import Actor, Changes, DriveError, Entry
-from src.server.services.drive import uploads
+from src.server.services.drive.errors import http_status
+from src.server.services.drive import Actor, Changes, DriveError, Entry, Version
+from src.server.services.drive import extract, uploads
+from src.server.services.shared_workspaces import access as shared_access
 from src.server.utils.api import database_unavailable
 from src.server.utils.uploads import read_body
 from src.utils.storage import browser_uploads_enabled
@@ -69,9 +80,10 @@ _UNLABELLED = {"", "application/octet-stream", "application/x-www-form-urlencode
 
 def _http(e: DriveError, headers: dict[str, str] | None = None) -> HTTPException:
     if e.code == "unavailable":
-        headers = {"Retry-After": "2", **(headers or {})}
+        wait = e.retry_after or 2
+        headers = {"Retry-After": str(wait), **(headers or {})}
     detail: dict[str, Any] = {"type": e.code, "message": e.message, **e.details}
-    return HTTPException(status_code=status_of(e), detail=detail, headers=headers)
+    return HTTPException(status_code=http_status(e.code), detail=detail, headers=headers)
 
 
 class _Errors:
@@ -146,10 +158,48 @@ async def list_entries(
 @router.get("/{space}/entry", response_model=EntryOut)
 async def get_entry(
     space: str, principal: ReadPrincipal, path: str | None = None, id: str | None = None
-) -> Entry:
+) -> EntryOut:
     _one_of(path, id)
     with _Errors("read a Drive entry"):
-        return await drive.stat(await drive.open(principal.user_id, space), path, entry_id=id)
+        entry = await drive.stat(await drive.open(principal.user_id, space), path, entry_id=id)
+        return await _entry_out(principal.user_id, entry)
+
+
+async def _titled(user_id: str, actors: Iterable[ModifiedByOut | None]) -> None:
+    """Give each of ``actors`` the title of the thread it wrote from, where
+    the caller may see that thread; one lookup for the whole answer. Left
+    off when the lookup fails: the answer may be of a change already made."""
+    shown = [a for a in actors if a is not None and a.thread_id]
+    try:
+        titles = await shared_access.thread_titles(user_id, (a.thread_id for a in shown))
+    except Exception:  # noqa: BLE001 - a title is never worth the answer
+        logger.warning("[Drive] thread titles not read", exc_info=True)
+        return
+    for a in shown:
+        a.thread_title = titles.get(a.thread_id)
+
+
+async def _entries_out(user_id: str, entries: list[Entry]) -> list[EntryOut]:
+    """``entries`` with the title of the thread each head was saved in."""
+    out = [EntryOut.model_validate(e) for e in entries]
+    await _titled(user_id, (e.modified_by for e in out))
+    return out
+
+
+async def _entry_out(user_id: str, entry: Entry) -> EntryOut:
+    return (await _entries_out(user_id, [entry]))[0]
+
+
+_V = TypeVar("_V", bound=VersionOut)
+
+
+def _version_out(
+    entry: Entry, version: Version, model: type[_V] = VersionOut, **extra: Any
+) -> _V:
+    """``version`` of ``entry`` as the API shows it, with how its text is
+    read; ``extra``, a record's line counts."""
+    kind = extract.text_kind(entry.name, version.content_type, version.is_text)
+    return model.model_validate(dataclasses.asdict(version) | {"text": kind} | extra)
 
 
 @router.get("/{space}/content")
@@ -207,13 +257,26 @@ async def put_content(
     principal: WritePrincipal,
     path: str = Query(..., min_length=1, max_length=2048),
     note: str | None = Query(None, max_length=500),
-) -> Entry:
+    as_memo: bool | None = Query(None, alias="memo"),
+    status: str | None = Query(None, max_length=24),
+    tickers: str | None = Query(None, max_length=600),
+) -> EntryOut:
+    """Save a file. ``memo=true`` with ``if-none-match: *`` makes a new file
+    a memo as it is saved, with ``status`` and ``tickers`` (comma separated);
+    a bad ticker refuses the save."""
     given = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    mark: dict[str, Any] | None = None
+    if as_memo is not None or status is not None or tickers is not None:
+        mark = {"memo": as_memo}
+        if status is not None:
+            mark["status"] = status
+        if tickers is not None:
+            mark["tickers"] = tickers.split(",")
     with _Errors("save a Drive file"):
         sp = await drive.open(principal.user_id, space)
         bounds = await drive.limits(sp)
         async with receive(request, bounds) as data:
-            return await drive.write(
+            saved = await drive.write(
                 sp,
                 path,
                 data,
@@ -223,20 +286,23 @@ async def put_content(
                 note=note,
                 content_type=None if given in _UNLABELLED else given,
                 bounds=bounds,
+                mark=mark,
             )
+        return await _entry_out(principal.user_id, saved)
 
 
 @router.post("/{space}/folders", response_model=EntryOut)
-async def make_folder(space: str, body: PathIn, principal: WritePrincipal) -> Entry:
+async def make_folder(space: str, body: PathIn, principal: WritePrincipal) -> EntryOut:
     with _Errors("make a Drive folder"):
-        return await drive.mkdir(await drive.open(principal.user_id, space), body.path)
+        made = await drive.mkdir(await drive.open(principal.user_id, space), body.path)
+        return await _entry_out(principal.user_id, made)
 
 
 @router.post("/{space}/move", response_model=EntryOut)
-async def move_entry(space: str, body: MoveIn, principal: WritePrincipal) -> Entry:
+async def move_entry(space: str, body: MoveIn, principal: WritePrincipal) -> EntryOut:
     with _Errors("move a Drive entry"):
         sp = await drive.open(principal.user_id, space)
-        return await drive.move(sp, body.src, body.dst)
+        return await _entry_out(principal.user_id, await drive.move(sp, body.src, body.dst))
 
 
 @router.post("/{space}/trash", response_model=TrashedOut)
@@ -263,7 +329,8 @@ async def list_trash(
 async def restore_trash(space: str, body: TrashIdIn, principal: WritePrincipal) -> RestoredOut:
     with _Errors("restore from the Drive trash"):
         sp = await drive.open(principal.user_id, space)
-        return RestoredOut(entries=await drive.restore(sp, body.trash_id))
+        back = await drive.restore(sp, body.trash_id)
+        return RestoredOut(entries=await _entries_out(principal.user_id, back))
 
 
 @router.delete("/{space}/trash", response_model=PurgedOut)
@@ -284,12 +351,15 @@ async def list_versions(
     _one_of(path, id)
     with _Errors("list Drive versions"):
         sp = await drive.open(principal.user_id, space)
-        entry = await drive.stat(sp, path, entry_id=id)
-        found, too_large = await drive.versions(sp, entry)
+        entry, found, too_large, dropped, freed = await drive.versions(sp, path, entry_id=id)
+        shown = [_version_out(entry, v) for v in found]
+        await _titled(principal.user_id, (v.actor for v in shown))
         return VersionsOut(
-            versions=found,
-            history_bytes=await drive.history_bytes(sp, entry),
+            versions=shown,
+            history_bytes=freed,
+            clearable=dropped,
             too_large_for_history=too_large,
+            memo=entry.memo,
         )
 
 
@@ -302,7 +372,7 @@ CLEAR_REFUSED = (
 
 @router.post("/{space}/versions/clear", response_model=HistoryClearedOut)
 async def clear_history(
-    space: str, body: HistoryClearIn, principal: WritePrincipal
+    space: str, body: HistoryClearIn, request: Request, principal: WritePrincipal
 ) -> HistoryClearedOut:
     """Drop a file's old versions, all or those below ``before``; the head
     stays. Bytes another version or file still uses are kept. Nothing brings
@@ -314,19 +384,26 @@ async def clear_history(
     with _Errors("clear a Drive file's history"):
         sp = await drive.open(principal.user_id, space)
         entry = await drive.stat(sp, body.path, entry_id=body.id)
-        if entry.kind != "file":
-            raise DriveError("is_folder", f"{entry.path} is a folder")
-        dropped, freed = await drive.clear_history(sp, entry.entry_id, before=body.before)
+        dropped, freed = await drive.clear_history(
+            sp,
+            entry.entry_id,
+            before=body.before,
+            pinned=body.final_seq if "final_seq" in body.model_fields_set else ...,
+            actor=_actor(principal, request),
+        )
         return HistoryClearedOut(dropped=dropped, freed_bytes=freed)
 
 
 @router.post("/{space}/versions/restore", response_model=EntryOut)
 async def restore_version(
     space: str, body: VersionRestoreIn, request: Request, principal: WritePrincipal
-) -> Entry:
+) -> EntryOut:
     with _Errors("restore a Drive version"):
         sp = await drive.open(principal.user_id, space)
-        return await drive.restore_version(sp, body.id, body.seq, actor=_actor(principal, request))
+        back = await drive.restore_version(
+            sp, body.id, body.seq, actor=_actor(principal, request), note=body.note
+        )
+        return await _entry_out(principal.user_id, back)
 
 
 @router.get("/{space}/changes", response_model=ChangesOut)

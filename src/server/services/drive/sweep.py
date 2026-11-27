@@ -1,5 +1,5 @@
 """Keeps each Drive space within its rules (``drive.maintain``: the trash's
-days, the history rule, released copies' grace, the trash's bound), and ends
+days, undo copies' days, released copies' grace, the trash's bound), and ends
 uploads in parts that were left.
 
 Every worker runs the loop; a pass runs where it takes the session lock, so
@@ -32,7 +32,9 @@ async def sweep_once() -> int | None:
         if not held:
             return None
         days = get_infrastructure_config().drive.trash_days
-        spaces = await reads.spaces_to_maintain(days, drive.history_rule(), _SPACES_PER_PASS)
+        spaces = await reads.spaces_to_maintain(
+            days, drive.history_rule().grace_seconds, _SPACES_PER_PASS
+        )
         for space_id in spaces:
             try:
                 await drive.maintain(space_id)

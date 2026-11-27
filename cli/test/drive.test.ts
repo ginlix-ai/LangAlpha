@@ -1,20 +1,16 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Args } from "../src/args.js";
 import { drive } from "../src/commands/drive.js";
 import { buffersFor, getFile, pool, writeAll } from "../src/commands/driveTransfer.js";
-import { bind, type Command, command, type Ctx, parseFor, select } from "../src/commands/command.js";
-import { COMMANDS } from "../src/commands/index.js";
-import type { Credential } from "../src/credentials.js";
-import { CliError, Exit } from "../src/errors.js";
+import { bind, command, parseFor, select } from "../src/commands/command.js";
 import { Api } from "../src/http.js";
-
-const credential: Credential = { baseUrl: "http://server.test", token: async () => "tok", renew: async () => false };
-const entry = { id: "e1", path: "_cli/a.txt", name: "a.txt", kind: "file", size: 3, sha256: "abc", is_text: true, version: 1 };
+import { COMMANDS } from "../src/commands/index.js";
+import { CliError, Exit } from "../src/errors.js";
+import { credential, drivePath, entry, fetchMock, type Handler, json, localFile, out, run, sent, serve, tempDir, usage, useDriveHarness } from "./driveHarness.js";
 
 // Bytes go by node:http in the CLI; here they are answered by the same stub as the rest.
 vi.mock("../src/rawHttp.js", () => ({
@@ -25,47 +21,10 @@ vi.mock("../src/rawHttp.js", () => ({
   },
 }));
 
-let fetchMock: ReturnType<typeof vi.fn>;
-let out: string[];
-
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-  out = [];
-  vi.spyOn(process.stdout, "write").mockImplementation((t) => {
-    out.push(typeof t === "string" ? t : Buffer.from(t).toString());
-    return true;
-  });
-});
-
-const scratch: string[] = [];
-
-/** A new empty directory for a test's files, removed after it. */
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "drive-"));
-  scratch.push(dir);
-  return dir;
-}
-
-afterEach(() => {
-  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-});
-
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-
-/** Run ``la drive ...`` words through the same selection and binding the CLI uses. */
-async function run(argv: string[]): Promise<number | void> {
-  const selection = select(COMMANDS, argv);
-  const command = selection.command as Command;
-  const parsed = parseFor(command, selection.rest);
-  const args = bind(command, parsed);
-  return command.run({ api: new Api(credential), args, json: parsed.values.has("json") } as Ctx);
-}
+useDriveHarness();
 
 const find = (...words: string[]) => drive.find((c) => c.words.join(" ") === words.join(" "))!;
+
 
 describe("drive arguments", () => {
   it("takes ls with or without a path, and trash restore ahead of trash", () => {
@@ -94,30 +53,6 @@ describe("drive arguments", () => {
   });
 });
 
-type Handler = (url: URL, init: RequestInit & { headers: Record<string, string>; body?: unknown }) => Response | Promise<Response>;
-
-/** A request's path below the space: "/uploads", or "/spaces" for the listing that has no space. */
-const drivePath = (u: URL) => u.pathname.replace(/^\/api\/v1\/drive(\/(?!spaces$)[^/]+)?/, "") || "/";
-
-/** Answer each request by "METHOD /path-after-/api/v1/drive"; anything unlisted is a failure of the test. */
-function serve(routes: Record<string, Handler>): void {
-  fetchMock.mockImplementation(async (url: URL, init) => {
-    const u = new URL(String(url));
-    const key = `${init?.method ?? "GET"} ${drivePath(u)}`;
-    const handler = routes[key];
-    if (!handler) throw new Error(`unexpected request ${key}`);
-    return handler(u, init);
-  });
-}
-
-const usage = (limit: number) => () => json(200, { spaces: [{ id: "s1", kind: "team", usage: { max_upload_bytes: limit } }] });
-const sent = (key: string) => fetchMock.mock.calls.find(([u, i]) => `${i?.method ?? "GET"} ${drivePath(new URL(String(u)))}` === key);
-
-function localFile(name: string, content: Buffer | string): string {
-  const file = join(tempDir(), name);
-  writeFileSync(file, content);
-  return file;
-}
 
 describe("drive put", () => {
   it("sends a small file in one request, with the note and the preconditions", async () => {
@@ -394,11 +329,28 @@ describe("drive put in parts", () => {
       "GET /spaces": usage(1e12),
       "POST /uploads": begun("relay", [1, 2, 3]),
       "POST /uploads/u1/complete": () => json(202, { state: "verifying" }),
-      "GET /uploads/u1": () => json(200, { state: "failed", error: { type: "mismatch", message: "x" } }),
+      "GET /uploads/u1": () => json(200, { state: "failed", error: { type: "mismatch", message: "x", status: 422 } }),
     });
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const err = (await run(["drive", "put", big(), "_cli/big.bin"]).catch((e) => e)) as CliError;
     expect(err.message).toContain("did not match the file's hash");
+  });
+
+  it.each([
+    ["checkout_required", 409, Exit.conflict],
+    ["changed", 412, Exit.conflict],
+    ["over_quota", 507, Exit.error],
+  ])("exits for an upload that failed with %s as for that refusal answered at once", async (type, status, code) => {
+    serve({
+      "GET /spaces": usage(1e12),
+      "POST /uploads": begun("relay", [1, 2, 3]),
+      "POST /uploads/u1/complete": () => json(202, { state: "verifying" }),
+      "GET /uploads/u1": () => json(200, { state: "failed", error: { type, message: "The server's sentence", status } }),
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const err = (await run(["drive", "put", big(), "_cli/big.bin"]).catch((e) => e)) as CliError;
+    expect(err.code).toBe(code);
+    expect(err.status).toBe(status);
   });
 });
 
@@ -682,18 +634,24 @@ describe("drive history and usage", () => {
   const who = { kind: "person", thread_id: null };
   const v = (seq: number, expires_at: string | null) => ({ seq, size: 2048, created_at: "2026-11-20T10:00:00Z", actor: who, note: null, restored_from: null, expires_at });
 
-  it("says when each earlier version goes and what clearing them frees", async () => {
-    fetchMock.mockResolvedValueOnce(json(200, { versions: [v(3, null), v(2, "2026-12-20T10:00:00Z"), v(1, null)], history_bytes: 4096 }));
+  it("shows a file's earlier copies, each with when it goes, and how to keep every version", async () => {
+    serve({
+      "GET /versions": () =>
+        json(200, { versions: [v(4, null), v(3, "2026-12-19T10:00:00Z"), v(2, "2026-12-20T10:00:00Z")], memo: null, history_bytes: 2048 }),
+    });
     await run(["drive", "history", "_cli/m.bin"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     const text = out.join("");
     expect(text).toContain("current");
     expect(text).toContain("2026-12-20 10:00");
-    expect(text).toContain("kept");
-    expect(text).toContain("Earlier versions take 4.0 KB. Drop them with: la drive history clear _cli/m.bin");
+    expect(text).toContain("2026-12-19 10:00");
+    expect(text).toContain("_cli/m.bin keeps one earlier copy, for 7 days after a save. To keep every version, mark it as a memo: la drive memo mark _cli/m.bin");
   });
 
   it("says a file too large for history keeps none", async () => {
-    fetchMock.mockResolvedValueOnce(json(200, { versions: [v(1, null)], history_bytes: 0, too_large_for_history: true }));
+    serve({
+      "GET /versions": () => json(200, { versions: [v(1, null)], memo: null, history_bytes: 0, too_large_for_history: true }),
+    });
     await run(["drive", "history", "_cli/big.bin"]);
     expect(out.join("")).toContain("_cli/big.bin is too large to keep earlier versions: saving over it replaces it.");
   });

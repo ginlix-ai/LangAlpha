@@ -4,8 +4,12 @@ The lease on an upload being read back, the conditions a begin resumes
 under, a cancel racing the version's commit, the expiry sweep racing a
 renewal, the counts the space keeps as its rows change, what a replace or
 the trash's bound displaces, a history clear, and a trash
-item holding two generations of one path.
+item holding two generations of one path. Memos, undo and the record are
+in test_drive_memos_db.py.
 """
+
+# The ``space`` fixture comes from drive_helpers; each test takes it by name.
+# ruff: noqa: F811
 
 from __future__ import annotations
 
@@ -16,120 +20,54 @@ from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-import pytest_asyncio
 
 from src.server.database.drive import reads, retention, writes
+from src.server.database.drive import trash as trash_rows
 from src.server.database.drive import uploads as rows
 from src.server.database.drive.keys import path_key
-from src.server.database.drive.records import Actor, DriveError, Limits
+from src.server.database.drive.records import Actor, DriveError
 from src.server.database.drive.writes import ContentRef
-
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
-
-MIB = 1024 * 1024
-LIMITS = Limits(
-    max_space_bytes=None,
-    max_entries=100_000,
-    max_trash_bytes=None,
-    max_file_bytes=1 << 40,
-    max_request_bytes=50 * MIB,
+from tests.integration.drive_helpers import (  # noqa: F401
+    LIMITS,
+    MIB,
+    counts_of,
+    make_due,
+    mark,
+    person_of,
+    ref_of,
+    save_text,
+    space,
+    waiting_on_a_lock,
 )
 
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def space(seed_user):
-    return await reads.personal_space(seed_user["user_id"])
-
-
-def _person(space, sitting: str | None = None) -> Actor:
-    return Actor(kind="person", user_id=space.user_id, via="app", sitting=sitting)
-
-
-def _ref(text: str) -> tuple[ContentRef, bytes]:
-    data = text.encode()
-    return ContentRef(f"sha-{text}", len(data), False, "application/octet-stream"), data
-
-
-async def _save(space, path: str, text: str, *, sitting: str | None = None, limits=LIMITS):
-    ref, data = _ref(text)
-    async with writes.locked(space.space_id, limits) as tx:
-        return await tx.save(path, ref, _person(space, sitting), data=data)
-
-
-async def _counted(db_conn, space_id: str) -> tuple[dict, dict]:
-    """The space's kept counts, and the same counted from its rows."""
-    async with db_conn.cursor() as cur:
-        await cur.execute(
-            "SELECT held_bytes, released_bytes, gone_bytes, entry_count, binary_versions"
-            " FROM drive_spaces WHERE space_id = %s",
-            (space_id,),
-        )
-        kept = dict(await cur.fetchone())
-        await cur.execute(
-            """
-            SELECT
-              (SELECT COALESCE(sum(byte_len), 0) FROM drive_contents WHERE space_id = %(s)s) AS held_bytes,
-              (SELECT COALESCE(sum(byte_len), 0) FROM drive_contents
-                WHERE space_id = %(s)s AND released_at IS NOT NULL) AS released_bytes,
-              (SELECT COALESCE(sum(c.byte_len), 0) FROM drive_contents c
-                WHERE c.space_id = %(s)s AND c.released_at IS NULL
-                  AND EXISTS (SELECT 1 FROM drive_versions v
-                               WHERE v.space_id = c.space_id AND v.sha256 = c.sha256)
-                  AND NOT EXISTS (SELECT 1 FROM drive_versions v
-                                   JOIN drive_entries e ON e.entry_id = v.entry_id
-                                  WHERE v.space_id = c.space_id AND v.sha256 = c.sha256
-                                    AND e.deleted_at IS NULL)) AS gone_bytes,
-              (SELECT count(*) FROM drive_entries WHERE space_id = %(s)s) AS entry_count,
-              (SELECT count(*) FROM drive_versions WHERE space_id = %(s)s AND NOT is_text)
-                AS binary_versions
-            """,
-            {"s": space_id},
-        )
-        counted = dict(await cur.fetchone())
-        await cur.execute(
-            """
-            SELECT count(*) AS wrong FROM drive_contents c
-             WHERE c.space_id = %(s)s AND (
-               c.live_refs <> (SELECT count(*) FROM drive_versions v JOIN drive_entries e
-                                 ON e.entry_id = v.entry_id AND e.deleted_at IS NULL
-                                WHERE v.space_id = c.space_id AND v.sha256 = c.sha256)
-               OR c.gone_refs <> (SELECT count(*) FROM drive_versions v JOIN drive_entries e
-                                    ON e.entry_id = v.entry_id AND e.deleted_at IS NOT NULL
-                                   WHERE v.space_id = c.space_id AND v.sha256 = c.sha256))
-            """,
-            {"s": space_id},
-        )
-        counted["wrong_refs"] = (await cur.fetchone())["wrong"]
-    kept["wrong_refs"] = 0
-    return kept, counted
-
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 # --- the counts (S10) ---------------------------------------------------------
 
 
 async def test_the_counts_follow_every_change(space, db_conn):
-    actor = _person(space)
-    await _save(space, "a/one.bin", "one")
-    await _save(space, "a/two.bin", "two")
-    await _save(space, "a/two.bin", "two-b")  # a second version
-    await _save(space, "b.bin", "one")  # bytes shared with a/one.bin
-    await _save(space, "c.bin", "c", sitting="s1")
-    await _save(space, "c.bin", "c-folded", sitting="s1")  # folded into one version
+    actor = person_of(space)
+    await save_text(space, "a/one.bin", "one")
+    await save_text(space, "a/two.bin", "two")
+    await save_text(space, "a/two.bin", "two-b")  # a second version
+    await save_text(space, "b.bin", "one")  # bytes shared with a/one.bin
+    await save_text(space, "c.bin", "c", sitting="s1")
+    await save_text(space, "c.bin", "c-folded", sitting="s1")  # folded into one version
     async with writes.locked(space.space_id, LIMITS) as tx:
-        folder = await tx.trash("a", actor, None, False)
-    kept, counted = await _counted(db_conn, space.space_id)
+        folder = await trash_rows.trash(tx, "a", actor, None, False)
+    kept, counted = await counts_of(db_conn, space.space_id)
     assert kept == counted
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.restore(folder)
-        await tx.replace("b.bin", "c.bin", actor)
-        await retention.clear(tx, (await tx.live("a/two.bin")).entry_id, None)
-    kept, counted = await _counted(db_conn, space.space_id)
+        await trash_rows.restore(tx, folder)
+        await tx.rename("b.bin", "c.bin", actor, replace=True)
+        await retention.clear(tx, await tx.live("a/two.bin"), None)
+    kept, counted = await counts_of(db_conn, space.space_id)
     assert kept == counted
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.trash("a/one.bin", actor, None, False)
-        await tx.purge(None, None)
+        await trash_rows.trash(tx, "a/one.bin", actor, None, False)
+        await trash_rows.purge(tx, None, None)
         await retention.free_released(tx)
-    kept, counted = await _counted(db_conn, space.space_id)
+    kept, counted = await counts_of(db_conn, space.space_id)
     assert kept == counted
     live, trash, entries = await reads.usage(space.space_id)
     assert entries == counted["entry_count"]
@@ -137,8 +75,8 @@ async def test_the_counts_follow_every_change(space, db_conn):
 
 
 async def test_a_drift_in_the_counts_is_healed_and_reported(space, db_conn):
-    await _save(space, "a.bin", "one")
-    await _save(space, "b.bin", "two")
+    await save_text(space, "a.bin", "one")
+    await save_text(space, "b.bin", "two")
     async with db_conn.cursor() as cur:
         await cur.execute(
             "UPDATE drive_spaces SET held_bytes = held_bytes + 7, entry_count = 0 WHERE space_id = %s",
@@ -153,7 +91,7 @@ async def test_a_drift_in_the_counts_is_healed_and_reported(space, db_conn):
     assert drift["entry_count"] == -2 and drift["content_refs"] == 1
     # The usage a client read was wrong: the healing is a change it is told of.
     assert tx.changed
-    kept, counted = await _counted(db_conn, space.space_id)
+    kept, counted = await counts_of(db_conn, space.space_id)
     assert kept == counted
     async with writes.locked(space.space_id, LIMITS) as tx:
         assert await retention.reconcile(tx) == {}
@@ -166,7 +104,7 @@ async def test_upkeep_is_never_refused_for_room(space, db_conn, monkeypatch):
     nothing, so it commits, the drift healed."""
     from src.server.services import drive
 
-    await _save(space, "a.bin", "x" * 100)
+    await save_text(space, "a.bin", "x" * 100)
     async with db_conn.cursor() as cur:
         await cur.execute(
             "UPDATE drive_spaces SET held_bytes = held_bytes - 90 WHERE space_id = %s",
@@ -175,40 +113,55 @@ async def test_upkeep_is_never_refused_for_room(space, db_conn, monkeypatch):
     tight = dataclasses.replace(LIMITS, max_space_bytes=50)
     monkeypatch.setattr(drive, "_space_limits", AsyncMock(return_value=tight))
     await drive.maintain(space.space_id)
-    kept, counted = await _counted(db_conn, space.space_id)
+    kept, counted = await counts_of(db_conn, space.space_id)
     assert kept == counted
 
 
-async def test_the_history_sweep_reads_only_spaces_with_versions_it_ages_out(space, db_conn):
-    from src.server.database.drive.records import HistoryRule
+async def test_the_sweep_finds_a_space_by_its_due_undo_copies(space, db_conn):
+    await save_text(space, "u.bin", "1")
+    await save_text(space, "u.bin", "2")
+    assert space.space_id not in await reads.spaces_to_maintain(14, 3600, 500)
+    await make_due(db_conn, "u.bin", space)
+    assert space.space_id in await reads.spaces_to_maintain(14, 3600, 500)
 
-    async def checked():
-        async with db_conn.cursor() as cur:
+
+async def test_the_sweep_takes_first_the_spaces_due_longest(space, db_conn):
+    """More spaces due than a pass takes: the one whose undo copy has
+    waited longest is in it, so none is passed over pass after pass."""
+    await save_text(space, "u.bin", "1")
+    await save_text(space, "u.bin", "2")
+    await make_due(db_conn, "u.bin", space)
+    async with db_conn.cursor() as cur:
+        await cur.execute("INSERT INTO drive_spaces (kind) VALUES ('team') RETURNING space_id::text AS id")
+        other = (await cur.fetchone())["id"]
+        try:
             await cur.execute(
-                "SELECT history_checked_at FROM drive_spaces WHERE space_id = %s", (space.space_id,)
+                "INSERT INTO drive_entries (space_id, kind, name, parent, path, path_key,"
+                " changed_seq, undo_until) VALUES (%s, 'file', 'o.bin', '', 'o.bin', 'o.bin', 1,"
+                " now() - interval '1 hour')",
+                (other,),
             )
-            return (await cur.fetchone())["history_checked_at"]
-
-    ref, data = ContentRef("sha-text", 4, True, "text/plain"), b"text"
-    async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.save("notes.md", ref, _person(space), data=data)
-    await reads.spaces_to_maintain(14, HistoryRule(), 500)
-    assert await checked() is None  # only text: never read for history
-    await _save(space, "data.bin", "binary")
-    await reads.spaces_to_maintain(14, HistoryRule(), 500)
-    assert await checked() is not None
+            assert await reads.spaces_to_maintain(14, 3600, 1) == [other]
+            await cur.execute(
+                "UPDATE drive_entries SET undo_until = now() - interval '2 hours'"
+                " WHERE space_id = %s AND path = 'u.bin'",
+                (space.space_id,),
+            )
+            assert await reads.spaces_to_maintain(14, 3600, 1) == [space.space_id]
+        finally:
+            await cur.execute("DELETE FROM drive_spaces WHERE space_id = %s", (other,))
 
 
 # --- replace and the bound (S5, A6) -------------------------------------------------
 
 
 async def test_a_replaced_file_with_history_goes_to_the_trash(space):
-    actor = _person(space)
-    await _save(space, "draft.txt", "v1")
-    await _save(space, "draft.txt", "v2")
-    await _save(space, "final.txt", "old")
+    actor = person_of(space)
+    await save_text(space, "draft.txt", "v1")
+    await save_text(space, "draft.txt", "v2")
+    await save_text(space, "final.txt", "old")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        _, gone = await tx.replace("draft.txt", "final.txt", actor)
+        gone = (await tx.rename("draft.txt", "final.txt", actor, replace=True)).ended_id
     trash = await reads.trashed(space.space_id, None)
     assert [t.entry.entry_id for t in trash] == [gone]
     # Its earlier bytes are counted as the trash's.
@@ -217,44 +170,77 @@ async def test_a_replaced_file_with_history_goes_to_the_trash(space):
 
 
 async def test_a_replaced_file_with_no_history_leaves_only_a_notice(space):
-    actor = _person(space)
-    await _save(space, "tmp.txt", "new")
-    await _save(space, "final.txt", "old")
+    actor = person_of(space)
+    await save_text(space, "tmp.txt", "new")
+    await save_text(space, "final.txt", "old")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.replace("tmp.txt", "final.txt", actor)
+        await tx.rename("tmp.txt", "final.txt", actor, replace=True)
     assert await reads.trashed(space.space_id, None) == []
     _, trashed, _ = await reads.usage(space.space_id)
     assert trashed == 0
 
 
 async def test_the_bound_purges_only_trash_that_holds_bytes_of_its_own(space):
-    actor = _person(space)
-    await _save(space, "shared.bin", "x" * 100)
-    await _save(space, "copy.bin", "x" * 100)  # the same bytes, still live elsewhere
-    await _save(space, "own.bin", "y" * 100)
+    actor = person_of(space)
+    await save_text(space, "shared.bin", "x" * 100)
+    await save_text(space, "copy.bin", "x" * 100)  # the same bytes, still live elsewhere
+    await save_text(space, "own.bin", "y" * 100)
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.trash("copy.bin", actor, None, False)  # the oldest, holding nothing of its own
+        await trash_rows.trash(tx, "copy.bin", actor, None, False)  # the oldest, holding nothing of its own
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.trash("own.bin", actor, None, False)
+        await trash_rows.trash(tx, "own.bin", actor, None, False)
     tight = dataclasses.replace(LIMITS, max_trash_bytes=50)
     async with writes.locked(space.space_id, tight) as tx:
-        await retention.bound(tx)
+        await trash_rows.bound(tx)
     left = [t.entry.path for t in await reads.trashed(space.space_id, None)]
     assert left == ["copy.bin"]
+
+
+async def test_the_bound_takes_a_memo_in_the_trash_only_after_every_other_file(space):
+    actor = person_of(space)
+    await save_text(space, "memo.md", "m" * 100)
+    await mark(space, "memo.md")
+    await save_text(space, "big.bin", "b" * 100)
+    for path in ("memo.md", "big.bin"):  # the memo is the oldest in the trash
+        async with writes.locked(space.space_id, LIMITS) as tx:
+            await trash_rows.trash(tx, path, actor, None, False)
+    tight = dataclasses.replace(LIMITS, max_trash_bytes=150)
+    async with writes.locked(space.space_id, tight) as tx:
+        await trash_rows.bound(tx)
+    assert [t.entry.path for t in await reads.trashed(space.space_id, None)] == ["memo.md"]
+
+
+async def test_the_bound_leaves_a_folder_deleted_with_a_memo_in_it_until_last(space):
+    """A purge takes the whole trash item, so an ordinary file deleted with
+    a memo waits as the memo does."""
+    actor = person_of(space)
+    await save_text(space, "d/old.bin", "o" * 100)
+    await save_text(space, "d/memo.md", "m" * 100)
+    await mark(space, "d/memo.md")
+    await save_text(space, "new.bin", "n" * 100)
+    for path in ("d", "new.bin"):  # the folder is the oldest in the trash
+        async with writes.locked(space.space_id, LIMITS) as tx:
+            await trash_rows.trash(tx, path, actor, None, False)
+    tight = dataclasses.replace(LIMITS, max_trash_bytes=250)
+    async with writes.locked(space.space_id, tight) as tx:
+        await trash_rows.bound(tx)
+    assert [t.entry.path for t in await reads.trashed(space.space_id, None)] == ["d"]
 
 
 # --- clearing history (S3) ----------------------------------------------------------
 
 
 async def test_a_clear_drops_the_old_versions_there_when_it_takes_the_lock(space):
-    for text in ("1", "2", "3"):
-        await _save(space, "f.bin", text)
+    await save_text(space, "f.bin", "1")
+    await mark(space, "f.bin")
+    for text in ("2", "3"):
+        await save_text(space, "f.bin", text)
     entry = await reads.live_entry(space.space_id, path="f.bin")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        dropped, _ = await retention.clear(tx, entry.entry_id, 2)
+        dropped, _ = await retention.clear(tx, entry, 2)
     assert dropped == 1
     async with writes.locked(space.space_id, LIMITS) as tx:
-        dropped, _ = await retention.clear(tx, entry.entry_id, None)
+        dropped, _ = await retention.clear(tx, entry, None)
     assert dropped == 1
     left = [v.seq for v in (await reads.versions(entry.entry_id, LIMITS.history))[0]]
     assert left == [3]
@@ -265,10 +251,10 @@ async def test_a_head_too_large_to_keep_still_lists_its_older_versions(space):
     from src.server.database.drive.records import HistoryRule
 
     for text in ("1", "22", "333333"):
-        await _save(space, "large.bin", text)
+        await save_text(space, "large.bin", text)
     entry = await reads.live_entry(space.space_id, path="large.bin")
     found, large = await reads.versions(entry.entry_id, HistoryRule(max_bytes=4))
-    assert [v.seq for v in found] == [3, 2, 1]
+    assert [v.seq for v in found] == [3, 2]
     assert large is True
 
 
@@ -279,11 +265,11 @@ async def test_a_text_page_reads_its_bytes_from_the_snapshot_it_was_sized_in(spa
         data = text.encode()
         ref = ContentRef(f"sha-{text}", len(data), True, "text/plain")
         async with writes.locked(space.space_id, LIMITS) as tx:
-            await tx.save(path, ref, _person(space), data=data)
+            await tx.save(path, ref, person_of(space), data=data)
 
     await save_text("page/a.txt", "a" * 10)
     await save_text("page/b.txt", "b" * 10)
-    real, calls = reads._rows, []
+    real, calls = reads.fetch, []
 
     async def between(sql, params, conn=None):
         found = await real(sql, params, conn)
@@ -294,7 +280,7 @@ async def test_a_text_page_reads_its_bytes_from_the_snapshot_it_was_sized_in(spa
             await save_text(entry.path, "c" * 1000)
         return found
 
-    monkeypatch.setattr(reads, "_rows", between)
+    monkeypatch.setattr(reads, "fetch", between)
     page = await reads.texts(space.space_id, None, None, 10, 25, under="page")
     assert sum(len(data) for _, data in page) <= 25
 
@@ -311,7 +297,7 @@ async def test_a_save_under_a_longer_stored_spelling_is_held_to_the_path_limit(s
     asked = f"ss/{_DEEP}/" + "n" * 17
     assert len(asked.encode()) == 1024
     with pytest.raises(DriveError) as refused:
-        await _save(space, asked, "one")
+        await save_text(space, asked, "one")
     assert refused.value.code == "invalid_path"
     assert await reads.live_entry(space.space_id, path=asked) is None
 
@@ -320,7 +306,7 @@ async def test_a_folder_move_is_measured_against_the_stored_destination(space):
     async with writes.locked(space.space_id, LIMITS) as tx:
         await tx.mkdir("ẞ")
     rest = "/".join(c * 250 for c in "wxy") + "/" + "n" * 247
-    await _save(space, f"src/{rest}", "one")
+    await save_text(space, f"src/{rest}", "one")
     moved_to = "ss/" + "a" * 20
     assert len(f"{moved_to}/{rest}".encode()) == 1024
     with pytest.raises(DriveError) as refused:
@@ -359,8 +345,8 @@ async def test_held_text_saved_under_a_data_name_keeps_the_data_kind(space):
     """Text bytes first, then the same bytes as a data file the store would
     hold: the data file is not read or searched as text."""
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.save("same/notes.md", _as(True), _person(space), data=_SAME)
-        await tx.save("same/data.csv", _as(False), _person(space), blob_user_id=space.user_id)
+        await tx.save("same/notes.md", _as(True), person_of(space), data=_SAME)
+        await tx.save("same/data.csv", _as(False), person_of(space), blob_user_id=space.user_id)
     assert await _kinds(space) == {"same/notes.md": (True, True), "same/data.csv": (False, False)}
     assert await _searched(space) == ["same/notes.md"]
     entry = await reads.live_entry(space.space_id, path="same/data.csv")
@@ -372,8 +358,8 @@ async def test_held_data_saved_under_a_text_name_is_kept_as_text(space):
     """The data file's bytes first, in the store, then the same bytes as
     text: the text file is searched, its bytes now held as text."""
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.save("same/data.csv", _as(False), _person(space), blob_user_id=space.user_id)
-        await tx.save("same/notes.md", _as(True), _person(space), data=_SAME)
+        await tx.save("same/data.csv", _as(False), person_of(space), blob_user_id=space.user_id)
+        await tx.save("same/notes.md", _as(True), person_of(space), data=_SAME)
     assert await _kinds(space) == {"same/notes.md": (True, True), "same/data.csv": (False, False)}
     assert await _searched(space) == ["same/notes.md"]
     found = await reads.content_by_sha(space.space_id, _SAME_SHA)
@@ -386,11 +372,11 @@ async def test_a_clear_reaches_the_feed_as_the_file_unchanged(space):
     """Other clients read a file's versions and the usage again on a change
     to it; a clear changes both, so it is one, with the head as it was."""
     for text in ("1", "2"):
-        await _save(space, "fed.bin", text)
+        await save_text(space, "fed.bin", text)
     entry = await reads.live_entry(space.space_id, path="fed.bin")
     before = await reads.cursor(space.space_id)
     async with writes.upkeep(space.space_id, LIMITS) as tx:
-        assert (await retention.clear(tx, entry.entry_id, None))[0] == 1
+        assert (await retention.clear(tx, entry, None))[0] == 1
     found = await reads.changes(space.space_id, before)
     assert [(e.entry_id, e.sha256, e.head_seq, e.modified_at) for e in found.entries] == [
         (entry.entry_id, entry.sha256, entry.head_seq, entry.modified_at)
@@ -398,7 +384,7 @@ async def test_a_clear_reaches_the_feed_as_the_file_unchanged(space):
     # Nothing left to clear: no change.
     after = await reads.cursor(space.space_id)
     async with writes.upkeep(space.space_id, LIMITS) as tx:
-        assert (await retention.clear(tx, entry.entry_id, None))[0] == 0
+        assert (await retention.clear(tx, entry, None))[0] == 0
     assert await reads.cursor(space.space_id) == after
 
 
@@ -420,9 +406,9 @@ def announced(monkeypatch):
 async def test_a_purge_moves_the_cursor_with_nothing_to_list(space, announced):
     from src.server.services import drive
 
-    await _save(space, "gone.bin", "x")
+    await save_text(space, "gone.bin", "x")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.trash("gone.bin", _person(space), None, False)
+        await trash_rows.trash(tx, "gone.bin", person_of(space), None, False)
     before = await reads.cursor(space.space_id)
     assert await drive.purge(space) == 1
     found = await reads.changes(space.space_id, before)
@@ -431,17 +417,19 @@ async def test_a_purge_moves_the_cursor_with_nothing_to_list(space, announced):
     announced.assert_awaited_once()
 
 
-async def test_a_sweep_that_trims_history_moves_the_cursor(space, announced, monkeypatch):
-    from src.server.database.drive.records import HistoryRule
+async def test_a_sweep_that_drops_an_undo_copy_moves_the_cursor(space, announced, db_conn):
     from src.server.services import drive
 
-    one = dataclasses.replace(LIMITS, history=HistoryRule(keep_max=1))
-    monkeypatch.setattr(drive, "_space_limits", AsyncMock(return_value=one))
-    for text in ("1", "2", "3"):
-        await _save(space, "trim.bin", text)
+    for text in ("1", "2"):
+        await save_text(space, "trim.bin", text)
+    await make_due(db_conn, "trim.bin", space)
     before = await reads.cursor(space.space_id)
     await drive.maintain(space.space_id)
-    assert await reads.cursor(space.space_id) > before
+    found = await reads.changes(space.space_id, before)
+    assert [e.path for e in found.entries] == ["trim.bin"]
+    assert found.entries[0].undo_until is None
+    entry = await reads.live_entry(space.space_id, path="trim.bin")
+    assert [v.seq for v in (await reads.versions(entry.entry_id, LIMITS.history))[0]] == [2]
     announced.assert_awaited_once()
 
 
@@ -452,10 +440,10 @@ async def test_a_sweep_that_changes_nothing_a_client_sees_keeps_the_cursor(
     from src.server.services import drive
 
     for text in ("1", "2"):
-        await _save(space, "freed.bin", text)
+        await save_text(space, "freed.bin", text)
     entry = await reads.live_entry(space.space_id, path="freed.bin")
     async with writes.upkeep(space.space_id, LIMITS) as tx:
-        await retention.clear(tx, entry.entry_id, None)
+        await retention.clear(tx, entry, None)
     usage = await reads.usage(space.space_id)
     before = await reads.cursor(space.space_id)
     graceless = dataclasses.replace(LIMITS.history, grace_seconds=0)
@@ -472,39 +460,39 @@ async def test_a_sweep_that_changes_nothing_a_client_sees_keeps_the_cursor(
 
 
 async def test_a_trash_item_with_two_generations_of_a_path_restores(space):
-    actor = _person(space, sitting="burst")
-    await _save(space, "d/x.txt", "first")
+    actor = person_of(space, sitting="burst")
+    await save_text(space, "d/x.txt", "first")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        first = await tx.trash("d/x.txt", actor, None, False)
-    await _save(space, "d/x.txt", "second")
+        first = await trash_rows.trash(tx, "d/x.txt", actor, None, False)
+    await save_text(space, "d/x.txt", "second")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        second = await tx.trash("d", actor, None, False)
+        second = await trash_rows.trash(tx, "d", actor, None, False)
     assert first == second  # one burst, one item
     async with writes.locked(space.space_id, LIMITS) as tx:
-        back = await tx.restore(first)
+        back = await trash_rows.restore(tx, first)
     assert sorted(e.path for e in back) == ["d", "d/x (1).txt", "d/x.txt"]
 
 
 async def _burst(space, paths: list[str]) -> str:
     """``rm -r`` as a computer's mount sends it: one delete a path, deepest
     first, one sitting, so the trash joins them into one item."""
-    actor = _person(space, sitting="rm-r")
+    actor = person_of(space, sitting="rm-r")
     ids = set()
     for path in paths:
         async with writes.locked(space.space_id, LIMITS) as tx:
-            ids.add(await tx.trash(path, actor, None, False))
+            ids.add(await trash_rows.trash(tx, path, actor, None, False))
     assert len(ids) == 1
     return ids.pop()
 
 
 async def _restored(space, trash_id: str) -> list[str]:
     async with writes.locked(space.space_id, LIMITS) as tx:
-        back = await tx.restore(trash_id)
+        back = await trash_rows.restore(tx, trash_id)
     return sorted(e.path for e in back)
 
 
 async def test_a_burst_restored_beside_its_replacement_keeps_its_children(space):
-    await _save(space, "d/x.txt", "x")
+    await save_text(space, "d/x.txt", "x")
     item = await _burst(space, ["d/x.txt", "d"])
     async with writes.locked(space.space_id, LIMITS) as tx:
         await tx.mkdir("d")
@@ -516,7 +504,7 @@ async def test_a_burst_restored_beside_its_replacement_keeps_its_children(space)
 
 
 async def test_a_deeper_burst_follows_each_renamed_ancestor(space):
-    await _save(space, "d/e/x.txt", "x")
+    await save_text(space, "d/e/x.txt", "x")
     item = await _burst(space, ["d/e/x.txt", "d/e", "d"])
     async with writes.locked(space.space_id, LIMITS) as tx:
         await tx.mkdir("d")
@@ -524,7 +512,7 @@ async def test_a_deeper_burst_follows_each_renamed_ancestor(space):
 
 
 async def test_a_burst_under_a_renamed_middle_folder_lands_in_it(space):
-    await _save(space, "d/e/x.txt", "x")
+    await save_text(space, "d/e/x.txt", "x")
     item = await _burst(space, ["d/e/x.txt", "d/e"])
     async with writes.locked(space.space_id, LIMITS) as tx:
         await tx.mkdir("d/e")
@@ -534,13 +522,13 @@ async def test_a_burst_under_a_renamed_middle_folder_lands_in_it(space):
 async def test_a_child_that_collides_under_its_renamed_parent_goes_beside(space):
     """Two generations of ``d/x.txt`` in one burst: the later comes back with
     ``d``, the earlier beside it, both under the renamed ``d``."""
-    await _save(space, "d/x.txt", "first")
-    actor = _person(space, sitting="rm-r")
+    await save_text(space, "d/x.txt", "first")
+    actor = person_of(space, sitting="rm-r")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        item = await tx.trash("d/x.txt", actor, None, False)
-    await _save(space, "d/x.txt", "second")
+        item = await trash_rows.trash(tx, "d/x.txt", actor, None, False)
+    await save_text(space, "d/x.txt", "second")
     async with writes.locked(space.space_id, LIMITS) as tx:
-        assert await tx.trash("d", actor, None, False) == item
+        assert await trash_rows.trash(tx, "d", actor, None, False) == item
     async with writes.locked(space.space_id, LIMITS) as tx:
         await tx.mkdir("d")
     assert await _restored(space, item) == ["d (1)", "d (1)/x (1).txt", "d (1)/x.txt"]
@@ -566,7 +554,7 @@ async def _upload(space, path="big.bin", *, sha="ab" * 32, if_match=None, if_non
             "note": None,
             "if_match": if_match,
             "if_none_match": if_none_match,
-            "actor": dataclasses.asdict(actor or _person(space)),
+            "actor": dataclasses.asdict(actor or person_of(space)),
             "mode": "direct",
             "object_key": f"uploads/{space.user_id}/{upload_id}",
             "store_upload_id": "store-id",
@@ -661,7 +649,7 @@ async def _find(
         content_type=content_type,
         if_match=if_match,
         if_none_match=if_none_match,
-        actor=dataclasses.asdict(actor or _person(space)),
+        actor=dataclasses.asdict(actor or person_of(space)),
         note=None,
         report=report,
         relay=relay,
@@ -694,22 +682,6 @@ async def test_whoever_resumes_owns_the_upload(space):
     assert rows.report_of(found)["call_id"] == "2"
 
 
-async def _waiting_on_a_lock(pool, within_s: float = 10.0) -> None:
-    """Until another session of this database waits on a row lock."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + within_s
-    while loop.time() < deadline:
-        async with pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT count(*) AS n FROM pg_stat_activity"
-                " WHERE datname = current_database() AND wait_event_type = 'Lock'"
-            )
-            if (await cur.fetchone())["n"]:
-                return
-        await asyncio.sleep(0.02)
-    raise AssertionError("no session came to wait on the lock")
-
-
 async def test_a_begin_does_not_resume_an_upload_that_ended_while_it_waited(space, test_db_pool):
     """CR148: the row the lookup chose must still be resumable once its lock is had."""
     row = await _upload(space)
@@ -721,7 +693,7 @@ async def test_a_begin_does_not_resume_an_upload_that_ended_while_it_waited(spac
                 (row["upload_id"],),
             )
             found = asyncio.create_task(_find(space, report={"call_id": "late"}))
-            await _waiting_on_a_lock(test_db_pool)
+            await waiting_on_a_lock(test_db_pool, finisher)
         assert await found is None
     ended = await rows.get(row["upload_id"])
     assert ended["state"] == "done" and ended["report"] is None
@@ -771,7 +743,7 @@ async def test_the_expiry_sweep_spares_an_upload_renewed_meanwhile(space, test_d
                 (row["upload_id"],),
             )
             sweep = asyncio.create_task(rows.expired(10))
-            await _waiting_on_a_lock(test_db_pool)
+            await waiting_on_a_lock(test_db_pool, renewer)
         swept = await sweep
     assert swept == []
     assert (await rows.get(row["upload_id"]))["state"] == "uploading"
@@ -789,42 +761,42 @@ async def _room(space, path, ref, actor, limits):
 
 
 async def test_the_check_before_a_transfer_credits_bytes_the_space_holds(space):
-    await _save(space, "a.bin", "z" * 100)
+    await save_text(space, "a.bin", "z" * 100)
     full = dataclasses.replace(LIMITS, max_space_bytes=150)
-    shared, _ = _ref("z" * 100)
-    await _room(space, "b.bin", shared, _person(space), full)  # nothing new is kept
-    other, _ = _ref("w" * 100)
+    shared, _ = ref_of("z" * 100)
+    await _room(space, "b.bin", shared, person_of(space), full)  # nothing new is kept
+    other, _ = ref_of("w" * 100)
     with pytest.raises(DriveError) as refused:
-        await _room(space, "b.bin", other, _person(space), full)
+        await _room(space, "b.bin", other, person_of(space), full)
     assert refused.value.code == "over_quota"
 
 
 async def test_the_check_before_a_transfer_folds_a_sitting_as_the_save_will(space):
-    await _save(space, "a.bin", "z" * 100, sitting="s")
+    await save_text(space, "a.bin", "z" * 100, sitting="s")
     full = dataclasses.replace(LIMITS, max_space_bytes=150)
-    again, _ = _ref("y" * 100)
-    await _room(space, "a.bin", again, _person(space, "s"), full)  # replaces the head's copy
+    again, _ = ref_of("y" * 100)
+    await _room(space, "a.bin", again, person_of(space, "s"), full)  # replaces the head's copy
     with pytest.raises(DriveError):
-        await _room(space, "a.bin", again, _person(space, "other"), full)
+        await _room(space, "a.bin", again, person_of(space, "other"), full)
 
 
 async def test_the_check_before_a_transfer_rolls_back(space, db_conn):
-    ref, _ = _ref("q" * 10)
-    await _room(space, "new.bin", ref, _person(space), LIMITS)
+    ref, _ = ref_of("q" * 10)
+    await _room(space, "new.bin", ref, person_of(space), LIMITS)
     assert await reads.live_entry(space.space_id, path="new.bin") is None
-    kept, counted = await _counted(db_conn, space.space_id)
+    kept, counted = await counts_of(db_conn, space.space_id)
     assert kept == counted and kept["held_bytes"] == 0
 
 
 async def test_content_freed_since_it_was_found_is_asked_for_again(space):
-    await _save(space, "a.bin", "gone")
-    actor = _person(space)
+    await save_text(space, "a.bin", "gone")
+    actor = person_of(space)
     async with writes.locked(space.space_id, LIMITS) as tx:
-        await tx.trash("a.bin", actor, None, False)
-        await tx.purge(None, None)
+        await trash_rows.trash(tx, "a.bin", actor, None, False)
+        await trash_rows.purge(tx, None, None)
     async with writes.locked(space.space_id, LIMITS) as tx:
         assert await retention.free_released(tx) == len("gone")
-    ref, _ = _ref("gone")
+    ref, _ = ref_of("gone")
     with pytest.raises(writes.ContentGone):
         async with writes.locked(space.space_id, LIMITS) as tx:
             await tx.save("b.bin", ref, actor)

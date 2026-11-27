@@ -42,6 +42,8 @@ from src.server.services import drive
 from src.server.services.background_starts import schedule_start
 from src.server.models.drive import UploadIn
 from src.server.services.drive import content_bytes as _bytes
+from src.server.services.drive import memo
+from src.server.services.drive.errors import http_status
 from src.server.services.drive.data_files import is_data_file
 from src.server.services.livefs import outcomes
 from src.server.services.store_multipart import (
@@ -149,7 +151,7 @@ async def status(row: dict[str, Any], *, parts: bool = True) -> dict[str, Any]:
             row["space_id"], entry_id=row["entry_id"]
         )
     if state == "failed" and row["error"]:
-        out["error"] = row["error"]
+        out["error"] = {**row["error"], "status": http_status(row["error"].get("type", ""))}
     return out
 
 
@@ -266,6 +268,7 @@ async def begin(
         if_match=req.if_match,
         if_none_match=req.if_none_match,
         bounds=bounds,
+        note=req.note,
     )
     if not (is_storage_enabled() and multipart_enabled()) or req.size < DIRECT_UPLOAD_MIN_BYTES:
         bounds.too_large(req.size, bounds.max_request_bytes)
@@ -516,7 +519,9 @@ async def _fail(row: dict[str, Any], code: str, message: str) -> None:
     if ended is not None:
         logger.info("[Drive] upload %s failed: %s", row["upload_id"], code)
         # Only the request that ended it gets here, so it is filed once.
-        await _report(ended, {"ok": False, "code": code, "error": message})
+        await _report(
+            ended, {"ok": False, "code": code, "error": message, "status": http_status(code)}
+        )
         await _clean(ended)
 
 
@@ -754,6 +759,7 @@ async def _record(
             if_match=row["if_match"],
             if_none_match=row["if_none_match"],
             bounds=await drive.limits(space),
+            note=row["note"],
         )
         lease.check()
         stamp = await _file_under_digest(owner, row, sha)
@@ -780,7 +786,12 @@ async def _record(
     # Marked done in the version's own transaction: one worker gets here.
     ended = await rows.get(lease.upload_id)
     if ended is not None:
-        await _report(ended, {"ok": True, "size": row["size"]})
+        outcome: dict[str, Any] = {"ok": True, "size": row["size"]}
+        shown = (rows.report_of(ended) or {}).get("path")
+        line = await memo.unchecked(entry, shown, actor)
+        if line is not None:
+            outcome["report"] = line
+        await _report(ended, outcome)
         await _clean(ended)
 
 
