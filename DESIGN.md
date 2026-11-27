@@ -122,10 +122,10 @@ page's own borders in either.
   bar) may keep a celebratory check.
 - Exceptional terminal states keep informative glyphs (error = alert,
   cancelled = stop, spawned-idle = hollow circle).
-- A running turn lists its tool calls a row per call. The status line, opt-in
-  in Settings while it is being tried out (`other_preference.tool_call_layout:
-  'status'`), shows one line naming the current step under the counts of the
-  finished ones, in the same glyphs and shimmer. A turn shows one line, on its
+- A running turn shows its tool calls on the status line: one line naming the
+  current step under the counts of the finished ones, in the same glyphs and
+  shimmer. Settings can switch it to a row per call
+  (`other_preference.tool_call_layout: 'rows'`). A turn shows one line, on its
   newest activity. Between steps the line holds the step that last finished,
   settled, until the next one takes its place, and it stays while the reply
   types under it; it goes when the turn ends and folds its work away. The step

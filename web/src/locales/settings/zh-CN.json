@@ -184,7 +184,7 @@
   "composerTrayAbove": "上方",
   "composerTrayInside": "内部",
   "toolCallLayout": "工具调用",
-  "toolCallLayoutDesc": "每个步骤显示为一行，或试用新的状态行：只用一行显示当前步骤。",
+  "toolCallLayoutDesc": "只用一行显示当前步骤，或把每个步骤显示为一行。",
   "toolCallLayoutRows": "逐行",
   "toolCallLayoutStatus": "状态行",
   "tradingPermission": {

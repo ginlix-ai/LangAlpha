@@ -8,9 +8,9 @@ export type TurnDisplay = 'verbose' | 'lean';
 /** How reply text lands while streaming: per token, or held to paragraph
  *  boundaries so the reader never watches a sentence being typed. */
 export type StreamingMode = 'token' | 'paragraph';
-/** How a running turn shows its tool calls: a row per call (`rows`), or one
- *  line naming the current step under the counts of finished ones (`status`,
- *  being tried out). */
+/** How a running turn shows its tool calls: one line naming the current step
+ *  under the counts of finished ones (`status`, the default), or a row per
+ *  call (`rows`). */
 export type ToolCallLayout = 'rows' | 'status';
 
 const TURN_DISPLAY_KEY = 'turn_display';
@@ -27,9 +27,9 @@ export function readStreamingMode(prefs: UserPreferences | null | undefined): St
   return readOtherPreference(prefs, STREAMING_MODE_KEY) === 'paragraph' ? 'paragraph' : 'token';
 }
 
-/** `other_preference.tool_call_layout`; anything but 'status' reads as 'rows'. */
+/** `other_preference.tool_call_layout`; anything but 'rows' reads as 'status'. */
 export function readToolCallLayout(prefs: UserPreferences | null | undefined): ToolCallLayout {
-  return readOtherPreference(prefs, TOOL_CALL_LAYOUT_KEY) === 'status' ? 'status' : 'rows';
+  return readOtherPreference(prefs, TOOL_CALL_LAYOUT_KEY) === 'rows' ? 'rows' : 'status';
 }
 
 export function turnDisplayPatch(next: TurnDisplay): Partial<UserPreferences> {
@@ -49,10 +49,10 @@ export interface TranscriptDisplay {
   toolCallLayout?: ToolCallLayout;
 }
 
-export const DEFAULT_TRANSCRIPT_DISPLAY: TranscriptDisplay = { turnDisplay: 'lean', streamingMode: 'token', toolCallLayout: 'rows' };
+export const DEFAULT_TRANSCRIPT_DISPLAY: TranscriptDisplay = { turnDisplay: 'lean', streamingMode: 'token', toolCallLayout: 'status' };
 
 /** Hosts that never mount the provider (shared chat, market view) get the
- *  lean, token-streamed transcript with a row per tool call. */
+ *  lean, token-streamed transcript with the status line. */
 export const TranscriptDisplayContext = createContext<TranscriptDisplay>(DEFAULT_TRANSCRIPT_DISPLAY);
 
 export function useTranscriptDisplay(): TranscriptDisplay {

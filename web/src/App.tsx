@@ -9,9 +9,8 @@ import { useSidebarPeek } from './components/Sidebar/useSidebarPeek';
 import { SidebarRevealContext } from './components/Sidebar/sidebarRevealContext';
 import { useSidebarShortcut } from './components/Sidebar/sidebarShortcut';
 import { PageTabsProvider } from './components/PageTabs/PageTabsProvider';
-import { PAGE_TABS_FEATURE } from './components/PageTabs/pageTabsContext';
+import { usePageTabsOn } from './components/PageTabs/usePageTabsOn';
 import { useResumeTab } from './components/PageTabs/useResumeTab';
-import { useFeatureEnabled } from './hooks/useFeatures';
 import { cn } from '@/lib/utils';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './components/Sidebar/sidebarWidth';
 import { useScrollMemory } from './lib/scrollMemory';
@@ -382,7 +381,7 @@ function AuthenticatedShell() {
   // open pages, or a page's own controls (TopBarActions), which live there in
   // place of a page header. Otherwise its corner sits over the sidebar's own
   // top row and the page keeps the window's full height.
-  const pageTabsOn = useFeatureEnabled(PAGE_TABS_FEATURE);
+  const pageTabsOn = usePageTabsOn();
   const topBar = useTopBarHost();
   const showTopBar = !isMobile && (pageTabsOn || topBar.claimed);
   const { peek, panelRef, cornerRef } = useSidebarPeek(sidebarHidden);

@@ -90,7 +90,7 @@
   "composerTrayAbove": "Above",
   "composerTrayInside": "Inside",
   "toolCallLayout": "Tool calls",
-  "toolCallLayoutDesc": "Show each step as a row, or try the new status line: one line that names the current step.",
+  "toolCallLayoutDesc": "Show one line that names the current step, or each step as a row.",
   "toolCallLayoutRows": "Rows",
   "toolCallLayoutStatus": "Status line",
   "tradingPermission": {

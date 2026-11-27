@@ -25,7 +25,7 @@ test.describe('activity live zone', () => {
   });
 
   test('sizes to its rows after a call lands mid-fold', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
 
     const batch = ['toolu_a1', 'toolu_a2', 'toolu_a3'];
     await configureSSE({
@@ -89,7 +89,7 @@ test.describe('activity live zone', () => {
     const prefs = defaultResponses['GET /users/me/preferences'];
     await mockAPI(page, {
       ...chatViewOverrides(),
-      'GET /users/me/preferences': { ...prefs, other_preference: { ...prefs.other_preference, turn_display: 'verbose' } },
+      'GET /users/me/preferences': { ...prefs, other_preference: { ...prefs.other_preference, turn_display: 'verbose', tool_call_layout: 'rows' } },
     });
     await replayNothing();
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
@@ -139,7 +139,7 @@ test.describe('activity live zone', () => {
   });
 
   test('keeps the indicator through a model call that ends mid-turn', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     // A call that finishes with a content-free stop clears the bubble's
     // per-call flag, and the turn still has a tool round and a reply to go.
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
@@ -164,7 +164,7 @@ test.describe('activity live zone', () => {
   });
 
   test('fades the indicator out while the answer types, and back in for a pause', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       ...Array.from({ length: 20 }, () => sseEvents.messageChunk('Still writing. ')),
       { ...sseEvents.messageChunk('Then a pause. '), delayAfter: 2500 },
@@ -224,7 +224,7 @@ test.describe('activity live zone', () => {
   }
 
   test('brings the main transcript back from a subagent tab as it left it', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     // A first turn with nothing to fold: it keeps its row only because it ran here.
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.messageChunk('Hello there.'),
@@ -277,7 +277,7 @@ test.describe('activity live zone', () => {
   });
 
   test('folds a turn with a retained widget without a final downward step', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.toolCalls([{ name: 'show_widget', args: { title: 'Sample table' }, id: 'toolu_widget' }]),
       sseEvents.finishToolCalls(),
@@ -328,7 +328,7 @@ test.describe('activity live zone', () => {
   });
 
   test('tracks a reasoning disclosure without a second trailing height animation', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.messageChunk('start', 'reasoning_signal'),
       sseEvents.messageChunk('**Checking evidence**\n\n' + 'Compare each source and verify the result.\n\n'.repeat(12), 'reasoning'),
@@ -374,7 +374,7 @@ test.describe('activity live zone', () => {
 
 
   test('grows a lookup card out of its row without moving what is under it', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     const quote = { type: 'quote', quotes: ['NVDA', 'AMD', 'AVGO', 'TSM'].map((symbol, i) => ({ symbol, name: `${symbol} Holdings`, price: 100 + i })) };
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.toolCalls([{ name: 'get_quote', args: { symbol: 'NVDA,AMD,AVGO,TSM' }, id: 'quote1' }]),
@@ -424,7 +424,7 @@ test.describe('activity live zone', () => {
   for (const width of [1280, 390]) {
     test(`spaces live cards, reasoning, batched fetches and the waiting indicator at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 1400 });
-      await openThread(page);
+      await openThread(page, { layout: 'rows' });
       const quote = { type: 'quote', quotes: [{ symbol: 'AMD', name: 'Advanced Micro Devices', price: 615.52 }] };
       const call = (id) => sseEvents.toolCalls([{ name: 'get_quote', args: { symbol: 'AMD' }, id }]);
       await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
@@ -482,7 +482,7 @@ test.describe('activity live zone', () => {
   // was under the block went the wrong way.
   for (const layout of ['rows', 'status']) {
     test(`opens and closes the count as one panel, in the ${layout} layout`, async ({ page }) => {
-      await openThread(page, layout === 'status' ? { layout } : {});
+      await openThread(page, { layout });
       const events = [];
       for (let i = 0; i < 5; i++) {
         events.push(sseEvents.toolCalls([{ name: 'Grep', args: { pattern: `term${i}`, path: 'data' }, id: `g${i}` }]));
@@ -600,7 +600,7 @@ test.describe('tool rows', () => {
   });
 
   test('draws no preparing row for a tool the transcript hides', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     const todos = JSON.stringify({ todos: [{ content: 'Read inputs', status: 'in_progress' }] });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.toolCalls([{ name: 'Grep', args: { pattern: 'margin', path: 'data' }, id: 'g1' }]),
@@ -630,7 +630,7 @@ test.describe('tool rows', () => {
   });
 
   test('gives each parallel call its own row from its first chunk to its result', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       // A sentence first, so the pair streams into a block already drawn; a
       // turn that opens on its call is the case after this one.
@@ -675,7 +675,7 @@ test.describe('tool rows', () => {
 
   for (const layout of ['rows', 'status']) {
     test(`draws a call that opens the turn from its first chunk (${layout})`, async ({ page }) => {
-      await openThread(page, { layout: layout === 'status' ? 'status' : undefined });
+      await openThread(page, { layout });
       await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
         // No text and no thought ahead of it: the call is the bubble's first content.
         { ...toolChunks([{ index: 0, name: 'WebFetch', id: 'w1' }]), delayAfter: 600 },
@@ -727,7 +727,7 @@ test.describe('tool rows', () => {
   }
 
   test('grows the summary with the inset that opens under it', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.toolCalls([{ name: 'Grep', args: { pattern: 'margin', path: 'data' }, id: 'g1' }]),
       sseEvents.finishToolCalls(),
@@ -773,7 +773,7 @@ test.describe('tool rows', () => {
   });
 
   test('ellipsizes the summary while its width changes', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.toolCalls([{ name: 'Grep', args: { pattern: 'margin', path: 'data' }, id: 'g1' }]),
       sseEvents.finishToolCalls(),
@@ -811,7 +811,7 @@ test.describe('tool rows', () => {
   });
 
   test('closes a diff in one measured tween, not its opening spring', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.toolCalls([{ name: 'Edit', args: { file_path: 'results/report.md', old_string: 'Margin was flat.\nNo drift.', new_string: 'Margin drifted down.\nAbout 180 bp over four quarters.\nMix explains most of it.' }, id: 'e1' }]),
       sseEvents.finishToolCalls(),
@@ -845,7 +845,7 @@ test.describe('tool rows', () => {
   });
 
   test('settles a tool row in one motion', async ({ page }) => {
-    await openThread(page);
+    await openThread(page, { layout: 'rows' });
     await configureSSE({ method: 'POST', path: `/api/v1/threads/${TH}/messages`, events: [
       sseEvents.toolCalls([{ name: 'WebFetch', args: { url: 'https://one.example.com' }, id: 'w1' }]),
       // Lands and fails well inside its exposure window, so the row is still
