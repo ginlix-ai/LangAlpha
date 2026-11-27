@@ -256,3 +256,52 @@ def test_insider_data_set_footnotes_and_a_missing_10b5_1_column(tmp_path):
     d = read_insider_dataset(tmp_path)
     assert list(d.footnote_ids) == [{"shares": ["F1"]}, {"shares": ["F2", "F3"]}]
     assert d.aff10b5_one.isna().all()
+
+
+def test_a_data_set_cell_sec_wrote_quoted_reads_as_its_text(tmp_path):
+    from edgar_engine._datasets import read_table
+
+    (tmp_path / "NONDERIV_TRANS.tsv").write_text(
+        "ACCESSION_NUMBER\tSECURITY_TITLE\n"
+        '0000000001-26-000001\t"Restricted Stock Unit (""RSU"")"\n'
+        '0000000001-26-000002\t5" Notes due 2030\n'
+    )
+    titles = read_table(tmp_path, "NONDERIV_TRANS").SECURITY_TITLE.tolist()
+    assert titles == ['Restricted Stock Unit ("RSU")', '5" Notes due 2030']
+
+
+def _table(tmp_path, zipped: bool, body: str):
+    import zipfile
+
+    text = "ACCESSION_NUMBER\tSECURITY_TITLE\tSHARES\n" + body
+    if not zipped:
+        (tmp_path / "NONDERIV_TRANS.tsv").write_text(text)
+        return tmp_path
+    with zipfile.ZipFile(tmp_path / "2026q1_form345.zip", "w") as z:
+        z.writestr("2026q1/NONDERIV_TRANS.tsv", text)
+    return tmp_path / "2026q1_form345.zip"
+
+
+@pytest.mark.parametrize("zipped", [False, True])
+def test_a_cell_that_opens_a_quote_it_never_closes_raises_rather_than_losing_rows(tmp_path, zipped):
+    from edgar_engine._datasets import read_table
+
+    # The open quote runs on to the quote of the third line, which would leave two rows where the file has four; the
+    # last line's quoted tab is a whole row.
+    path = _table(tmp_path, zipped, '0000000001-26-000001\t"Common Stock\t10\n'
+                                    "0000000001-26-000002\tPreferred Stock\t20\n"
+                                    '0000000001-26-000003\t5" Notes due 2030\t30\n'
+                                    '0000000001-26-000004\t"Stock\tClass"\t40\n')
+    with pytest.raises(ValueError, match="never closes"):
+        read_table(path, "NONDERIV_TRANS")
+
+
+@pytest.mark.parametrize("zipped", [False, True])
+def test_a_quoted_cell_holding_a_line_break_and_blank_lines_read_as_rows(tmp_path, zipped):
+    from edgar_engine._datasets import read_table
+
+    path = _table(tmp_path, zipped, '0000000001-26-000001\t"Common\nStock"\t10\n\n'
+                                    "0000000001-26-000002\tPreferred Stock\t20")
+    t = read_table(path, "NONDERIV_TRANS")
+    assert t.SECURITY_TITLE.tolist() == ["Common\nStock", "Preferred Stock"]
+    assert t.SHARES.tolist() == ["10", "20"]

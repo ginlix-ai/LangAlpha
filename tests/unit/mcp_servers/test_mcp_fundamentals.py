@@ -312,6 +312,20 @@ class TestGetInsiderTrades:
 
         client.get_insider_trades.assert_awaited_once_with("AAPL", limit=10)
 
+    @pytest.mark.asyncio
+    async def test_a_trade_whose_filing_states_no_price_keeps_price_null(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_insider_trades
+
+        client = _make_fmp_client()
+        client.get_insider_trades = AsyncMock(return_value=[
+            {"transactionType": "C-Conversion", "securitiesTransacted": 129634, "price": None},
+            {"transactionType": "S-Sale", "securitiesTransacted": 783, "price": 259.63},
+        ])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_insider_trades("AAPL")
+
+        assert [t["price"] for t in result["data"]["trades"]] == [None, 259.63]
+
 
 # ---------------------------------------------------------------------------
 # get_dividends_and_splits
