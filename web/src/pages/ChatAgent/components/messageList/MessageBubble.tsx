@@ -25,8 +25,9 @@ import { useMessageActions } from './MessageActionsContext';
 import { useWorkspaceFolders } from '../../contexts/WorkspaceContext';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useEditDraft, useEditDraftStore } from '../../hooks/utils/editDrafts';
-import { isSteeringUserMessage } from './messagePredicates';
+import { isSteeringUserMessage, sendNowTarget } from './messagePredicates';
 import { SenderPicture, UserBubble } from './UserBubble';
+import { SendNowAction } from './SendNowAction';
 import { cn } from '@/lib/utils';
 import { HomeTurnBadge } from './HomeTurnBadge';
 import type { HomeFallback } from '@/types/sse';
@@ -202,7 +203,7 @@ interface MessageBubbleProps {
  * chunk never re-renders settled bubbles through a handler identity.
  */
 export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext, continuesSender, held = false, borrowedFrom = null }: MessageBubbleProps): React.ReactElement | null {
-  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onForkFromTurn, onThumbUp, onThumbDown, onThumbDownFollowUp, reportThreadId, feedbackLoading } = useMessageActions();
+  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onForkFromTurn, onThumbUp, onThumbDown, onThumbDownFollowUp, onSendNow, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
   const projection = contentProjection ?? projectMessageContent(message, isSubagentView, root);
@@ -225,6 +226,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   // member's keep the start.
   const atEnd = isUser && !theirs;
   const homeFallback = isUser ? (message.homeFallback as HomeFallback | undefined) : undefined;
+  const sendNowId = sendNowTarget(message, { isSubagentView, theirs, held, readOnly, running: !!isTurnLive || !!isLoading });
 
   // Edit mode lives in the host's draft store, so a reload that remounts the
   // bubble reopens the box with what was typed in it.
@@ -811,6 +813,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
               {bubbleContent}
             </UserBubble>
             {homeFallback && <HomeTurnBadge fallback={homeFallback} />}
+            {sendNowId && onSendNow && <SendNowAction key={sendNowId} id={sendNowId} onSendNow={onSendNow} />}
           </>
         ) : (
           <div

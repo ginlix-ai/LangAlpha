@@ -1182,7 +1182,11 @@
       "regenerate": "Regenerate response",
       "retry": "Retry",
       "forkFromHere": "Fork from here",
-      "forking": "Making the fork…"
+      "forking": "Making the fork…",
+      "sendNow": "Send now",
+      "sendingNow": "Sending now…",
+      "sentNow": "Sent now",
+      "sendNowHint": "Moves the agent's running command to the background so it reads this now"
     },
     "turnFiles": {
       "open": "Open",

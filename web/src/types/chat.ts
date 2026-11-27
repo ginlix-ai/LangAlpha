@@ -651,6 +651,10 @@ export type UserMessage = {
    *  its own count, which may be behind; replay names a settled run's turn, so
    *  a reload places the steer by this. */
   steeredRunId?: string;
+  /** On a steer, the server queued it under `requestKey` (its acceptance, or
+   *  a status or duplicate answer naming it), so Send now can name it. A steer
+   *  still on its way, or waiting behind a refused one, has none. */
+  steerAccepted?: boolean;
   /**
    * On a failed steer, whether the server answered its POST with a refusal (a
    * 4xx). The server sends one before it queues a steer, so no delivery can be

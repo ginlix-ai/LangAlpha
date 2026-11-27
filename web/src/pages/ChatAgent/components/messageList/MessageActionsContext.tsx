@@ -107,6 +107,12 @@ export interface MessageActions {
    *  object (`useWidgetPromptActions`). A call left out does nothing: a shared
    *  view answers none. */
   widgetPrompts?: WidgetPrompts;
+  /** Asks for the reader's own waiting message to be read now, by the id it
+   *  went out under: a steer's `requestKey` in the main transcript, an
+   *  instruction's `inputId` in a task's. Resolves false when there was
+   *  nothing left to do. Absent where no such message can wait (a shared or
+   *  market view), which shows no Send now. */
+  onSendNow?: (id: string) => Promise<boolean>;
   /** The thread a failed turn's card offers to report, once the server has
    *  named it. Absent where reporting is not offered (a shared view). */
   reportThreadId?: string;

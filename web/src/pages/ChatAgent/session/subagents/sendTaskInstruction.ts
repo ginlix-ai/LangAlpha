@@ -17,7 +17,7 @@ import { OTHERS_TASK } from '@/lib/turnRefusal';
 import { apiErrorStatus, sendSubagentMessage } from '../../utils/api';
 import { taskIdFromAgentId } from '../../utils/agentId';
 import type { SubagentRuntime } from '../runtime';
-import { addPendingTaskInstruction, hasPendingInstruction, returnTaskInstruction } from './liveEventHandlers';
+import { acceptTaskInstruction, addPendingTaskInstruction, hasPendingInstruction, returnTaskInstruction } from './liveEventHandlers';
 
 export async function sendTaskInstruction(
   rt: Pick<SubagentRuntime, 't' | 'updateSubagentCard' | 'subagentStateRefsRef'>,
@@ -53,6 +53,11 @@ export async function sendTaskInstruction(
         ? 'sharedWorkspace.anotherMembersTask'
         : 'chat.taskSteeringNotSentNotification';
     returnTaskInstruction(taskRefs, { inputId, content }, rt.t(notice));
+    rt.updateSubagentCard(agentId, { messages: taskRefs.messages });
+    return;
+  }
+  const taskRefs = rt.subagentStateRefsRef.current[agentId];
+  if (rt.updateSubagentCard && taskRefs && acceptTaskInstruction(taskRefs, inputId)) {
     rt.updateSubagentCard(agentId, { messages: taskRefs.messages });
   }
 }

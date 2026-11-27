@@ -33,7 +33,7 @@ import { invalidateSubagents } from '@/hooks/useSubagents';
 import { markHandoffReady } from '@/pages/Onboarding/welcome/handoff';
 import { ChatAppsPromptCard } from '@/pages/Onboarding/ChatAppsPromptCard';
 import { cardDownloadKey, trackPending } from '../utils/downloadNotice';
-import { summarizeThread, offloadThread, cancelSubagentTask, triggerFileDownload, resolveWorkspaceFile, type NextSummary } from '../utils/api';
+import { summarizeThread, offloadThread, cancelSubagentTask, triggerFileDownload, resolveWorkspaceFile, sendSteerNow, sendSubagentMessageNow, type NextSummary } from '../utils/api';
 import { downloadTarget } from '../utils/fileRefResolver';
 import { toast } from '@/components/ui/use-toast';
 import { mergeWarmingDisplay } from '../utils/warmWorkspace';
@@ -1298,8 +1298,17 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // Identity-stable action bundles for the memoized message tree
   // (chatView/useMessageActionBundles).
+  const savedThreadId = currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined;
+  // Send now, on the reader's own waiting message. Both read the thread and
+  // the shown task when clicked, since the bundles pin their identities.
+  const sendSteerNowHere = async (requestKey: string): Promise<boolean> =>
+    !!savedThreadId && sendSteerNow(savedThreadId, requestKey);
+  const sendTaskMessageNowHere = async (inputId: string): Promise<boolean> => {
+    const taskId = activeAgentId === 'main' ? null : taskIdFromAgentId(activeAgentId);
+    return !!savedThreadId && !!taskId && sendSubagentMessageNow(savedThreadId, taskId, inputId);
+  };
   const { messageActions, subagentMessageActions } = useMessageActionBundles({
-    reportThreadId: currentThreadId && currentThreadId !== '__default__' ? currentThreadId : undefined,
+    reportThreadId: savedThreadId,
     feedbackLoading,
     onOpenThread: leaveToThread,
     onOpenFile: handleOpenFileFromChat,
@@ -1335,6 +1344,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     onRegenerate: stableRegenerate,
     onRetry: stableRetry,
     onForkFromTurn: handleForkFromTurn,
+    onSendSteerNow: sendSteerNowHere,
+    onSendTaskMessageNow: sendTaskMessageNowHere,
     editDrafts,
     chatInputRef,
   });

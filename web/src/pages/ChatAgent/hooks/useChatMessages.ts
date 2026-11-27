@@ -1252,7 +1252,7 @@ export function useChatMessages(
         if (!steer?.steeringDelivered) next = next.filter((m) => m.id !== steerId);
         if (lost) next = next.filter((m) => m !== lost.m);
       } else if (lost) {
-        const back: Steer = { ...lost.m, steering: true };
+        const back: Steer = { ...lost.m, steering: true, steerAccepted: true };
         delete back.queueError;
         delete back.queueRefused;
         next = prev.flatMap((m, i) => (i === lost.i ? [back] : m.id === steerId ? [] : [m]));
@@ -1261,7 +1261,13 @@ export function useChatMessages(
         dropped = lost.m.queueError;
         held = next.some((m) => asSteer(m)?.queueError === dropped);
       }
-      return next;
+      // The server holds the message under this key, so whichever bubble
+      // still waits for it can be sent now.
+      const unmarked = (m: ChatMessage) => {
+        const copy = asSteer(m);
+        return !!copy && copy.requestKey === requestKey && !!copy.steering && !copy.steerAccepted;
+      };
+      return next.some(unmarked) ? next.map((m) => (unmarked(m) ? { ...m, steerAccepted: true } : m)) : next;
     });
     if (dropped !== null && !held) {
       setMessageError((prev) => (prev === dropped ? null : prev));
@@ -1302,7 +1308,7 @@ export function useChatMessages(
       if (m.unadmitted && tries.has(prev[i + 1]?.id as string)) return [];
       if (m.id !== send.userId) return [m];
       text = String(m.content ?? '');
-      const steer: UserMessage = { ...m, steering: true, steeredRunId: runId, requestKey: send.requestKey };
+      const steer: UserMessage = { ...m, steering: true, steeredRunId: runId, requestKey: send.requestKey, steerAccepted: true };
       delete steer.unadmitted;
       return [steer];
     }));
@@ -1449,7 +1455,7 @@ export function useChatMessages(
         if (ok && pendingKeys.size > 0) {
           const listed = (m: ChatMessage) => m.role === 'user' && !m.isHistory && !!(m as { steering?: boolean }).steering
             && pendingKeys.has((m as { requestKey?: string }).requestKey ?? '');
-          setMessages((prev) => (prev.some(listed) ? prev.map((m) => (listed(m) ? { ...m, isHistory: true } : m)) : prev));
+          setMessages((prev) => (prev.some(listed) ? prev.map((m) => (listed(m) ? { ...m, isHistory: true, steerAccepted: true } : m)) : prev));
         }
         // The steers an errored turn left on the server wait under it for the
         // next turn, which reads them and delivers them by their keys, and so
@@ -1474,6 +1480,7 @@ export function useChatMessages(
                   isStreaming: false,
                   isHistory: true,
                   steering: true,
+                  steerAccepted: true,
                   ...(turn !== null && turn >= 0 ? { turnIndex: turn } : {}),
                   ...(p.request_key ? { requestKey: p.request_key } : {}),
                   ...(shown ? { artifactComments: shown } : {}),
@@ -2139,6 +2146,7 @@ export function useChatMessages(
               updateMessage(prev,userMessage.id as string, (msg) => ({
                 ...msg,
                 steering: true,
+                steerAccepted: true,
                 queuePosition: event.position,
                 ...(taken ? { artifactComments: taken } : {}),
               }))

@@ -1171,7 +1171,11 @@
       "regenerate": "重新生成回复",
       "retry": "重试",
       "forkFromHere": "从这里分叉",
-      "forking": "正在创建分叉…"
+      "forking": "正在创建分叉…",
+      "sendNow": "立即发送",
+      "sendingNow": "正在立即发送…",
+      "sentNow": "已立即发送",
+      "sendNowHint": "将 Agent 正在运行的命令转到后台，让它立即读到这条消息"
     },
     "turnFiles": {
       "open": "打开",

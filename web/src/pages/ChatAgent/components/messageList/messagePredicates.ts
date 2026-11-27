@@ -78,3 +78,25 @@ export function leadingContextNotices(segments: unknown): number {
   const n = segments.findIndex((segment) => !isContextNotice(segment));
   return n === -1 ? segments.length : n;
 }
+
+/**
+ * The id Send now names for this bubble, or null where it offers none: only
+ * the reader's own message still waiting in a running turn or task. In the
+ * main transcript that is a steer the server queued (`steerAccepted`), not
+ * one still on its way, parked for a compaction (`queued`), refused or
+ * waiting behind a refusal, nor a held turn's opener; in a task's, an
+ * instruction the server holds (`steerAccepted`) and the task has not yet
+ * read (`isPending`), by the `inputId` it went out under.
+ */
+export function sendNowTarget(
+  message: MessageLike & { requestKey?: unknown; inputId?: unknown; isPending?: unknown; steerAccepted?: unknown; queued?: unknown; unadmitted?: unknown },
+  { isSubagentView, theirs, held, readOnly, running }: { isSubagentView?: boolean; theirs: boolean; held: boolean; readOnly?: boolean; running: boolean },
+): string | null {
+  if (message.role !== 'user' || theirs || held || readOnly || !running) return null;
+  const id = isSubagentView ? message.inputId : message.requestKey;
+  if (typeof id !== 'string' || !id) return null;
+  if (isSubagentView) return message.isPending === true && message.steerAccepted === true ? id : null;
+  const waiting = message.steering === true && message.steerAccepted === true && !message.steeringDelivered
+    && !message.queued && !message.queueError && !message.unadmitted;
+  return waiting ? id : null;
+}
