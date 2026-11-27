@@ -53,6 +53,10 @@ _START_WAIT_S = 30
 _STATUS_TIMEOUT_S = 15
 # The machine's own wait for a page to load, plus the call there and back.
 _NAVIGATE_TIMEOUT_S = 45
+# The machine's own waits for a person's navigation still running, then the
+# agent's command, then the engine to close its browser, plus ending what is
+# left: inside the browser's wait for the request.
+_CLOSE_TIMEOUT_S = 70
 # A first install downloads the engine, about 18 MB.
 _INSTALL_TIMEOUT_S = 180
 # The one install refusal the person can act on: by installing a Chrome-family
@@ -266,7 +270,11 @@ async def _stopped(sandbox: Any) -> bool:
 
 
 async def browser_control(
-    sandbox: Any, *, holder: str, action: HoldAction, releases: list[dict[str, Any]] | None = None
+    sandbox: Any,
+    *,
+    holder: str,
+    action: HoldAction,
+    releases: list[dict[str, Any]] | None = None,
 ) -> bool | None:
     """Take, renew or hand back *holder*'s hold on the page; whether it holds it
     now, or None when the machine did not answer. A hand-back lets go of
@@ -282,13 +290,52 @@ async def browser_control(
     return isinstance(answer, dict) and answer.get("held") is True
 
 
+async def browser_close(sandbox: Any, *, viewer: str) -> protocol.CloseRefusal | None:
+    """Close the browser for *viewer*; why it is still open, or None once it is
+    closed. The machine refuses while someone else holds the page
+    (``browser_runtime.machine.close``); one that does not answer may have
+    closed it or not, which the next look tells."""
+    try:
+        answer = await _ask(sandbox, "close", viewer, timeout=_CLOSE_TIMEOUT_S)
+    except Exception as e:
+        logger.debug("Browser close did not answer: %s", type(e).__name__)
+        return "failed"
+    if isinstance(answer, dict) and answer.get("done") is True:
+        return None
+    reason = answer.get("reason") if isinstance(answer, dict) else None
+    return reason if reason in protocol.CLOSE_REFUSALS else "failed"
+
+
+async def browser_fit(
+    sandbox: Any, *, viewer: str, width: int, height: int
+) -> tuple[int, int] | Literal["kept"] | None:
+    """Size the page to *viewer*'s view of *width* by *height* page pixels; the
+    size it took, ``"kept"`` for a page that keeps its own until its browser
+    closes, or None for one left as it is for now. The machine decides how large
+    and whether at all (``browser_runtime.fit``); a machine whose runtime
+    predates the command, or that does not answer, leaves the page as it is."""
+    try:
+        answer = await _ask(sandbox, "fit", viewer, str(width), str(height), timeout=_STATUS_TIMEOUT_S)
+    except Exception as e:
+        logger.debug("Browser fit did not answer: %s", type(e).__name__)
+        return None
+    if not isinstance(answer, dict):
+        return None
+    if answer.get("kept") is True:
+        return "kept"
+    taken = answer.get("size")
+    if isinstance(taken, list) and len(taken) == 2 and all(type(n) is int for n in taken):
+        return taken[0], taken[1]
+    return None
+
+
 async def browser_navigate(
     sandbox: Any, *, holder: str, action: NavigateAction, address: str | None
 ) -> NavigateRefusal | None:
     """Take the page where *holder*, who holds it, asked; why nothing was done,
     or None once it was."""
     if action == "open":
-        address = protocol.page_address(address or "")
+        address = protocol.typed_address(address or "")
         if address is None:
             return "bad_address"
     command = ("navigate", holder, action, *([address] if action == "open" else []))

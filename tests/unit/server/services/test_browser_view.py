@@ -17,7 +17,9 @@ from ptc_agent.core.sandbox.browser_runtime import protocol
 from src.server.services.toolset import Answer
 from src.server.services.browser_view import (
     VIEW_LIFETIME_S,
+    browser_close,
     browser_control,
+    browser_fit,
     browser_navigate,
     browser_view,
 )
@@ -487,7 +489,7 @@ def test_a_hold_names_a_short_opaque_holder_and_what_it_does(body: dict):
         ("example.com\n/x", None),
         ("https://", None),
         ("", None),
-        ("a" * 2049, None),
+        ("a" * (protocol.MAX_URL_LENGTH + 1), None),
     ],
 )
 def test_an_address_is_read_as_an_address_bar_reads_it_and_only_a_web_page_opens(typed, address):
@@ -638,3 +640,49 @@ async def test_a_setup_refused_on_what_can_pass_is_started_again_by_the_next_acq
     module.install_soon(sandbox)
     await asyncio.gather(*module._INSTALLS)
     assert sandbox.runtime.exec.await_count == (2 if again else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "refusal"),
+    [
+        (SimpleNamespace(stdout=json.dumps({"done": True})), None),
+        (SimpleNamespace(stdout=json.dumps({"done": False, "reason": "held"})), "held"),
+        (SimpleNamespace(stdout=json.dumps({"done": False, "reason": "nonsense"})), "failed"),
+        (SimpleNamespace(stdout="usage: ..."), "failed"),
+        (RuntimeError("gone"), "failed"),
+    ],
+    ids=["closed", "held", "unknown-reason", "older-runtime", "no-answer"],
+)
+async def test_a_close_is_asked_of_the_machine_for_the_viewer(answer, refusal):
+    sandbox = _sandbox()
+    sandbox.runtime.exec = AsyncMock(side_effect=[answer])
+    assert await browser_close(sandbox, viewer="view-1") == refusal
+    assert sandbox.runtime.exec.await_args.args[0].endswith("close view-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "taken"), [({"size": [700, 900]}, (700, 900)), ({"kept": True}, "kept")], ids=["sized", "keeps its own"]
+)
+async def test_a_viewer_s_size_is_asked_of_the_machine(answer, taken):
+    sandbox = _sandbox(json.dumps(answer))
+    assert await browser_fit(sandbox, viewer="view-1", width=700, height=900) == taken
+    assert sandbox.runtime.exec.await_args.args[0].endswith("fit view-1 700 900")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answer",
+    [
+        SimpleNamespace(stdout=json.dumps({"size": None})),
+        SimpleNamespace(stdout=json.dumps({"size": [700, "900"]})),
+        SimpleNamespace(stdout="usage: ..."),
+        RuntimeError("gone"),
+    ],
+    ids=["not now", "malformed", "older-runtime", "no-answer"],
+)
+async def test_a_size_the_machine_did_not_take_leaves_the_page_as_it_is(answer):
+    sandbox = _sandbox()
+    sandbox.runtime.exec = AsyncMock(side_effect=[answer])
+    assert await browser_fit(sandbox, viewer="view-1", width=700, height=900) is None

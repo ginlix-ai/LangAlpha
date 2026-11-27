@@ -3,12 +3,15 @@
 Endpoints:
 - POST /api/v1/workspaces/{workspace_id}/sandbox/browser-view
 - POST /api/v1/workspaces/{workspace_id}/sandbox/browser-control
+- POST /api/v1/workspaces/{workspace_id}/sandbox/browser-fit
 - POST /api/v1/workspaces/{workspace_id}/sandbox/browser-navigate
+- POST /api/v1/workspaces/{workspace_id}/sandbox/browser-close
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ptc_agent.core.sandbox.browser_runtime import protocol
 from ptc_agent.core.sandbox.browser_runtime.protocol import (
+    CloseRefusal,
     HoldAction,
     NavigateAction,
     NavigateRefusal,
@@ -23,7 +27,9 @@ from ptc_agent.core.sandbox.browser_runtime.protocol import (
 
 from src.server.services.browser_view import (
     ViewState,
+    browser_close,
     browser_control,
+    browser_fit,
     browser_navigate,
     browser_view,
 )
@@ -56,14 +62,21 @@ class _NoBrowser(Exception):
         self.state: Literal["unavailable", "stopped"] = state
 
 
-async def _browser_sandbox(
-    workspace_id: str, user_id: str, *, start: bool = False
-) -> tuple[Any, str | None, str | None]:
+@dataclass(frozen=True)
+class _Browser:
     """The sandbox whose browser a route acts on, the member its stream is
-    minted for, and the computer it runs: a workspace the caller reaches as
-    its files' routes do, for a caller who turned the browser on, on a kind of
-    computer with a browser, while it runs, or started with *start*.
-    Raises ``_NoBrowser`` where there is none to reach."""
+    minted for, and the computer it runs."""
+
+    sandbox: Any
+    viewer: str | None
+    computer_id: str | None
+
+
+async def _browser(workspace_id: str, user_id: str, *, start: bool = False) -> _Browser:
+    """The browser a route acts on: in a workspace the caller reaches as its
+    files' routes do, for a caller who turned the browser on, on a kind of
+    computer with a browser, while it runs, or started with *start*. Raises
+    ``_NoBrowser`` where there is none to reach."""
     workspace, _ = await reached_workspace_on_computer(workspace_id, user_id)
     viewer = preview_viewer(workspace, user_id)
     # Each person's own switch: in a shared workspace the owner's says nothing
@@ -73,11 +86,11 @@ async def _browser_sandbox(
     if start:
         # The row as the acquisition left it, which a move may have changed.
         sandbox, acquired = await acquire_sandbox(workspace_id, user_id, "browser_view")
-        return sandbox, viewer, _computer_of(acquired)
+        return _Browser(sandbox, viewer, _computer_of(acquired))
     sandbox = await sandbox_if_running(workspace_id, user_id)
     if sandbox is None:
         raise _NoBrowser("stopped")
-    return sandbox, viewer, _computer_of(workspace)
+    return _Browser(sandbox, viewer, _computer_of(workspace))
 
 
 def _computer_of(workspace: dict[str, Any]) -> str | None:
@@ -137,7 +150,7 @@ async def set_browser_control(
     it. A stopped computer has nothing to hold and is not started for it.
     """
     try:
-        sandbox, _viewer, _computer = await _browser_sandbox(workspace_id, x_user_id)
+        sandbox = (await _browser(workspace_id, x_user_id)).sandbox
     except _NoBrowser:
         return BrowserControlResponse(held=False)
     held = await browser_control(
@@ -165,6 +178,51 @@ async def _note_use(workspace_id: str, sandbox: Any) -> None:
         logger.debug("Browser use did not reach workspace %s: %s", workspace_id, type(e).__name__)
 
 
+class BrowserFitRequest(BaseModel):
+    # The viewer, named as it names itself to hold the page: while someone
+    # holds it, only their view sizes it.
+    viewer: str = Field(pattern=protocol.HOLDER_PATTERN)
+    # Its view, in page pixels.
+    width: int = Field(ge=1, le=10_000)
+    height: int = Field(ge=1, le=10_000)
+
+
+class BrowserFitSize(BaseModel):
+    width: int
+    height: int
+
+
+class BrowserFitResponse(BaseModel):
+    # The page's size for this view, in page pixels, once it took one.
+    size: BrowserFitSize | None = None
+    # The page keeps a size of its own until its browser closes (the agent's,
+    # or a window's), so asking again changes nothing.
+    kept: bool = False
+
+
+@router.post("/{workspace_id}/sandbox/browser-fit")
+async def fit_browser(
+    workspace_id: str,
+    x_user_id: CurrentUserId,
+    body: BrowserFitRequest,
+) -> BrowserFitResponse:
+    """Size the page to a viewer's view, so it fills the panel it is shown in.
+
+    The page keeps the view's shape within the size the computer allows, and
+    keeps its own where the agent set one or it shows as a window; while
+    another viewer holds it or a command runs, it is left as it is for now. A
+    stopped computer is not started for it.
+    """
+    try:
+        sandbox = (await _browser(workspace_id, x_user_id)).sandbox
+    except _NoBrowser:
+        return BrowserFitResponse()
+    taken = await browser_fit(sandbox, viewer=body.viewer, width=body.width, height=body.height)
+    if taken == "kept":
+        return BrowserFitResponse(kept=True)
+    return BrowserFitResponse(size=BrowserFitSize(width=taken[0], height=taken[1]) if taken else None)
+
+
 class BrowserNavigateRequest(BaseModel):
     holder: str = Field(pattern=protocol.HOLDER_PATTERN)
     action: NavigateAction
@@ -190,13 +248,44 @@ async def navigate_browser(
     otherwise. A stopped computer is not started for it.
     """
     try:
-        sandbox, _viewer, _computer = await _browser_sandbox(workspace_id, x_user_id)
+        sandbox = (await _browser(workspace_id, x_user_id)).sandbox
     except _NoBrowser:
         return BrowserNavigateResponse(done=False, reason="not_running")
     reason = await browser_navigate(
         sandbox, holder=body.holder, action=body.action, address=body.url
     )
     return BrowserNavigateResponse(done=reason is None, reason=reason)
+
+
+class BrowserCloseRequest(BaseModel):
+    # The viewer, named as it names itself to hold the page: its own hold goes
+    # with the browser, and another's keeps it open.
+    viewer: str = Field(pattern=protocol.HOLDER_PATTERN)
+
+
+class BrowserCloseResponse(BaseModel):
+    done: bool
+    # Why the browser is still open.
+    reason: CloseRefusal | None = None
+
+
+@router.post("/{workspace_id}/sandbox/browser-close")
+async def close_browser(
+    workspace_id: str,
+    x_user_id: CurrentUserId,
+    body: BrowserCloseRequest,
+) -> BrowserCloseResponse:
+    """Close the computer's browser for a viewer, as the agent's ``close`` would.
+
+    Refused while someone else holds the page. A computer with no browser to
+    reach, stopped or without one, has none open, and is not started for it.
+    """
+    try:
+        sandbox = (await _browser(workspace_id, x_user_id)).sandbox
+    except _NoBrowser:
+        return BrowserCloseResponse(done=True)
+    reason = await browser_close(sandbox, viewer=body.viewer)
+    return BrowserCloseResponse(done=reason is None, reason=reason)
 
 
 @router.post("/{workspace_id}/sandbox/browser-view")
@@ -211,16 +300,14 @@ async def get_browser_view(
     reload never starts a browser or a computer.
     """
     try:
-        sandbox, viewer, computer_id = await _browser_sandbox(
-            workspace_id, x_user_id, start=body.start
-        )
+        target = await _browser(workspace_id, x_user_id, start=body.start)
         view = await browser_view(
-            sandbox,
+            target.sandbox,
             workspace_id,
-            computer_id,
+            target.computer_id,
             start=body.start,
             get_chrome=body.get_chrome,
-            viewer_id=viewer,
+            viewer_id=target.viewer,
         )
     except _NoBrowser as e:
         return BrowserViewResponse(state=e.state)

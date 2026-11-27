@@ -154,3 +154,115 @@
 .browser-viewer .status-card-body {
   max-width: 280px;
 }
+
+/* Where there is no page: one field, as a new tab has, over the empty stage. */
+.browser-start {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background-color: var(--color-bg-page);
+}
+
+/* The field sits two fifths down, where the eye reads a middle, not at the
+   exact middle, which looks dropped. */
+.browser-start::before {
+  content: '';
+  flex: 2 1 0;
+}
+
+.browser-start::after {
+  content: '';
+  flex: 3 1 0;
+}
+
+.browser-start-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(100%, 520px);
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+.browser-start-computer {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Hollow while there is no browser to go to; amber once one is open. */
+.browser-start-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  border: 1px solid var(--color-text-quaternary);
+}
+
+.browser-start-dot.is-open {
+  border-color: var(--color-accent-primary);
+  background-color: var(--color-accent-primary);
+}
+
+.browser-start-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 520px);
+  height: 44px;
+  padding: 0 8px 0 16px;
+  border-radius: 12px;
+  color: var(--color-text-tertiary);
+  background-color: var(--color-bg-card);
+  border: 1px solid var(--color-border-default);
+  box-shadow: var(--shadow-card);
+}
+
+.browser-start-box:focus-within {
+  border-color: var(--color-focus-ring);
+}
+
+.browser-start-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.browser-start-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.browser-start-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-tertiary);
+}
+
+.browser-start-note {
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--color-text-quaternary);
+}

@@ -25,6 +25,7 @@ from ptc_agent.core.sandbox.browser_runtime import (
     care,
     choices,
     daemon,
+    fit,
     gate,
     hold,
     host,
@@ -177,6 +178,17 @@ _REAL_CHECK = gate.check
 def _admits(launched: Launch, release=lambda: None):
     """A gate that admits every command on *launched*."""
     return lambda use, user_agent, **_: (launched, release)
+
+
+#: The largest page a launch is given, before the fixture below sets it aside.
+_PAGE_MAX = gate._page_max
+
+
+@pytest.fixture(autouse=True)
+def _launches_compared_by_their_choices(monkeypatch):
+    """A browser's largest page is pinned by its own tests (``_PAGE_MAX``);
+    everywhere else a launch is the choices it was started with."""
+    monkeypatch.setattr(gate, "_page_max", lambda h, scale: (0, 0))
 
 
 def _check(use: str, user_agent: str = "") -> Launch:
@@ -1150,7 +1162,12 @@ def test_a_daemon_whose_chrome_died_is_ended_with_its_hold_and_launch(state, mon
     _read_proc(monkeypatch, processes)
     monkeypatch.setattr(daemon, "listening", _listening(False))
     killed = []
-    monkeypatch.setattr(care.os, "kill", lambda pid, sig: killed.append(pid))
+
+    def kill(pid, sig):
+        killed.append(pid)
+        shutil.rmtree(processes / str(pid))
+
+    monkeypatch.setattr(care.os, "kill", kill)
     _fake_proc(processes, 1, 0, ["/sbin/init"], exe="/sbin/init")
     _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
     hold.control("view-1", "take")
@@ -1278,6 +1295,123 @@ def engine_runs(state, monkeypatch):
     return runs
 
 
+@pytest.fixture
+def closing(engine_runs, monkeypatch):
+    """``engine_runs`` on a browser that ends at the engine's ``close``."""
+    up = [True]
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: up[0])
+    inner = machine.subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[1:] == ["close"]:
+            up[0] = False
+        return inner(argv, **kwargs)
+
+    monkeypatch.setattr(machine.subprocess, "run", run)
+    return engine_runs
+
+
+@pytest.mark.parametrize("holder", [None, "a"], ids=["nobody-holds", "the-viewer-holds"])
+def test_a_person_closes_the_browser_and_what_lasted_with_it_goes(closing, holder):
+    if holder:
+        hold.control(holder, "take")
+    launch.write(Launch("", "retina", agent_sized=True))
+    assert machine.close("a") == {"done": True}
+    assert [argv for argv, _ in closing] == [[protocol.ENGINE_BIN, "close"]]
+    # The next browser starts unheld, at no size the agent set, on its own launch.
+    assert not hold.held()
+    assert launch.current() is None
+
+
+def test_the_agent_s_next_command_is_told_a_person_closed_the_browser(closing, capsys, monkeypatch):
+    assert machine.close("a") == {"done": True}
+    _check("look")
+    assert protocol.PERSON_CLOSED_MESSAGE in capsys.readouterr().err
+    # Once.
+    _check("look")
+    assert protocol.PERSON_CLOSED_MESSAGE not in capsys.readouterr().err
+
+
+def test_a_close_is_not_told_to_the_person_s_own_open(closing, capsys, monkeypatch):
+    machine.close("a")
+    monkeypatch.setenv(protocol.FOR_PERSON_ENV, "1")
+    _check("look")
+    monkeypatch.delenv(protocol.FOR_PERSON_ENV)
+    _check("look")
+    assert capsys.readouterr().err.count(protocol.PERSON_CLOSED_MESSAGE) == 1
+
+
+def test_a_close_long_before_the_agent_s_next_command_is_not_told(closing, capsys, monkeypatch):
+    machine.close("a")
+    later = time.time() + launch.IDLE_CLOSE_S + 1
+    monkeypatch.setattr(gate.time, "time", lambda: later)
+    _check("look")
+    assert protocol.PERSON_CLOSED_MESSAGE not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("viewer_holds", [False, True], ids=["the-viewer-does-not", "the-viewer-holds-too"])
+def test_a_browser_someone_else_holds_stays_open(closing, viewer_holds):
+    hold.control("b", "take")
+    if viewer_holds:
+        hold.control("a", "take")
+    assert machine.close("a") == {"done": False, "reason": "held"}
+    assert closing == []
+    assert hold.holds("b")
+
+
+def test_a_close_waits_for_the_agent_s_command_still_running(closing, monkeypatch):
+    looks = []
+    monkeypatch.setattr(care.Look, "busy", lambda self: looks.append(1) or len(looks) < 3)
+    monkeypatch.setattr(machine.time, "sleep", lambda s: None)
+    assert machine.close("a") == {"done": True}
+    # Closed once the command ended, not under it.
+    assert len(looks) == 3
+    assert [argv for argv, _ in closing] == [[protocol.ENGINE_BIN, "close"]]
+
+
+def test_a_close_waits_only_a_while_for_a_command_that_goes_on(closing, monkeypatch):
+    monkeypatch.setattr(care.Look, "busy", lambda self: True)
+    monkeypatch.setattr(machine.time, "sleep", lambda s: None)
+    clock = iter(range(0, 1000, 4))
+    monkeypatch.setattr(machine.time, "monotonic", lambda: next(clock))
+    assert machine.close("a") == {"done": True}
+    assert [argv for argv, _ in closing] == [[protocol.ENGINE_BIN, "close"]]
+
+
+def test_a_browser_already_closed_is_closed(closing, monkeypatch, capsys):
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: False)
+    assert machine.close("a") == {"done": True}
+    assert closing == []
+    # Nothing the person did closed it, so the agent is told nothing.
+    _check("look")
+    assert protocol.PERSON_CLOSED_MESSAGE not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("daemon_ends", [False, True], ids=["under-its-daemon", "outliving-its-daemon"])
+def test_a_browser_that_does_not_end_is_said_to_be_open(state, tmp_path, monkeypatch, daemon_ends):
+    """One that outlives its daemon is run by no engine, which says nothing of
+    whether it is gone."""
+    processes = tmp_path / "processes"
+    _read_proc(monkeypatch, processes)
+    _fake_proc(processes, 2, 1, [protocol.ENGINE_BIN], exe=protocol.ENGINE_BIN)
+    _fake_proc(processes, 20, 2, _ENGINE_CHROME)
+
+    def kill(pid, sig):
+        # The daemon goes, and Chrome, stuck in the kernel, is handed to init.
+        if daemon_ends and pid == 2:
+            shutil.rmtree(processes / "2")
+            (processes / "20" / "stat").write_text("20 (chrome) S 1 1 1 0")
+
+    monkeypatch.setattr(care.os, "kill", kill)
+    monkeypatch.setattr(machine.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0))
+    hold.control("a", "take")
+    launch.write(Launch("", "retina"))
+    assert machine.close("a") == {"done": False, "reason": "failed"}
+    # What lasts as long as it does stays with it.
+    assert launch.current() == Launch("", "retina")
+    assert hold.holds("a")
+
+
 def test_only_the_holder_takes_the_page_anywhere(engine_runs):
     assert machine.navigate("a", "open", "example.com") == {"done": False, "reason": "not_held"}
     hold.control("b", "take")
@@ -1338,7 +1472,7 @@ def test_the_person_s_navigation_and_the_agent_s_command_run_with_one_launch(sta
     assert machine.navigate("a", "reload") == {"done": True}
     assert runs == [agent_env, agent_env]
     assert agent_env["AGENT_BROWSER_USER_AGENT"] == "Agent a@example.com"
-    assert agent_env["AGENT_BROWSER_STREAM_MAX_WIDTH"] == "2560"
+    assert agent_env["AGENT_BROWSER_STREAM_MAX_WIDTH"] == str(protocol.STREAM_QUALITIES["retina"].width)
 
 
 @pytest.mark.parametrize("ended", ["done", "timed out"])
@@ -1504,6 +1638,27 @@ def test_a_page_the_engine_could_not_reach_is_a_failure_and_a_slow_one_is_not(en
 
     monkeypatch.setattr(machine.subprocess, "run", slow)
     assert machine.navigate("a", "open", "example.com") == {"done": True}
+
+
+@pytest.mark.parametrize("first_s", [12.0, 30.0], ids=["time-left", "none-left"])
+def test_a_navigation_s_commands_share_one_wait(engine_runs, monkeypatch, first_s):
+    """A close waits for the lock they run under, inside the server's wait."""
+    hold.control("a", "take")
+    clock = [0.0]
+    monkeypatch.setattr(machine.time, "monotonic", lambda: clock[0])
+    waits: list[tuple[list[str], float]] = []
+
+    def run(argv, **kwargs):
+        waits.append((argv[1:], kwargs["timeout"]))
+        clock[0] += first_s
+        return subprocess.CompletedProcess(argv, 0, stdout="https://example.com/")
+
+    monkeypatch.setattr(machine.subprocess, "run", run)
+    assert machine.navigate("a", "reload") == {"done": True}
+    expected = [(["reload"], machine._NAVIGATE_WAIT_S)]
+    if first_s < machine._NAVIGATE_WAIT_S:
+        expected.append((["get", "url"], machine._NAVIGATE_WAIT_S - first_s))
+    assert waits == expected
 
 
 def test_starting_leaves_a_browser_already_up_on_its_page(state, monkeypatch):
@@ -1862,6 +2017,26 @@ def test_a_start_drops_a_hold_taken_on_a_browser_that_closed(state, monkeypatch)
     assert hold.refusal("act") is None
 
 
+def test_a_start_the_person_closes_before_it_opens_stays_shut(state, monkeypatch):
+    """Its command waits for the admission a close holds, and the close finds
+    no browser yet to close."""
+    monkeypatch.setattr(host.os, "access", lambda *_: True)
+    monkeypatch.setattr(care.Look, "browser_up", lambda self: False)
+    monkeypatch.setattr(care.Look, "busy", lambda self: False)
+    monkeypatch.setattr(care, "memory_full", lambda: False)
+    asked: list[str] = []
+    monkeypatch.setattr(daemon.subprocess, "Popen", lambda argv, **k: asked.append(k["env"][protocol.FOR_PERSON_ENV]))
+    machine.start(0)
+    assert machine.close("a") == {"done": True}
+    monkeypatch.setenv(protocol.FOR_PERSON_ENV, asked[0])
+    with pytest.raises(gate.Refused):
+        gate.check("look")
+    # One asked for after the close opens.
+    machine.start(0)
+    monkeypatch.setenv(protocol.FOR_PERSON_ENV, asked[1])
+    _check("look")
+
+
 def test_a_start_only_reads_so_it_can_never_take_the_agent_s_page_away():
     """It can land after the agent's own first command whatever it checks first,
     and a read starts the browser without going anywhere."""
@@ -2012,6 +2187,7 @@ def test_every_request_goes_through_the_proxy_loopback_included(engine, monkeypa
         "--window-size=1280,943",
         "--disk-cache-size=67108864",
     ]
+    # As large as the largest page the browser was launched to fit a view to.
     assert (env["AGENT_BROWSER_STREAM_MAX_WIDTH"], env["AGENT_BROWSER_STREAM_MAX_HEIGHT"]) == ("1280", "800")
     assert env["AGENT_BROWSER_STREAM_QUALITY"] == "70"
 
@@ -2036,7 +2212,7 @@ def test_a_gate_that_cannot_settle_runs_the_launch_on_record(engine, monkeypatch
     monkeypatch.setattr(launch, "current", lambda: Launch("Open a@example.com", "retina"))
     assert _run("snapshot") is None
     assert engine["env"]["AGENT_BROWSER_USER_AGENT"] == "Open a@example.com"
-    assert engine["env"]["AGENT_BROWSER_STREAM_MAX_WIDTH"] == "2560"
+    assert engine["env"]["AGENT_BROWSER_STREAM_MAX_WIDTH"] == str(protocol.STREAM_QUALITIES["retina"].width)
 
 
 @pytest.mark.parametrize(
@@ -2358,8 +2534,8 @@ def test_a_window_on_the_screen_is_drawn_at_the_screens_own_scale():
     shown = dataclasses.replace(retina, window=True)._browser_env()
     assert shown["AGENT_BROWSER_HEADED"] == "1"
     assert not any(a.startswith("--force-device-scale-factor") for a in shown["AGENT_BROWSER_ARGS"].split("\n"))
-    assert shown["AGENT_BROWSER_STREAM_MAX_WIDTH"] == str(protocol.STREAM_QUALITIES["retina"].width)
     hidden = retina._browser_env()
+    assert shown["AGENT_BROWSER_STREAM_MAX_WIDTH"] == hidden["AGENT_BROWSER_STREAM_MAX_WIDTH"]
     assert "AGENT_BROWSER_HEADED" not in hidden
     assert "--force-device-scale-factor=2" in hidden["AGENT_BROWSER_ARGS"].split("\n")
 
@@ -2787,3 +2963,201 @@ def test_a_host_is_ready_only_with_its_engine_and_the_chrome_it_runs(tmp_path):
 
     assert not Host(engine=str(binary), chrome=str(tmp_path / "no-chrome")).ready()
     assert Host(engine=str(binary), chrome=_chrome_stub(tmp_path)).ready()
+
+
+@pytest.fixture
+def own_runs(engine_runs, monkeypatch):
+    """``engine_runs`` on a machine of the person's own, on a browser launched
+    to take a view up to that machine's largest."""
+    monkeypatch.setattr(host, "current", lambda: Host(own=True))
+    launch.write(Launch("", "retina", page_width=protocol.FIT_MAX_OWN[0], page_height=protocol.FIT_MAX_OWN[1]))
+    return engine_runs
+
+
+def _resizes(runs: list[tuple[list[str], dict[str, str]]]) -> list[list[str]]:
+    return [argv[3:] for argv, _ in runs if argv[1:3] == ["set", "viewport"]]
+
+
+def test_a_viewer_s_view_sizes_the_page_with_nobody_holding_it(own_runs):
+    assert fit.fit("a", 700, 900) == (700, 900)
+    # At the launch's own scale: retina draws two screen pixels a page pixel.
+    assert _resizes(own_runs) == [["700", "900", "2"]]
+
+
+@pytest.mark.parametrize(
+    ("view", "largest", "page"),
+    [
+        ((700, 900), (1600, 1000), (700, 900)),
+        ((1500, 1200), (1600, 1000), (1250, 1000)),
+        ((3840, 2160), (1920, 1600), (1920, 1080)),
+        ((10, 99_999), (1920, 1600), (protocol.FIT_MIN[0], 1600)),
+    ],
+)
+def test_a_page_keeps_the_view_s_shape_within_what_the_machine_allows(view, largest, page):
+    assert fit.size(*view, largest) == page
+
+
+@pytest.mark.parametrize(
+    ("own", "scale", "cpus", "largest"),
+    [
+        (True, 2, 2.0, protocol.FIT_MAX_OWN),
+        (False, 2, 4.0, protocol.FIT_MAX_CLOUD),
+        # Retina already takes all of a small cloud computer's CPU.
+        (False, 2, 2.0, launch.VIEWPORT),
+        (False, 1, 2.0, protocol.FIT_MAX_CLOUD),
+    ],
+)
+def test_a_browser_is_launched_with_the_largest_page_its_computer_can_draw(own, scale, cpus, largest, monkeypatch):
+    monkeypatch.setattr(quality, "cpus", lambda: cpus)
+    assert _PAGE_MAX(Host(own=own), scale) == largest
+
+
+def test_a_page_takes_the_view_up_to_the_largest_its_browser_was_launched_with(engine_runs):
+    launch.write(Launch("", "retina", page_width=1600, page_height=1000))
+    assert fit.fit("a", 3200, 2000) == (1600, 1000)
+    # A browser from before fitting keeps within the agent's own size.
+    launch.write(Launch("", "retina"))
+    assert fit.fit("a", 1500, 900) == (1280, 768)
+
+
+def test_while_someone_holds_the_page_only_their_view_sizes_it(own_runs):
+    hold.control("b", "take")
+    assert fit.fit("a", 700, 900) is None
+    assert fit.fit("b", 800, 600) == (800, 600)
+    assert _resizes(own_runs) == [["800", "600", "2"]]
+
+
+def test_a_second_holder_never_resizes_the_page_under_the_first(own_runs):
+    hold.control("a", "take")
+    hold.control("b", "take")
+    assert fit.fit("b", 800, 600) is None
+    assert fit.fit("a", 700, 900) is None
+    hold.control("a", "release")
+    assert fit.fit("b", 800, 600) == (800, 600)
+    assert _resizes(own_runs) == [["800", "600", "2"]]
+
+
+def test_a_hand_back_leaves_the_page_at_the_view_s_size(own_runs):
+    hold.control("a", "take")
+    fit.fit("a", 700, 900)
+    assert machine.control("a", "release") is False
+    assert _resizes(own_runs) == [["700", "900", "2"]]
+
+
+@pytest.mark.parametrize(
+    "kept", [{"window": True}, {"agent_sized": True}], ids=["a window on the screen", "the agent's own size"]
+)
+def test_a_page_that_keeps_its_own_size_says_so(own_runs, kept):
+    launch.write(Launch("", "retina", page_width=1920, page_height=1600, **kept))
+    assert fit.fit("a", 700, 900) == fit.KEPT
+    assert own_runs == []
+
+
+def test_the_agent_s_size_lasts_as_long_as_its_browser(state):
+    launched, release = gate.check("act", sizes_page=True)
+    release()
+    assert launched.agent_sized and launch.current().agent_sized
+    assert _check("look").agent_sized
+    # A reopen's browser starts on a launch of its own.
+    assert not _check("reopen").agent_sized
+
+
+@pytest.mark.parametrize(
+    ("args", "sizes"),
+    [
+        (["set", "viewport", "390", "844"], True),
+        (["set", "device", "iPhone 15"], True),
+        (["--device", "iPhone 15", "open", "https://example.com"], True),
+        (["batch", "open https://example.com", "set viewport 390 844"], True),
+        (["set", "media", "dark"], False),
+        (["open", "https://example.com"], False),
+    ],
+)
+def test_the_agent_sizing_the_page_is_read_from_its_commands(args, sizes):
+    assert wrapper.sizes_page(wrapper.expand(wrapper.parse(args))) is sizes
+
+
+@pytest.mark.parametrize("why", ["no browser", "a command runs", "a navigation runs"])
+def test_a_page_is_left_as_it_is_for_now(own_runs, monkeypatch, why):
+    if why == "no browser":
+        monkeypatch.setattr(care.Look, "browser_up", lambda self: False)
+        monkeypatch.setattr(daemon, "listening", _listening(False))
+    elif why == "a command runs":
+        monkeypatch.setattr(care.Look, "busy", lambda self: True)
+    with hold.navigating() if why == "a navigation runs" else contextlib.nullcontext():
+        assert fit.fit("a", 700, 900) is None
+    assert own_runs == []
+
+
+def test_a_fitted_page_is_never_shrunk_by_its_frames():
+    fitted = Launch("", "retina", page_width=1920, page_height=1600)
+    env = fitted._browser_env()
+    assert (env["AGENT_BROWSER_STREAM_MAX_WIDTH"], env["AGENT_BROWSER_STREAM_MAX_HEIGHT"]) == ("3840", "3200")
+    # A browser from before fitting keeps the frames it started with.
+    env = Launch("", "retina")._browser_env()
+    assert env["AGENT_BROWSER_STREAM_MAX_WIDTH"] == str(protocol.STREAM_QUALITIES["retina"].width)
+
+
+@pytest.mark.parametrize(
+    ("typed", "goes"),
+    [
+        ("example.com", "https://example.com"),
+        ("news.bbc.co.uk/a?b=1", "https://news.bbc.co.uk/a?b=1"),
+        ("https://example.com/x y", "https://example.com/x%20y"),
+        ("localhost:3000", "http://localhost:3000"),
+        ("[::1]:9000/", "http://[::1]:9000/"),
+        ("intranet:8080", "http://intranet:8080"),
+        ("192.168.1.5:8080", "http://192.168.1.5:8080"),
+        ("myapp.localhost:5173", "http://myapp.localhost:5173"),
+        ("printer.local:8080/admin", "http://printer.local:8080/admin"),
+        ("printer.local", "http://printer.local"),
+        ("app.internal", "http://app.internal"),
+        ("local", protocol.SEARCH_URL + "local"),
+        ("foo.dev", "https://foo.dev"),
+        ("apple earnings", protocol.SEARCH_URL + "apple+earnings"),
+        ("aapl", protocol.SEARCH_URL + "aapl"),
+        ("v1.2", protocol.SEARCH_URL + "v1.2"),
+        ("report.pdf", protocol.SEARCH_URL + "report.pdf"),
+        ("300.1.1.1", protocol.SEARCH_URL + "300.1.1.1"),
+        ("?example.com", protocol.SEARCH_URL + "example.com"),
+        ("bücher.de", "https://bücher.de"),
+        ("例子.中国/a", "https://例子.中国/a"),
+        ("example.com/?u=https://x.org", "https://example.com/?u=https://x.org"),
+        ("what is https://example.com", protocol.SEARCH_URL + "what+is+https%3A%2F%2Fexample.com"),
+        ("file:///etc/passwd", None),
+        ("javascript:alert(1)", None),
+        ("   ", None),
+    ],
+)
+def test_typed_text_goes_where_a_browser_s_address_bar_takes_it(typed, goes):
+    assert protocol.typed_address(typed) == goes
+
+
+def test_a_search_for_the_longest_text_typed_still_opens():
+    searched = protocol.typed_address("中" * protocol.MAX_ADDRESS_LENGTH)
+    assert searched is not None
+    assert protocol.page_address(searched) == searched
+
+
+def test_every_top_level_domain_is_one_whole_label():
+    """IANA's names in another script are ``xn--`` labels, which a wrap at their
+    hyphens would cut in two and leave out of the table."""
+    from ptc_agent.core.sandbox.browser_runtime.tlds import TLDS
+
+    for tld in TLDS:
+        assert re.fullmatch(r"[a-z0-9]+|xn--[a-z0-9]+(-[a-z0-9]+)*", tld), tld
+        if tld.startswith("xn--"):
+            tld[4:].encode().decode("punycode")
+    assert {"xn--6qq986b3xl", "xn--eckvdtc9d", "xn--rovu88b", "xn--unup4y"} <= TLDS
+
+
+@pytest.mark.parametrize(
+    ("typed", "goes"),
+    [
+        ("例子.不存在", protocol.SEARCH_URL + "%E4%BE%8B%E5%AD%90.%E4%B8%8D%E5%AD%98%E5%9C%A8"),
+        ("foo.xn", protocol.SEARCH_URL + "foo.xn"),
+        ("例子.我爱你", "https://例子.我爱你"),
+    ],
+)
+def test_a_name_in_another_script_names_a_site_only_under_a_real_domain(typed, goes):
+    assert protocol.typed_address(typed) == goes

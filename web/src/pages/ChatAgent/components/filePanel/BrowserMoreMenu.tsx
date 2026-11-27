@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, ChevronRight, Copy, MoreHorizontal, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { Check, ChevronRight, Copy, MoreHorizontal, RefreshCw, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   DropdownMenu,
@@ -19,20 +19,25 @@ import { QUALITY_CHOICES, isQualityChoice, useBrowserQuality } from '../browserQ
 
 /**
  * What the tab does less often than going somewhere: copy the page's address,
- * reconnect the view, and the computer's live view quality, the same setting as
- * its details, so a choice reaches the next browser the computer opens.
+ * reconnect the view, the computer's live view quality, the same setting as its
+ * details, so a choice reaches the next browser the computer opens, and close
+ * the browser, which otherwise closes only when the agent closes it or it goes
+ * unused.
  */
 export function BrowserMoreMenu({
   computer,
   pageUrl,
   onReconnect,
   reconnecting,
+  onClose,
 }: {
   computer: Computer | null;
   /** The page's address, or null on a blank page. */
   pageUrl: string | null;
   onReconnect: () => void;
   reconnecting: boolean;
+  /** Closes the browser; null when none is open. */
+  onClose: (() => void) | null;
 }): React.ReactElement {
   const { t } = useTranslation();
   const { value, label, retinaHeld, autoIs, set } = useBrowserQuality(computer);
@@ -95,6 +100,11 @@ export function BrowserMoreMenu({
             </DropdownMenuSub>
           </>
         )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={!onClose} onSelect={() => onClose?.()}>
+          <X className="h-4 w-4" />
+          {t('filePanel:browser.close', 'Close browser')}
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -18,3 +18,19 @@ export function isClosed(phase: BrowserPhase): boolean {
 export function isBlankPage(url: string | null): boolean {
   return url === null || url === '' || url.startsWith('about:blank');
 }
+
+/** Where the browser is when there is no page to show: open on a blank tab,
+ *  not open, or on a computer that is stopped. */
+export type BrowserStartState = 'open' | 'idle' | 'stopped';
+
+/** The start page's state, or null where the tab has a page or a card to show. */
+export function startStateOf(phase: BrowserPhase, pageUrl: string | null): BrowserStartState | null {
+  if (phase === 'idle' || phase === 'stopped') return phase;
+  return phase === 'live' && isBlankPage(pageUrl) ? 'open' : null;
+}
+
+/** Going somewhere from here is the person taking the browser, which also opens
+ *  one that is closed on a computer it starts if it is stopped. */
+export function canVisit(phase: BrowserPhase): boolean {
+  return phase === 'live' || phase === 'idle' || phase === 'stopped';
+}

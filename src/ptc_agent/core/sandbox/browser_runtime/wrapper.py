@@ -422,7 +422,17 @@ def _restore_stdin(data: bytes) -> None:
         os.dup2(f.fileno(), 0)
 
 
-def _gate(use: str, user_agent: str, opens_page: bool) -> tuple[Launch, Callable[[], None]]:
+def sizes_page(commands: Sequence[Invocation]) -> bool:
+    """Whether a command sets the page's size, which then stands against a
+    viewer's panel (``fit``): the agent is testing that size."""
+    return any(
+        (each.name == "set" and each.sub in ("viewport", "device"))
+        or any(flag == "--device" for flag, _ in each.options)
+        for each in commands
+    )
+
+
+def _gate(use: str, user_agent: str, opens_page: bool, sizes_page: bool) -> tuple[Launch, Callable[[], None]]:
     """The launch the gate settles, and what lets the next command in. Only its
     own refusal stops a command: a bridge that cannot run costs the view, not
     the browser."""
@@ -432,7 +442,7 @@ def _gate(use: str, user_agent: str, opens_page: bool) -> tuple[Launch, Callable
         traceback.print_exc()
         return _unsettled(), _admitted_by_none
     try:
-        return gate.check(use, user_agent, opens_page=opens_page)
+        return gate.check(use, user_agent, opens_page=opens_page, sizes_page=sizes_page)
     except gate.Refused as refused:
         print(refused, file=sys.stderr)
         sys.exit(GATE_REFUSED)
@@ -492,7 +502,7 @@ def main(args: list[str]) -> int:
     user_agent = asked_user_agent(top, os.environ.get("AGENT_BROWSER_USER_AGENT", ""))
     used = use(commands)
     # Help reaches no browser, so neither memory nor the person's hold stops it.
-    launched, release = (_unsettled(), _admitted_by_none) if used == "none" else _gate(used, user_agent, opens_page(commands))
+    launched, release = (_unsettled(), _admitted_by_none) if used == "none" else _gate(used, user_agent, opens_page(commands), sizes_page(commands))
     # Read again once admitted: a setup holds the same admission while it
     # records another engine, Chrome or ports, which this command must run on.
     here = host.current()

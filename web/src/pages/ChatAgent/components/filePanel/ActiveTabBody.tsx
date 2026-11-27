@@ -41,6 +41,9 @@ interface ActiveTabBodyProps {
   canUpload: boolean;
   /** Null where the panel has no browser to show, as a share's does not. */
   browser: BrowserViewSession | null;
+  /** The computer that browser runs on, named on its start page; null where
+   *  the reader is not shown it. */
+  browserComputer: string | null;
   /** The owner's comment controls; null where the reader keeps no comments. */
   commentUi: CommentUi | null;
   /** The panel is the one in front. */
@@ -51,13 +54,13 @@ interface ActiveTabBodyProps {
 export function ActiveTabBody({
   activeTab, tabs, workspaceId, apiAdapter, target, onTargetMemoryHandled, onTargetMemoHandled,
   onOpenFile, onOpenSubagentTask, transcript, onAddContext,
-  onOpenInMarketView, file, onPageCount, canUpload, browser, commentUi, active,
+  onOpenInMarketView, file, onPageCount, canUpload, browser, browserComputer, commentUi, active,
 }: ActiveTabBodyProps): React.ReactNode {
   switch (activeTab.kind) {
     case 'preview':
       return null;
     case 'browser':
-      return browser && <BrowserViewer view={browser} />;
+      return browser && <BrowserViewer view={browser} computerName={browserComputer} />;
     case 'chart':
       return (
         <ChartTab

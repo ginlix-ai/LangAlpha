@@ -8,8 +8,8 @@ import type { BrowserNavigation } from '../../utils/api/sandbox';
 import { BrowserAddressField } from './BrowserAddressField';
 import { showAddress } from './browserAddress';
 import { BrowserMoreMenu } from './BrowserMoreMenu';
-import { isBlankPage, isTransient } from './browserPhase';
-import { toastBrowserRefusal } from './browserRefusal';
+import { canVisit, isBlankPage, isTransient } from './browserPhase';
+import { toastBrowserCloseRefusal, toastBrowserRefusal, visitFor } from './browserRefusal';
 import type { BrowserViewSession } from './browserStream';
 import { useBrowserViewState } from './useBrowserView';
 
@@ -41,12 +41,17 @@ export function BrowserCrumbs({
   const holding = control === 'held';
   const [stepping, setStepping] = useState(false);
   const steering = holding && phase === 'live';
+  const addressable = canVisit(phase) && control !== 'taking';
 
   // Resolves to whether the page went; a refusal is said here, for the buttons and the field alike.
   const go = async (navigation: BrowserNavigation): Promise<boolean> => {
     const refusal = await view.navigate(navigation);
     if (refusal !== null) toastBrowserRefusal(t, refusal);
     return refusal === null;
+  };
+  const close = async () => {
+    const refusal = await view.closeBrowser();
+    if (refusal !== null) toastBrowserCloseRefusal(t, refusal);
   };
   const step = async (action: Step) => {
     setStepping(true);
@@ -78,9 +83,8 @@ export function BrowserCrumbs({
       ))}
       <BrowserAddressField
         pageUrl={shown}
-        holding={holding}
-        steering={steering && !stepping}
-        onOpen={(url) => go({ action: 'open', url })}
+        enabled={addressable && !stepping}
+        onOpen={(typed) => visitFor(t, view, typed.trim())}
       />
       {(phase === 'live' || holding) && (
         <Button
@@ -108,7 +112,14 @@ export function BrowserCrumbs({
           <ExternalLink className="h-3.5 w-3.5" />
         </a>
       )}
-      <BrowserMoreMenu computer={computer} pageUrl={shown || null} onReconnect={() => view.retry()} reconnecting={working} />
+      <BrowserMoreMenu
+        computer={computer}
+        pageUrl={shown || null}
+        onReconnect={() => view.retry()}
+        reconnecting={working}
+        // A browser is open while its stream is, or coming back.
+        onClose={phase === 'live' || phase === 'reconnecting' ? () => void close() : null}
+      />
     </div>
   );
 }

@@ -1,11 +1,14 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { describeBrowserCommand, encodeInput, readStreamMessage, streamSocketUrl, type BrowserRelease } from '../browserProtocol';
+import { describeBrowserCommand, encodeInput, readStreamMessage, STREAM_FPS, streamSocketUrl, type BrowserRelease } from '../browserProtocol';
 import type { BrowserPhase } from '../browserPhase';
 import { BrowserViewSession, type BrowserControl } from '../browserStream';
 import { BrowserUseWatch } from '../../../session/stream/browserUse';
 import type {
+  BrowserCloseRefusal,
   BrowserControlAction,
+  BrowserFit,
+  BrowserFitAnswer,
   BrowserNavigation,
   BrowserNavigateRefusal,
   BrowserViewAnswer,
@@ -52,6 +55,8 @@ const nextTimer = () => { vi.advanceTimersToNextTimer(); };
 function harness(answers: BrowserViewAnswer[]) {
   const ask = vi.fn(async (_want: BrowserViewWant) => answers.shift() ?? { state: 'idle' as const });
   const control = vi.fn(async (_holder: string, action: BrowserControlAction, _releases?: BrowserRelease[]) => action !== 'release');
+  const fit = vi.fn(async (_viewer: string, _size: BrowserFit): Promise<BrowserFitAnswer> => ({ size: _size, kept: false }));
+  const close = vi.fn(async (_viewer: string): Promise<BrowserCloseRefusal | null> => null);
   /** The actions sent, which the hold's tests read in order. */
   const actions = () => control.mock.calls.map(([, action]) => action);
   const session = new BrowserViewSession();
@@ -65,9 +70,9 @@ function harness(answers: BrowserViewAnswer[]) {
   const navigate = vi.fn(
     async (_holder: string, _navigation: BrowserNavigation): Promise<BrowserNavigateRefusal | null> => null,
   );
-  const watch = () => session.watch({ ask, control, navigate, local: false });
+  const watch = (computer: string | null = 'computer-1') => session.watch({ ask, control, fit, close, navigate, local: false, computer });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
-  return { session, watch, sockets, phases, ask, control, navigate, actions, controls, settle };
+  return { session, watch, sockets, phases, ask, control, fit, close, navigate, actions, controls, settle };
 }
 
 const NO_MODIFIERS = { alt: false, ctrl: false, meta: false, shift: false };
@@ -424,7 +429,7 @@ describe('BrowserViewSession', () => {
     sockets[0].onmessage?.(frame());
     stop();
     watch();
-    expect(session.getSnapshot()).toEqual({ phase: 'checking', pageUrl: 'https://a.example', control: 'none', frame: null, agent: null });
+    expect(session.getSnapshot()).toEqual({ phase: 'checking', pageUrl: 'https://a.example', control: 'none', frame: null, agent: null, visiting: null });
   });
 
   it('closes its socket and answers nothing further once disposed', async () => {
@@ -442,13 +447,13 @@ describe('a view on the computer itself', () => {
   const LOCAL = 'http://127.0.0.1:22097/b/tok';
   const both = (): BrowserViewAnswer => ({ state: 'running', url: 'https://view.example.com/b/tok', local_url: LOCAL });
   const watchOn = (h: ReturnType<typeof harness>, local: boolean) =>
-    h.session.watch({ ask: h.ask, control: h.control, navigate: h.navigate, local });
+    h.session.watch({ ask: h.ask, control: h.control, fit: h.fit, close: h.close, navigate: h.navigate, local, computer: 'computer-1' });
 
   it('opens the stream on the loopback, past the server', async () => {
     const h = harness([both()]);
     watchOn(h, true);
     await h.settle();
-    expect(h.sockets[0].url).toBe(streamSocketUrl(LOCAL));
+    expect(h.sockets[0].url).toBe(streamSocketUrl(LOCAL, STREAM_FPS.local));
     h.sockets[0].onmessage?.(frame());
     expect(h.phases.at(-1)).toBe('live');
   });
@@ -458,7 +463,7 @@ describe('a view on the computer itself', () => {
     watchOn(h, true);
     await h.settle();
     h.sockets[0].onclose?.({ code: 1006 });
-    expect(h.sockets[1].url).toBe(streamSocketUrl('https://view.example.com/b/tok'));
+    expect(h.sockets[1].url).toBe(streamSocketUrl('https://view.example.com/b/tok', STREAM_FPS.remote));
     h.sockets[1].onmessage?.(frame());
     expect(h.phases.at(-1)).toBe('live');
     // A revoked stream asks the server again, and that answer's loopback is not tried.
@@ -466,7 +471,7 @@ describe('a view on the computer itself', () => {
     await h.settle();
     expect(h.ask).toHaveBeenCalledTimes(2);
     expect(h.sockets).toHaveLength(3);
-    expect(h.sockets.at(-1)?.url).toBe(streamSocketUrl('https://view.example.com/b/tok'));
+    expect(h.sockets.at(-1)?.url).toBe(streamSocketUrl('https://view.example.com/b/tok', STREAM_FPS.remote));
   });
 
   it('keeps the loopback once it came up, so a drop redials it', async () => {
@@ -476,7 +481,7 @@ describe('a view on the computer itself', () => {
     h.sockets[0].onmessage?.(frame());
     h.sockets[0].onclose?.({ code: 1006 });
     nextTimer();
-    expect(h.sockets[1].url).toBe(streamSocketUrl(LOCAL));
+    expect(h.sockets[1].url).toBe(streamSocketUrl(LOCAL, STREAM_FPS.local));
   });
 
   it('redials the loopback after it went live, never the server, on a later drop', async () => {
@@ -490,8 +495,8 @@ describe('a view on the computer itself', () => {
     h.sockets[1].onclose?.({ code: 1006 });
     expect(h.sockets).toHaveLength(2);
     nextTimer();
-    expect(h.sockets[2].url).toBe(streamSocketUrl(LOCAL));
-    expect(h.sockets.some((s) => s.url === streamSocketUrl('https://view.example.com/b/tok'))).toBe(false);
+    expect(h.sockets[2].url).toBe(streamSocketUrl(LOCAL, STREAM_FPS.local));
+    expect(h.sockets.some((s) => s.url === streamSocketUrl('https://view.example.com/b/tok', STREAM_FPS.remote))).toBe(false);
   });
 
   it('never dials a loopback from anywhere else', async () => {
@@ -509,7 +514,7 @@ describe('streamSocketUrl', () => {
     expect(url.pathname).toBe('/b/tok');
     expect(url.searchParams.get('signed')).toBe('1');
     expect(url.searchParams.get('pacing')).toBe('ack');
-    expect(url.searchParams.get('maxFps')).toBe('8');
+    expect(url.searchParams.get('maxFps')).toBe(String(STREAM_FPS.remote));
   });
 });
 
@@ -1141,6 +1146,23 @@ describe('opening a link in the browser', () => {
     expect(navigate).toHaveBeenCalledTimes(1);
   });
 
+  it('drops a visit still opening the browser when the person hands back before it takes the page', async () => {
+    const { session, watch, sockets, ask, control, navigate, settle } = harness([{ state: 'idle' }, running()]);
+    watch();
+    await settle();
+    const visited = session.visit(URL);
+    await settle();
+    expect(ask.mock.calls.map(([want]) => want)).toEqual(['look', 'start']);
+    expect(session.getSnapshot().control).toBe('none');
+    session.releaseControl();
+    expect(session.getSnapshot().visiting).toBeNull();
+    sockets[0].onmessage?.(frame());
+    await settle();
+    await expect(visited).resolves.toBeNull();
+    expect(control).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('takes the page again for a visit when a navigation still out finds the hold lapsed', async () => {
     const { session, watch, sockets, control, navigate, settle } = harness([running()]);
     watch();
@@ -1257,7 +1279,7 @@ describe('one notice per change', () => {
     ask.mockResolvedValueOnce({ state: 'stopped' });
     sockets[0].onclose?.({ code: 1008 });
     await settle();
-    expect(seen.at(-1)).toEqual({ phase: 'stopped', pageUrl: null, control: 'none', frame: null, agent: null });
+    expect(seen.at(-1)).toEqual({ phase: 'stopped', pageUrl: null, control: 'none', frame: null, agent: null, visiting: null });
     expect(seen).toHaveLength(2);
     expect(seen[0]).toMatchObject({ phase: 'reconnecting', control: 'held' });
   });
@@ -1332,8 +1354,16 @@ describe('the stream contract', () => {
   });
 
   it('reads the active tab as the page, and ignores what the viewer has no use for', () => {
-    const tabs = [{ active: false, url: 'https://a.example' }, { active: true, url: 'https://b.example' }];
-    expect(readStreamMessage(JSON.stringify({ type: 'tabs', tabs }))).toEqual({ kind: 'page', url: 'https://b.example' });
+    const tabs = [
+      { active: false, url: 'https://a.example', tabId: 't1', targetId: 'A1' },
+      { active: true, url: 'https://b.example', tabId: 't2', targetId: 'B2' },
+    ];
+    expect(readStreamMessage(JSON.stringify({ type: 'tabs', tabs }))).toEqual({ kind: 'page', url: 'https://b.example', tab: 'B2' });
+    // Without a target, the tab's short name; without either, nothing to tell tabs apart by.
+    expect(readStreamMessage(JSON.stringify({ type: 'tabs', tabs: [{ active: true, url: 'x', tabId: 't3' }] })))
+      .toEqual({ kind: 'page', url: 'x', tab: 't3' });
+    expect(readStreamMessage(JSON.stringify({ type: 'tabs', tabs: [{ active: true, url: 'x' }] })))
+      .toEqual({ kind: 'page', url: 'x', tab: null });
     expect(readStreamMessage(JSON.stringify({ type: 'status' }))).toBeNull();
     expect(readStreamMessage('not json')).toBeNull();
   });
@@ -1379,4 +1409,477 @@ describe('the stream contract', () => {
   it('has nothing to send for no text', () => {
     expect(typed('')).toEqual([]);
   });
+});
+
+describe('closing the browser', () => {
+  async function live(answers: BrowserViewAnswer[] = [running(), { state: 'idle' }]) {
+    const h = harness(answers);
+    h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    return h;
+  }
+
+  it('closes it for this viewer and shows it closed, with its hold gone', async () => {
+    const h = await live();
+    h.session.takeControl();
+    await h.settle();
+    expect(h.session.getSnapshot().control).toBe('held');
+
+    await expect(h.session.closeBrowser()).resolves.toBeNull();
+    expect(h.close).toHaveBeenCalledWith(h.session.holder);
+    expect(h.session.getSnapshot()).toMatchObject({ phase: 'idle', control: 'none', frame: null, pageUrl: null });
+    expect(h.sockets[0].closed).toBe(true);
+    await h.settle();
+    // Closed is what the server would say: nothing is asked or dialed.
+    expect(h.ask).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('never shows the stream the close ends as lost', async () => {
+    const h = await live();
+    let answer: (refusal: BrowserCloseRefusal | null) => void = () => {};
+    h.close.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const closing = h.session.closeBrowser();
+    h.sockets[0].onclose?.({ code: 1006 });
+    expect(h.session.getSnapshot().phase).toBe('live');
+    answer(null);
+    await closing;
+    expect(h.phases).not.toContain('reconnecting');
+    expect(h.sockets).toHaveLength(1);
+    expect(h.phases.at(-1)).toBe('idle');
+  });
+
+  it('looks again when the browser stays open but its stream ended meanwhile', async () => {
+    const h = await live([running(), running()]);
+    let answer: (refusal: BrowserCloseRefusal | null) => void = () => {};
+    h.close.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const closing = h.session.closeBrowser();
+    h.sockets[0].onclose?.({ code: 1006 });
+    answer('failed');
+    await expect(closing).resolves.toBe('failed');
+    await h.settle();
+    expect(h.ask).toHaveBeenCalledTimes(2);
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  it('ends a visit still under way, which would open the browser again', async () => {
+    const h = await live();
+    let granted: (held: boolean) => void = () => {};
+    h.control.mockReturnValueOnce(new Promise((resolve) => { granted = resolve; }));
+    const visited = h.session.visit('https://example.com/a');
+    await h.settle();
+    expect(h.control).toHaveBeenLastCalledWith(h.session.holder, 'take');
+    expect(h.session.getSnapshot().visiting).toBe('https://example.com/a');
+
+    await expect(h.session.closeBrowser()).resolves.toBeNull();
+    expect(h.session.getSnapshot().visiting).toBeNull();
+    granted(true);
+    await expect(visited).resolves.toBeNull();
+    await h.settle();
+    expect(h.navigate).not.toHaveBeenCalled();
+    expect(h.ask.mock.calls.map(([want]) => want)).not.toContain('start');
+  });
+
+  it('sends one close for a second asked while the first is on its way, so a later visit keeps its browser', async () => {
+    const h = await live([running(), running('https://view.example.com/b/again')]);
+    const answers: ((refusal: BrowserCloseRefusal | null) => void)[] = [];
+    h.close.mockImplementation(() => new Promise((resolve) => { answers.push(resolve); }));
+    const first = h.session.closeBrowser();
+    const second = h.session.closeBrowser();
+    expect(h.close).toHaveBeenCalledTimes(1);
+    answers[0](null);
+    await expect(first).resolves.toBeNull();
+    await expect(second).resolves.toBeNull();
+    expect(h.session.getSnapshot().phase).toBe('idle');
+
+    // The browser opened again: a close answered late must not idle it.
+    h.session.open();
+    await h.settle();
+    h.sockets.at(-1)?.onmessage?.(frame());
+    expect(h.session.getSnapshot().phase).toBe('live');
+    answers[1]?.(null);
+    await h.settle();
+    expect(h.session.getSnapshot().phase).toBe('live');
+    expect(h.sockets.at(-1)?.closed).toBe(false);
+  });
+
+  it('holds a visit asked while a close is on its way until it lands, then opens the browser again for it', async () => {
+    const h = await live([running(), running('https://view.example.com/b/again')]);
+    h.session.takeControl();
+    await h.settle();
+    let answer: (refusal: BrowserCloseRefusal | null) => void = () => {};
+    h.close.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const closing = h.session.closeBrowser();
+    // The page still shows live and held, so the address field takes it.
+    const visited = h.session.visit('https://example.com/b');
+    await h.settle();
+    expect(h.navigate).not.toHaveBeenCalled();
+
+    answer(null);
+    await closing;
+    await h.settle();
+    expect(h.ask.mock.calls.map(([want]) => want)).toEqual(['look', 'start']);
+    h.sockets.at(-1)?.onmessage?.(frame());
+    await expect(visited).resolves.toBeNull();
+    expect(h.navigate).toHaveBeenCalledTimes(1);
+    expect(h.navigate).toHaveBeenLastCalledWith(h.session.holder, { action: 'open', url: 'https://example.com/b' });
+    expect(h.session.getSnapshot()).toMatchObject({ phase: 'live', control: 'held' });
+  });
+
+  it('goes on the open browser for a visit asked while a close that left it open was on its way', async () => {
+    const h = await live();
+    h.session.takeControl();
+    await h.settle();
+    let answer: (refusal: BrowserCloseRefusal | null) => void = () => {};
+    h.close.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const closing = h.session.closeBrowser();
+    const visited = h.session.visit('https://example.com/b');
+    await h.settle();
+    expect(h.navigate).not.toHaveBeenCalled();
+
+    answer('held');
+    await expect(closing).resolves.toBe('held');
+    await expect(visited).resolves.toBeNull();
+    expect(h.navigate).toHaveBeenCalledWith(h.session.holder, { action: 'open', url: 'https://example.com/b' });
+    expect(h.ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds a visit on a later watch until a close sent on an earlier one lands, then opens the browser again', async () => {
+    const h = harness([running(), running('https://view.example.com/b/again'), running('https://view.example.com/b/third')]);
+    const stop = h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    let answer: (refusal: BrowserCloseRefusal | null) => void = () => {};
+    h.close.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const closing = h.session.closeBrowser();
+    // The tab went to the background and back while the close waits.
+    stop();
+    h.watch();
+    await h.settle();
+    h.sockets.at(-1)?.onmessage?.(frame());
+    expect(h.session.getSnapshot().phase).toBe('live');
+    const visited = h.session.visit('https://example.com/b');
+    await h.settle();
+    expect(h.actions()).not.toContain('take');
+    expect(h.navigate).not.toHaveBeenCalled();
+
+    answer(null);
+    await closing;
+    await h.settle();
+    // The close shows on the watch there now, so the visit opens the browser with no look between.
+    expect(h.ask.mock.calls.map(([want]) => want)).toEqual(['look', 'look', 'start']);
+    h.sockets.at(-1)?.onmessage?.(frame());
+    await expect(visited).resolves.toBeNull();
+    expect(h.navigate).toHaveBeenCalledTimes(1);
+    expect(h.navigate).toHaveBeenLastCalledWith(h.session.holder, { action: 'open', url: 'https://example.com/b' });
+  });
+
+  it('sends no second close while one sent on an earlier watch is on its way, and shows it closed on the watch there now', async () => {
+    const h = harness([running(), running('https://view.example.com/b/again')]);
+    const stop = h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    let answer: (refusal: BrowserCloseRefusal | null) => void = () => {};
+    h.close.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const first = h.session.closeBrowser();
+    stop();
+    h.watch();
+    await h.settle();
+    h.sockets.at(-1)?.onmessage?.(frame());
+    const second = h.session.closeBrowser();
+    expect(h.close).toHaveBeenCalledTimes(1);
+    // The stream the close ends on this watch is not one lost either.
+    h.sockets.at(-1)?.onclose?.({ code: 1006 });
+    expect(h.session.getSnapshot().phase).toBe('live');
+
+    answer(null);
+    await expect(first).resolves.toBeNull();
+    await expect(second).resolves.toBeNull();
+    expect(h.session.getSnapshot()).toMatchObject({ phase: 'idle', frame: null, pageUrl: null });
+    await h.settle();
+    expect(h.ask).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the closes of a workspace moved to another computer apart', async () => {
+    const h = harness([running(), running('https://view.example.com/b/elsewhere')]);
+    const stop = h.watch('computer-1');
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    const answers: ((refusal: BrowserCloseRefusal | null) => void)[] = [];
+    h.close.mockImplementation(() => new Promise((resolve) => { answers.push(resolve); }));
+    const first = h.session.closeBrowser();
+    stop();
+    h.watch('computer-2');
+    await h.settle();
+    h.sockets.at(-1)?.onmessage?.(frame());
+    const second = h.session.closeBrowser();
+    expect(h.close).toHaveBeenCalledTimes(2);
+
+    // The first computer's browser closing leaves the second's on screen.
+    answers[0](null);
+    await expect(first).resolves.toBeNull();
+    expect(h.session.getSnapshot().phase).toBe('live');
+    answers[1](null);
+    await expect(second).resolves.toBeNull();
+    expect(h.session.getSnapshot().phase).toBe('idle');
+  });
+
+  it('leaves the view as it is when the browser stays open', async () => {
+    const h = await live();
+    h.close.mockResolvedValueOnce('held');
+    await expect(h.session.closeBrowser()).resolves.toBe('held');
+    h.close.mockRejectedValueOnce(new Error('down'));
+    await expect(h.session.closeBrowser()).resolves.toBe('failed');
+    expect(h.sockets[0].closed).toBe(false);
+    expect(h.ask).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a page sized to the view', () => {
+  const VIEW = { width: 700, height: 900 };
+
+  async function live() {
+    const h = harness([running()]);
+    h.session.setViewSize(VIEW);
+    // Settled before there is a stream to fit: nothing is asked.
+    nextTimer();
+    h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    return h;
+  }
+
+  it('fits the page to the view once the stream is up, with nobody holding it', async () => {
+    const h = await live();
+    expect(h.fit.mock.calls).toEqual([[h.session.holder, VIEW]]);
+    expect(h.control).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing before the view has a size, and fits once it has one', async () => {
+    const h = harness([running()]);
+    h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    expect(h.fit).not.toHaveBeenCalled();
+    h.session.setViewSize(VIEW);
+    nextTimer();
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, VIEW);
+  });
+
+  it('follows a resize once it settles, held or not', async () => {
+    const h = await live();
+    h.session.setViewSize({ width: 640.4, height: 880 });
+    h.session.setViewSize({ width: 620, height: 880 });
+    expect(h.fit).toHaveBeenCalledTimes(1);
+    nextTimer();
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, { width: 620, height: 880 });
+
+    h.session.takeControl();
+    await h.settle();
+    expect(h.control).toHaveBeenLastCalledWith(h.session.holder, 'take');
+  });
+
+  it('asks for the view again when an older ask is answered taken after a newer one, which it may have undone', async () => {
+    const h = await live();
+    await h.settle();
+    const answers: ((answer: BrowserFitAnswer) => void)[] = [];
+    h.fit.mockImplementation(() => new Promise((resolve) => { answers.push(resolve); }));
+    const older = { width: 640, height: 880 };
+    const newer = { width: 600, height: 880 };
+    h.session.setViewSize(older);
+    nextTimer();
+    h.session.setViewSize(newer);
+    nextTimer();
+    expect(h.fit).toHaveBeenCalledTimes(3);
+    // The machine took the newer first, then the older over it.
+    answers[1]({ size: newer, kept: false });
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(3);
+    answers[0]({ size: older, kept: false });
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(4);
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, newer);
+
+    // The re-ask's own answer, and a stale one at the size the view still has, end it.
+    answers[2]({ size: newer, kept: false });
+    await h.settle();
+    vi.advanceTimersByTime(60_000);
+    expect(h.fit).toHaveBeenCalledTimes(4);
+  });
+
+  it('leaves a page it sized alone on frames of another shape, which another view may have asked for', async () => {
+    const h = await live();
+    await h.settle();
+    vi.advanceTimersByTime(60_000);
+    h.sockets[0].onmessage?.(frame(2));
+    h.sockets[0].onmessage?.(frame(3));
+    expect(h.fit).toHaveBeenCalledTimes(1);
+  });
+
+  const showing = (tab: string, url = 'https://a.example') =>
+    ({ data: JSON.stringify({ type: 'tabs', tabs: [{ active: true, url, targetId: tab }] }) });
+
+  it('fits at once when another tab shows, and not on a navigation in the same tab', async () => {
+    const h = await live();
+    h.sockets[0].onmessage?.(showing('A'));
+    h.sockets[0].onmessage?.(showing('A', 'https://b.example'));
+    expect(h.fit).toHaveBeenCalledTimes(1);
+    h.sockets[0].onmessage?.(showing('B'));
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, VIEW);
+  });
+
+  it('keeps a retry that came due with no view to fit, for when the view comes back at that size', async () => {
+    const h = await live();
+    await h.settle();
+    const other = { width: 600, height: 900 };
+    h.fit.mockResolvedValueOnce({ size: null, kept: false });
+    h.session.setViewSize(other);
+    nextTimer();
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    h.session.setViewSize(null);
+    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(10_000);
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    h.session.setViewSize(other);
+    nextTimer();
+    expect(h.fit).toHaveBeenCalledTimes(3);
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, other);
+  });
+
+  it('asks afresh for a holder whose take came while a resize settled back on the size last asked', async () => {
+    const h = await live();
+    await h.settle();
+    const other = { width: 600, height: 900 };
+    h.fit.mockResolvedValue({ size: null, kept: false });
+    h.session.setViewSize(other);
+    vi.advanceTimersByTime(300);
+    await h.settle();
+    // The page left it as it was every time, until the retries ran out.
+    for (let retry = 0; retry < 6; retry += 1) {
+      vi.advanceTimersByTime(10_000);
+      await h.settle();
+    }
+    expect(h.fit).toHaveBeenCalledTimes(8);
+    vi.advanceTimersByTime(10_000);
+    expect(h.fit).toHaveBeenCalledTimes(8);
+
+    h.session.setViewSize(VIEW);
+    h.session.takeControl();
+    await h.settle();
+    expect(h.session.getSnapshot().control).toBe('held');
+    h.session.setViewSize(other);
+    vi.advanceTimersByTime(300);
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(9);
+    // A fresh ask has its own retries.
+    vi.advanceTimersByTime(10_000);
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(10);
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, other);
+  });
+
+  it('fits the page to the holder as soon as their take is granted, whatever another view left it at', async () => {
+    const h = await live();
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(1);
+    h.session.takeControl();
+    await h.settle();
+    expect(h.session.getSnapshot().control).toBe('held');
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, VIEW);
+  });
+
+  it('leaves a page that keeps its own size alone, until the view changes', async () => {
+    const h = await live();
+    h.fit.mockResolvedValue({ size: null, kept: true });
+    h.session.setViewSize({ width: 600, height: 900 });
+    nextTimer();
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(10_000);
+    h.sockets[0].onmessage?.(frame(2));
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    h.session.setViewSize(VIEW);
+    nextTimer();
+    expect(h.fit).toHaveBeenCalledTimes(3);
+  });
+
+  it('asks again a while after the page was left as it was, a few times, with no frames to go by', async () => {
+    const h = harness([running()]);
+    h.fit.mockResolvedValue({ size: null, kept: false });
+    h.session.setViewSize(VIEW);
+    nextTimer();
+    h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    for (let ask = 1; ask <= 7; ask++) {
+      await h.settle();
+      expect(h.fit).toHaveBeenCalledTimes(ask);
+      vi.advanceTimersByTime(10_000);
+    }
+    await h.settle();
+    vi.advanceTimersByTime(60_000);
+    expect(h.fit).toHaveBeenCalledTimes(7);
+  });
+
+  it('asks again a while after an ask that went unanswered', async () => {
+    const h = harness([running()]);
+    h.fit.mockRejectedValueOnce(new Error('down'));
+    h.session.setViewSize(VIEW);
+    nextTimer();
+    h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(10_000);
+    expect(h.fit).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks nothing while the stream is still coming up', async () => {
+    const h = harness([running()]);
+    h.watch();
+    await h.settle();
+    h.session.setViewSize(VIEW);
+    nextTimer();
+    expect(h.fit).not.toHaveBeenCalled();
+    h.sockets[0].onmessage?.(frame());
+    expect(h.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks again once a resize settles back to the size whose retry came due while it settled', async () => {
+    const h = harness([running()]);
+    h.fit.mockResolvedValue({ size: null, kept: false });
+    h.session.setViewSize(VIEW);
+    nextTimer();
+    h.watch();
+    await h.settle();
+    h.sockets[0].onmessage?.(frame());
+    await h.settle();
+    expect(h.fit).toHaveBeenCalledTimes(1);
+    // A size that comes and goes just before the retry is due.
+    vi.advanceTimersByTime(9_900);
+    h.session.setViewSize({ width: 600, height: 900 });
+    h.session.setViewSize(VIEW);
+    vi.advanceTimersByTime(200);
+    expect(h.fit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(100);
+    expect(h.fit).toHaveBeenCalledTimes(2);
+    expect(h.fit).toHaveBeenLastCalledWith(h.session.holder, VIEW);
+  });
+
+  it('fits again on a new connection', async () => {
+    const h = await live();
+    h.sockets[0].onclose?.({ code: 1006 });
+    nextTimer();
+    expect(h.sockets).toHaveLength(2);
+    h.sockets[1].onmessage?.(frame());
+    expect(h.fit).toHaveBeenCalledTimes(2);
+  });
+
 });
