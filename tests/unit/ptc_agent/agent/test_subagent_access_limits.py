@@ -81,6 +81,7 @@ class _Build:
     def __init__(self, registry=None) -> None:
         self.searches: list[tuple[str, str]] = []
         self.limits: list[frozenset[str]] = []
+        self.set_aside: list[bool] = []
         self.compiler = SubagentCompiler(
             config=_config(),
             context=SubagentContext(),
@@ -98,8 +99,9 @@ class _Build:
         self.searches.append((provider, depth))
         return _tool("web_search", pair=(provider, depth))
 
-    def _sandbox(self, allowed):
+    def _sandbox(self, allowed, *, sets_aside):
         self.limits.append(allowed)
+        self.set_aside.append(sets_aside)
         return [_tool("execute_code", allowed=allowed), _tool("bash", allowed=allowed)]
 
     def tools(self, defn: SubagentDefinition) -> dict[str, object]:
@@ -204,6 +206,14 @@ class TestAllowedServers:
         tools = build.tools(_defn("shell", connectors=connectors, brokerages=brokerages, tools=["bash"]))
         assert build.limits == [frozenset()]
         assert tools["bash"].allowed == frozenset()
+
+    def test_code_without_a_shell_waits_on_its_command(self):
+        """A command a message cuts short is set aside for Bash's wait_for,
+        so a subagent with no shell gets a code tool that waits instead."""
+        build = _Build(_Registry(SERVERS))
+        tools = build.tools(_defn("coder", tools=["execute_code"]))
+        assert build.set_aside == [False]
+        assert tools["execute_code"] is not MAIN["execute_code"]
 
     def test_no_pair_is_built_for_a_subagent_without_code_or_shell(self):
         build = _Build(_Registry(SERVERS))

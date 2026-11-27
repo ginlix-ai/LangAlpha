@@ -1023,3 +1023,99 @@ async def test_bash_audit_script_that_is_gone_fails(shell, computer):
         shell, computer.spec(execution._eval_after_header(f"{computer.root}/missing.sh")), 30
     )
     assert isinstance(outcome, jobs.Ended) and outcome.exit_code == 127
+
+
+# -- A wait cut short by an arrival -------------------------------------------
+
+
+def _arrives_after(seconds: float):
+    at = time.monotonic() + seconds
+
+    async def arrived() -> bool:
+        return time.monotonic() >= at
+
+    return arrived
+
+
+async def _never() -> bool:
+    return False
+
+
+@pytest.mark.asyncio
+async def test_a_quick_command_returns_from_its_launch_with_an_arrival_waiting(shell, computer):
+    outcome = await jobs.run_job(shell, computer.spec("echo hi"), 300, until=_arrives_after(0))
+    assert isinstance(outcome, jobs.Ended) and outcome.output == "hi\n"
+    assert shell.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_cuts_the_wait_short_and_leaves_the_job_running(
+    shell, computer, monkeypatch
+):
+    monkeypatch.setattr(jobs, "ARRIVAL_LAUNCH_S", 1)
+    monkeypatch.setattr(jobs, "ARRIVAL_POLL_S", 0.2)
+    gate = os.path.join(computer.root, "gate")
+    spec = computer.spec(
+        f"echo start; while [ ! -e {shlex.quote(gate)} ]; do sleep 0.05; done; echo end"
+    )
+    began = time.monotonic()
+    outcome = await jobs.run_job(shell, spec, 300, until=_arrives_after(2))
+    assert isinstance(outcome, jobs.Running) and outcome.woken
+    assert time.monotonic() - began < 10
+
+    # The given-up wait's shell may still be running: once released, the job
+    # ending meanwhile is not reaped, so its log stays where the agent reads it.
+    Path(gate).touch()
+    await asyncio.sleep(1.5)
+    assert Path(spec.ref.log_path).read_text() == "start\nend\n"
+    assert not Path(spec.ref.state_dir, "reaped").exists()
+
+    ended = await jobs.continue_job(shell, outcome, 5, until=_never)
+    assert isinstance(ended, jobs.Ended) and ended.output == "start\nend\n"
+
+
+@pytest.mark.asyncio
+async def test_a_job_ending_as_the_arrival_comes_returns_ended(shell, computer, monkeypatch):
+    monkeypatch.setattr(jobs, "ARRIVAL_LAUNCH_S", 1)
+    spec = computer.spec("sleep 1.5; echo done")
+    launched = await jobs.run_job(shell, spec, 0)
+    await asyncio.sleep(2)
+    # The arrival is read at once, before the wait exec answers.
+    outcome = await jobs.continue_job(shell, launched, 30, until=_arrives_after(0))
+    assert isinstance(outcome, jobs.Ended) and outcome.output == "done\n"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_wait_is_released(shell, computer):
+    gate = os.path.join(computer.root, "gate")
+    spec = computer.spec(f"while [ ! -e {shlex.quote(gate)} ]; do sleep 0.05; done; echo end")
+    launched = await jobs.run_job(shell, spec, 0)
+    wait = asyncio.ensure_future(jobs.continue_job(shell, launched, 30))
+    await asyncio.sleep(1)
+    wait.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await wait
+    Path(gate).touch()
+    await asyncio.sleep(1.5)
+    assert not Path(spec.ref.state_dir, "reaped").exists()
+    assert Path(spec.ref.log_path).read_text() == "end\n"
+
+
+@pytest.mark.asyncio
+async def test_a_report_takes_its_lock_and_leaves_none(shell, computer):
+    spec = computer.spec("echo hi")
+    outcome = await jobs.run_job(shell, spec, 5)
+    assert isinstance(outcome, jobs.Ended) and outcome.output == "hi\n"
+    assert not Path(spec.ref.state_dir, "rd").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_report_lock_a_killed_shell_left_is_broken(shell, computer):
+    spec = computer.spec("sleep 0.5; echo done")
+    launched = await jobs.run_job(shell, spec, 0)
+    Path(spec.ref.state_dir, "rd").mkdir()
+    began = time.monotonic()
+    outcome = await jobs.continue_job(shell, launched, 30)
+    assert isinstance(outcome, jobs.Ended) and outcome.output == "done\n"
+    assert time.monotonic() - began < 15
+    assert not Path(spec.ref.state_dir, "rd").exists()

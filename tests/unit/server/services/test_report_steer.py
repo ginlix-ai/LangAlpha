@@ -513,3 +513,50 @@ async def test_analyst_offer_carries_where_the_work_was_asked_for_inline():
     ) + build_directive_reminder(
         [DirectiveContext(content="Asked in a Slack conversation.")]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("listed", "kept_all", "past_the_page_counts"),
+    [(3, False, False), (steer._REPORTS_PER_READ, False, True), (steer._REPORTS_PER_READ, True, False)],
+)
+async def test_a_full_page_counts_the_reports_past_it_as_new(listed, kept_all, past_the_page_counts):
+    """A wait ends for a report the next take would hand over: one past a
+    full page was never listed, so it is still new to the run, unless the
+    page kept every report it listed, when the next take lists it again."""
+    at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    jobs = [
+        {**_job(n), "created_at": at + timedelta(seconds=n)} for n in range(listed)
+    ]
+    inbox = steer.SteeredReportInbox()
+    arrived = AsyncMock(return_value=True)
+    with (
+        patch(f"{_OUTBOX}.list_steerable_report_jobs", new=AsyncMock(return_value=jobs)),
+        patch(f"{_OUTBOX}.hold_steered_report_jobs", new=AsyncMock(return_value=[])),
+        patch(f"{_OUTBOX}.close_unowed_report_jobs", new=AsyncMock(return_value=[])),
+        patch.object(
+            steer, "_task_offer",
+            new=AsyncMock(return_value=None if kept_all else NotOwed("delivered")),
+        ),
+        patch(f"{_OUTBOX}.run_inbox_arrived", new=arrived),
+    ):
+        await inbox.take("t-1", "run-A", kinds=("report",))
+        await inbox.arrived("t-1", "run-A", kinds=("report",))
+    since = arrived.await_args.kwargs["reports_since"]
+    since_id = arrived.await_args.kwargs["reports_since_id"]
+    if past_the_page_counts:
+        # The listing's own order, so one tied with the last at its time counts.
+        assert (since, since_id) == (jobs[-1]["created_at"], jobs[-1]["hook_outbox_id"])
+    else:
+        assert since > jobs[-1]["created_at"] and since_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_task_steer_to_resume_counts_before_any_report_read():
+    """The next model call resumes a task a steer waits on, so a wait ends
+    for one even in a run that has read no reports."""
+    arrived = AsyncMock(return_value=True)
+    with patch(f"{_OUTBOX}.run_inbox_arrived", new=arrived):
+        assert await steer.SteeredReportInbox().arrived("t-1", "run-A", kinds=("resume",))
+    assert arrived.await_args.kwargs["resumes"] is True
+    assert arrived.await_args.kwargs["reports_since"] is None

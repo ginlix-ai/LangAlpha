@@ -145,7 +145,7 @@ function harness() {
       count: entries.length,
       entries,
     });
-  return { feed, deliver, text, steer, startSteer, frame, messages, ids, inputIds };
+  return { feed, deliver, text, steer, startSteer, frame, messages, ids, inputIds, card };
 }
 
 describe('useSubagentTabs — steering a streaming subagent', () => {
@@ -285,6 +285,23 @@ describe('useSubagentTabs — steering a streaming subagent', () => {
       { role: 'assistant', content: 'Revenue' },
       { role: 'user', content: 'Focus on margins' },
     ]);
+  });
+
+  it('marks the bubble held once its send answers, which is when Send now can name it', async () => {
+    let resolve!: (value: unknown) => void;
+    vi.mocked(sendSubagentMessage).mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+    const { text, startSteer, frame, card } = harness();
+    text('Revenue');
+    frame();
+    const sent = startSteer('Focus on margins');
+    expect(card().at(-1)?.steerAccepted).toBeUndefined();
+
+    await act(async () => {
+      resolve({});
+      await sent;
+    });
+
+    expect(card().at(-1)).toMatchObject({ isPending: true, steerAccepted: true });
   });
 
   it('confirms by text a delivery framed without its entries', async () => {
