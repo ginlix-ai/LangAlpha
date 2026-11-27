@@ -21,7 +21,7 @@ from fastapi import HTTPException
 
 from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.sandbox.execution import app_command
-from ptc_agent.core.sandbox.preview_probe import head_preview
+from ptc_agent.core.sandbox.preview_probe import app_opens, head_preview
 from ptc_agent.core.sandbox.runtime import PreviewInfo, PreviewPortInUse
 from src.server.database.workspace import get_preview_command
 from src.server.services.preview_capabilities import (
@@ -258,7 +258,7 @@ async def _check_signed_url_healthy(signed_url: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await head_preview(client, url, headers)
-            return 200 <= resp.status_code < 400
+            return app_opens(resp.status_code)
     except Exception:
         return False
 

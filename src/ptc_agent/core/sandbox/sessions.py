@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 
+from ptc_agent.core.sandbox.preview_probe import app_answered
 from ptc_agent.core.sandbox.retry import RetryPolicy
 from ptc_agent.core.sandbox.runtime import (
     PreviewInfo,
@@ -186,9 +187,7 @@ async def _is_preview_reachable(sandbox: "PTCSandbox", port: int, *, timeout: fl
         link = await sandbox.get_preview_link(port)
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await head_preview(client, link.url, link.auth_headers)
-            # 4xx means the server IS running (path not found, etc.)
-            # 5xx (especially 502) means the proxy can't reach the backend
-            return 200 <= resp.status_code < 500 and resp.status_code != 502
+            return app_answered(resp.status_code)
     except Exception:
         return False
 
