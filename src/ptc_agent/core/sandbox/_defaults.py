@@ -81,6 +81,10 @@ DEFAULT_DEPENDENCIES = [
     # market_protocol's session calendars, which tell the market-data servers
     # whether a bar has settled.
     "exchange-calendars==4.13.2",
+    # edgar_engine's EDGAR client, which the fundamentals server's ownership
+    # tools read through when no LangAlpha Data is configured. Pinned to the
+    # version uv.lock gives the server, as yfinance is.
+    "edgartools==5.62.1",
     # Visualization
     "matplotlib",
     "seaborn",
