@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from 'react';
-import { BarChart3, Newspaper, LayoutGrid, ListOrdered, FileText } from 'lucide-react';
+import { BarChart3, Newspaper, LayoutGrid, ListOrdered, FileText, MousePointerClick } from 'lucide-react';
 import { WidgetContextPreview, type WidgetContextPreviewShape } from './WidgetContextPreview';
 import { deckHeight, deckSlot, useDeckCollapse, type DeckGeometry } from '@/components/ui/cardDeck';
+import { SHOW_WIDGET_CONTEXT_TYPE } from './contextSnapshot';
 
 /** Pick a thumb icon for a widget snapshot based on its type slug. Shared by
  *  the chat-input live deck and the chat-view inline deck so a given widget
  *  always gets the same glyph in both surfaces. */
 export function pickWidgetIcon(widgetType: string): React.ComponentType<{ className?: string }> {
+  if (widgetType === SHOW_WIDGET_CONTEXT_TYPE) return MousePointerClick;
   if (widgetType.startsWith('markets.chart') || widgetType.startsWith('markets.miniChart')) return BarChart3;
   if (widgetType.startsWith('news.')) return Newspaper;
   if (widgetType.startsWith('tv.')) return LayoutGrid;

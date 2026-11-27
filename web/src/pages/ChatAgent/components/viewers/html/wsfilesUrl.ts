@@ -72,6 +72,16 @@ export function buildServeUrl(
   return search ? `${url}?${search}` : url;
 }
 
+/**
+ * The workspace folder under a serve prefix, absolute and ending in `/`: what
+ * a widget's `<base href>` is, so its relative URLs name workspace files. Absolute
+ * because the widget resolves it inside a srcdoc frame and reports what it
+ * resolved to (a zoomed image) back to this page.
+ */
+export function serveBase(prefix: string): string {
+  return new URL(`${absolutePrefix(prefix)}/`, window.location.href).href;
+}
+
 // The part of a served address that names its route and credential: the
 // owner's grant, or a shared thread's serve route (links.js reads it the same).
 const SERVE_PREFIX = /^.*?\/(?:wsfiles\/g\/[^/]+|api\/v1\/public\/shared\/[^/]+\/files\/serve)\//;

@@ -8,7 +8,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ptc_agent.agent.tools.show_widget import _INLINE_DATA_CAP, _resolve_data_files
+from ptc_agent.agent.tools.show_widget import (
+    _INLINE_DATA_CAP,
+    DataFilesRefused,
+    _resolve_data_files,
+)
+
+
+async def _outcome(backend, data_files) -> tuple[dict[str, str], list[str]]:
+    """What ``_resolve_data_files`` delivers, and what it refused instead."""
+    try:
+        return await _resolve_data_files(backend, data_files), []
+    except DataFilesRefused as refused:
+        return {}, refused.problems
 
 
 @pytest.mark.parametrize("extension", ["json", "geojson", "topojson", "JSON"])
@@ -56,8 +68,9 @@ def test_json_data_preserves_strings_while_cleaning_constants(extension, payload
     backend.aread_text.return_value = payload
     filename = f"chart.{extension}"
 
-    result = asyncio.run(_resolve_data_files(backend, [f"/work/{filename}"]))
+    result, refused = asyncio.run(_outcome(backend, [f"/work/{filename}"]))
 
+    assert refused == []
     assert result == {filename: expected}
     json.loads(result[filename])
 
@@ -69,8 +82,9 @@ def test_csv_data_is_not_cleaned_as_json():
     payload = "label,value\nInfinity Growth,NaN\n"
     backend.aread_text.return_value = payload
 
-    result = asyncio.run(_resolve_data_files(backend, ["/work/chart.csv"]))
+    result, refused = asyncio.run(_outcome(backend, ["/work/chart.csv"]))
 
+    assert refused == []
     assert result == {"chart.csv": payload}
 
 
@@ -88,9 +102,10 @@ def test_truncated_json_with_escaped_quotes_is_intact_and_fast():
     filename = "truncated.json"
 
     started = time.perf_counter()
-    result = asyncio.run(_resolve_data_files(backend, [f"/work/{filename}"]))
+    result, refused = asyncio.run(_outcome(backend, [f"/work/{filename}"]))
     elapsed = time.perf_counter() - started
 
+    assert refused == []
     assert result == {filename: '{"v":null,' + tail}
     # Generous quadratic-scan detector, not a microbenchmark: a linear scan
     # takes well under 10ms here.
@@ -110,8 +125,9 @@ def test_large_single_string_is_preserved_while_bare_nan_becomes_null():
 
     # Sized to fit under the real 500 KB inline cap, so no test-local cap
     # patch is needed to get the sanitized value back.
-    result = asyncio.run(_resolve_data_files(backend, [f"/work/{filename}"]))
+    result, refused = asyncio.run(_outcome(backend, [f"/work/{filename}"]))
 
+    assert refused == []
     assert result == {filename: expected}
     parsed = json.loads(result[filename])
     assert parsed["blob"] == blob
@@ -145,16 +161,17 @@ def test_large_single_string_scan_uses_bounded_memory(body):
     tracemalloc.start()
     try:
         tracemalloc.reset_peak()
-        result = asyncio.run(_resolve_data_files(backend, ["/work/huge.json"]))
+        result, refused = asyncio.run(_outcome(backend, ["/work/huge.json"]))
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
     # The scan must run (the payload is under the skip threshold) ...
     assert len(payload) * 4 <= _INLINE_DATA_CAP * 9
-    # ... and the entry is still over the inline cap, so it is dropped.
+    # ... and the entry is still over the inline cap, so the call is refused.
     assert len(payload) > _INLINE_DATA_CAP
     assert result == {}
+    assert len(refused) == 1 and "huge.json" in refused[0]
     assert peak < 32 * 1024 * 1024, f"sanitizer peak {peak / 1e6:.0f} MB"
 
 
@@ -181,12 +198,13 @@ def test_over_cap_dense_json_is_dropped_without_scanning(item):
     tracemalloc.start()
     try:
         tracemalloc.reset_peak()
-        result = asyncio.run(_resolve_data_files(backend, ["/work/dense.json"]))
+        result, refused = asyncio.run(_outcome(backend, ["/work/dense.json"]))
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
     assert result == {}
+    assert len(refused) == 1 and "dense.json" in refused[0]
     assert peak < 48 * 1024 * 1024, f"sanitizer peak {peak / 1e6:.0f} MB"
 
 
@@ -201,15 +219,15 @@ def test_json_over_cap_raw_but_within_cap_sanitized_is_kept():
     backend = AsyncMock()
     backend.aread_text.return_value = payload
 
-    result = asyncio.run(_resolve_data_files(backend, ["/work/shrinks.json"]))
+    result, refused = asyncio.run(_outcome(backend, ["/work/shrinks.json"]))
 
+    assert refused == []
     assert result == {"shrinks.json": expected}
 
 
-def test_remaining_budget_bounds_the_scan_for_later_files():
-    """Budget used by earlier files still drops a later oversized file and
-    keeps a small one sanitized (the skip threshold follows the remaining
-    budget, not the full cap)."""
+def test_files_over_the_cap_together_are_refused_with_every_size():
+    """Three files that fit one by one but not together refuse the call, and
+    the one line names all of them so a single retry can fix it."""
     first = '{"label":"' + "A" * 300_000 + '"}'
     second = '{"v":NaN,"label":"' + "B" * 250_000 + '"}'
     third = '{"v":NaN}'
@@ -217,11 +235,12 @@ def test_remaining_budget_bounds_the_scan_for_later_files():
     backend = AsyncMock()
     backend.aread_text.side_effect = lambda path: contents[path]
 
-    result = asyncio.run(_resolve_data_files(backend, list(contents)))
+    result, refused = asyncio.run(_outcome(backend, list(contents)))
 
-    # b.json (250 KB) exceeds the ~200 KB left after a.json and is dropped;
-    # c.json still fits and is sanitized.
-    assert result == {"a.json": first, "c.json": '{"v":null}'}
+    assert result == {}
+    assert len(refused) == 1
+    assert all(name in refused[0] for name in contents)
+    assert "KB" in refused[0]
 
 
 def test_gate_keeps_text_that_exactly_fits_the_remaining_budget():
@@ -234,8 +253,9 @@ def test_gate_keeps_text_that_exactly_fits_the_remaining_budget():
     backend = AsyncMock()
     backend.aread_text.side_effect = lambda path: contents[path]
 
-    result = asyncio.run(_resolve_data_files(backend, list(contents)))
+    result, refused = asyncio.run(_outcome(backend, list(contents)))
 
+    assert refused == []
     assert result == {"a.txt": first, "b.json": "null"}
 
 
@@ -256,12 +276,14 @@ def test_gate_threshold_follows_the_remaining_budget_not_the_full_cap():
     tracemalloc.start()
     try:
         tracemalloc.reset_peak()
-        result = asyncio.run(_resolve_data_files(backend, list(contents)))
+        result, refused = asyncio.run(_outcome(backend, list(contents)))
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
-    assert result == {"a.txt": first}
+    # Unscanned, the dense file stays over the budget, so the call is refused.
+    assert result == {}
+    assert len(refused) == 1
     assert peak < 8 * 1024 * 1024, f"sanitizer peak {peak / 1e6:.0f} MB"
 
 
@@ -278,10 +300,11 @@ def test_json_without_constants_is_not_scanned():
     tracemalloc.start()
     try:
         tracemalloc.reset_peak()
-        result = asyncio.run(_resolve_data_files(backend, ["/work/dense.json"]))
+        result, refused = asyncio.run(_outcome(backend, ["/work/dense.json"]))
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
+    assert refused == []
     assert result == {"dense.json": dense}
     assert peak < 2 * 1024 * 1024, f"sanitizer peak {peak / 1e6:.1f} MB"

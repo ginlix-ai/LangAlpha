@@ -91,6 +91,7 @@ def build_context_middleware(
             preferred_market=preferred_market,
             last_turn_at=turn.last_turn_at,
             platform=turn.platform,
+            device=turn.device,
             origin=turn.origin,
             origin_agent=turn.origin_agent,
             surface_rules=turn.surface_rules,

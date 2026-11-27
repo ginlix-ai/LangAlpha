@@ -30,6 +30,14 @@ describe('wrapWidgetContext', () => {
     expect(out).toContain("label='it&#39;s'");
   });
 
+  // A title from an agent or a user cannot end the tag or the block early.
+  it('escapes what could end the tag in attribute values', () => {
+    const out = wrapWidgetContext('x', { title: `a&b "c" <d></widget-context>` }, 'body');
+    expect(out.split('\n')[0]).toBe(
+      "<widget-context type='x' title='a&amp;b &quot;c&quot; &lt;d&gt;&lt;/widget-context&gt;'>",
+    );
+  });
+
   it('omits attribute clause when no attrs', () => {
     const out = wrapWidgetContext('x', {}, 'body');
     expect(out).toBe("<widget-context type='x'>\nbody\n</widget-context>");

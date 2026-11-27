@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-import { resolveThemeVars, rgbaToHex } from '../buildHtmlSrcDoc';
+import { paletteCss, readThemePalette, rgbaToHex } from '../frameTheme';
 
 // A report reads these tokens back to paint its canvas charts, and the report
 // skills present them as hex, so a report that makes a translucent shade by
@@ -23,7 +23,7 @@ function fakePainter() {
   };
 }
 
-describe('resolveThemeVars', () => {
+describe('readThemePalette', () => {
   const root = document.documentElement;
 
   afterEach(() => {
@@ -42,18 +42,37 @@ describe('resolveThemeVars', () => {
     root.style.setProperty('--color-border-muted', 'rgba(31, 31, 30, 0.08)');
     root.style.setProperty('--color-bg-card', 'not-a-color');
 
-    const css = resolveThemeVars();
+    const { vars } = readThemePalette();
 
-    expect(css).toContain('--color-accent-primary: #d17d33;');
-    expect(css).toContain('--color-text-primary: #1f1f1e;');
-    expect(css).toContain('--color-border-muted: #1f1f1e14;');
+    expect(vars['--color-accent-primary']).toBe('#d17d33');
+    expect(vars['--color-text-primary']).toBe('#1f1f1e');
+    expect(vars['--color-border-muted']).toBe('#1f1f1e14');
     // A value the canvas refuses passes through as written.
-    expect(css).toContain('--color-bg-card: not-a-color;');
+    expect(vars['--color-bg-card']).toBe('not-a-color');
   });
 
   it('passes values through where there is no canvas', () => {
     root.style.setProperty('--color-accent-primary', 'hsl(28 63% 51%)');
-    expect(resolveThemeVars()).toContain('--color-accent-primary: hsl(28 63% 51%);');
+    expect(readThemePalette().vars['--color-accent-primary']).toBe('hsl(28 63% 51%)');
+  });
+
+  it('leaves out what the element does not declare, and a normal color-scheme', () => {
+    root.style.setProperty('--color-text-primary', '#1F1F1E');
+    root.style.setProperty('color-scheme', 'normal');
+    expect(readThemePalette()).toEqual({ vars: { '--color-text-primary': '#1F1F1E' } });
+    root.style.setProperty('color-scheme', 'light dark');
+    expect(readThemePalette().colorScheme).toBe('light dark');
+    root.style.removeProperty('color-scheme');
+  });
+});
+
+describe('paletteCss', () => {
+  it('writes the declarations in THEME_VARS order, the scheme first', () => {
+    expect(paletteCss({
+      colorScheme: 'dark',
+      vars: { '--color-text-primary': '#eeeeee', '--color-bg-page': '#000000' },
+    })).toBe('color-scheme: dark;\n  --color-bg-page: #000000;\n  --color-text-primary: #eeeeee;');
+    expect(paletteCss({ vars: {} })).toBe('');
   });
 });
 

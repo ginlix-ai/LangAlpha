@@ -167,8 +167,10 @@ import MarketChatPanel from '../MarketChatPanel';
 import { useChatMessages } from '@/pages/ChatAgent/hooks/useChatMessages';
 import { useThreadModel } from '@/pages/ChatAgent/hooks/useThreadModel';
 import { userLocalStorage } from '@/lib/userStorage';
+import { setMarketThreadId } from '../../utils/threadPersistence';
 import type { ComposerSend } from '@/components/ui/chat-input.types';
 import type { ComposerNotices } from '@/components/ui/chat-input.notices';
+import type { WidgetPrompts } from '@/pages/ChatAgent/utils/widgetPrompt';
 
 type OnSend = (send: ComposerSend) => void;
 
@@ -678,7 +680,7 @@ describe('MarketChatPanel', () => {
 
     const a = ml.actions!;
     act(() => (ci.props!.onSend as OnSend)(composed('hi')));
-    (a.onWidgetSendPrompt as (text: string) => void)('from a widget');
+    (a.widgetPrompts as WidgetPrompts).sendPrompt!('from a widget');
     (a.onEditMessage as (id: string, c: string) => void)('m1', 'edited');
     (a.onRegenerate as (id: string) => void)('m1');
     (a.onRetry as () => void)();
@@ -686,6 +688,46 @@ describe('MarketChatPanel', () => {
     expect(h.handleEditMessage).toHaveBeenCalledWith('m1', 'edited', undefined, true);
     expect(h.handleRegenerate).toHaveBeenCalledWith('m1', undefined, true);
     expect(h.handleRetry).toHaveBeenCalledWith(undefined, true);
+  });
+
+  it("answers a widget's startThread with a new chat in the panel, its first message the text with the chart's skill", () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      renderPanel();
+      const sent = { data: { scenario: 'bear' }, widgetId: 'widget-call_w', title: 'Scenarios' };
+      const before = ml.actions!;
+      act(() => (before.widgetPrompts as WidgetPrompts).startThread!('Explore the bear case', sent));
+      // A new chat: the transcript's actions are a new body's.
+      expect(ml.actions).not.toBe(before);
+      act(() => vi.advanceTimersByTime(100));
+      expect(h.handleSendMessage).toHaveBeenCalledTimes(1);
+      const [text, contexts] = h.handleSendMessage.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(text).toBe('Explore the bear case');
+      expect(contexts).toEqual([
+        expect.objectContaining({ type: 'skills', name: 'chart-annotation' }),
+        expect.objectContaining({ type: 'widget', widget_id: 'widget-call_w' }),
+      ]);
+      // Sent once, not again by a later render.
+      act(() => vi.advanceTimersByTime(1000));
+      expect(h.handleSendMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends a widget's new-thread message nowhere once the chat moves on before it goes", () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      setMarketThreadId('ws-1', 'MSFT', 'thread-msft');
+      const { rerender } = renderPanel();
+      act(() => (ml.actions!.widgetPrompts as WidgetPrompts).startThread!('Explore', undefined));
+      // A symbol switch inside the first send's wait reopens that symbol's thread.
+      rerender({ symbol: 'MSFT' });
+      act(() => vi.advanceTimersByTime(1000));
+      expect(h.handleSendMessage).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('takes what an offload leaves as the next summary, and clears it after a summary', async () => {

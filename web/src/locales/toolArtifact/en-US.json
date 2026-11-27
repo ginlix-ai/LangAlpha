@@ -172,6 +172,7 @@
   "done": "done",
   "toolCall": "Tool Call",
   "tool": {
+    "showWidget": "Widget",
     "stockPrices": "Stock Prices",
     "companyOverview": "Company Overview",
     "liveQuotes": "Live Quotes",
@@ -374,7 +375,8 @@
     "preparingRequest": "preparing request...",
     "buildingSearchPattern": "building search pattern...",
     "composingMessage": "composing message{{size}}...",
-    "generating": "generating{{size}}..."
+    "generating": "generating{{size}}...",
+    "drawingWidget": "drawing widget{{size}}..."
   },
   "nChars": "~{{count}} chars",
   "nKB": "~{{size}} KB",

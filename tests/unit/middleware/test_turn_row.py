@@ -760,6 +760,77 @@ class TestTheDeliveryRulesRideWhenTheyAreNews:
         assert "price chart" not in same.content
 
     @pytest.mark.asyncio
+    async def test_a_change_of_device_states_the_web_line_again(self):
+        """The web line sizes the reply for the layout the user sent from, so
+        moving between phone and desktop restates it, once."""
+        phone = await _row(platform="web", device="phone")
+        assert _provenance(phone)["rules_key"] == "web@phone"
+        assert "Surface web, on a phone:" in phone.content
+
+        same = await _row(platform="web", device="phone", state=_state([phone]))
+        assert "rules_key" in _provenance(same)
+        assert "Surface web" not in same.content
+
+        desktop = await _row(
+            platform="web", device="desktop", state=_state([phone, same])
+        )
+        assert _provenance(desktop)["rules_key"] == "web@desktop"
+        assert "Surface web, on a desktop:" in desktop.content
+
+    @pytest.mark.asyncio
+    async def test_a_thread_keyed_before_the_device_states_the_line_once(self):
+        """A thread whose last web row has the old key, ``web``, reads it as
+        a stated built-in line and moves to the device's line once."""
+        old = await _row(platform="web")
+        assert _provenance(old)["rules_key"] == "web"
+
+        phone = await _row(platform="web", device="phone", state=_state([old]))
+        assert "Surface web, on a phone:" in phone.content
+        assert "no delivery rules of its own" not in phone.content
+
+    @pytest.mark.asyncio
+    async def test_the_device_does_not_key_a_line_that_ignores_it(self):
+        """The market_view chat is a narrow panel on any device, and caller
+        rules replace the web line, so neither restates on a device change."""
+        chart = await _row(platform="market_view:AAPL", device="desktop")
+        assert _provenance(chart)["rules_key"] == "market_view:AAPL"
+        again = await _row(
+            platform="market_view:AAPL", device="phone", state=_state([chart])
+        )
+        assert "price chart" not in again.content
+
+        ruled = await _row(platform="web", surface_rules=SLACK_RULES, device="phone")
+        assert "@" not in _provenance(ruled)["rules_key"]
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_turn_keeps_the_device_it_was_interrupted_under(self):
+        phone = await _row(platform="web", device="phone")
+        resumed = (
+            await TurnContextMiddleware(now=NOW).abefore_model(_state([phone]))
+        )["messages"][0]
+        assert _provenance(resumed)["rules_key"] == "web@phone"
+        assert "Surface web" not in resumed.content
+
+    @pytest.mark.asyncio
+    async def test_a_device_key_still_takes_back_an_automation_and_a_channel(self):
+        """The key's surface part carries the device; the readers of the key
+        still see the web line under it."""
+        auto = await _row(platform="web", device="phone", origin="automation")
+        assert _provenance(auto)["rules_key"] == "web@phone+automation"
+        manual = await _row(platform="web", device="phone", state=_state([auto]))
+        assert _provenance(manual)["rules_key"] == "web@phone"
+        assert "A person sent this turn and is waiting for the reply." in manual.content
+
+        ruled = await _row(platform="slack", surface_rules=SLACK_RULES)
+        web = await _row(platform="web", device="desktop", state=_state([ruled]))
+        assert "Surface web, on a desktop:" in web.content
+        assert "do not apply to this turn" in web.content
+
+        bare = await _row(state=_state([ruled, web]))
+        assert _provenance(bare)["rules_key"] == "default"
+        assert "no delivery rules of its own" in bare.content
+
+    @pytest.mark.asyncio
     async def test_a_subagent_states_who_it_reports_to_and_no_surface(self):
         """A subagent has no surface, so the report rules replace them."""
         message = await _row(is_subagent=True)
@@ -1135,3 +1206,51 @@ class TestTheFactFormOfTheSessionLine:
             "CN: regular hours, closes Mon 15:00 CST (Mon 03:00 local), "
             "holidays unverified"
         )
+
+
+class TestTheRulesKey:
+    """Keys are stored in history and compared as strings, so a key read back
+    has to write out the same bytes, from every build that stored one."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "subagent",
+            "default",
+            "attended",
+            "automation",
+            "web",
+            "slack",
+            "carrier_pigeon",
+            "market_view:AAPL",
+            "market_view:002851.SZ",
+            "web@phone",
+            "web@desktop",
+            "web:AAPL@phone",
+            "#46a088021ed3",
+            "slack#46a088021ed3",
+            "web#46a088021ed3",
+            "web+automation",
+            "slack+automation",
+            "market_view:AAPL+automation",
+            "web@phone+automation",
+            "slack#46a088021ed3+automation",
+            "#46a088021ed3+automation",
+        ],
+    )
+    def test_every_stored_form_reads_back_byte_for_byte(self, key):
+        from ptc_agent.agent.middleware.runtime_context.turn import RulesKey
+
+        assert str(RulesKey.parse(key)) == key
+
+    def test_the_fields_name_what_the_paragraph_reads(self):
+        from ptc_agent.agent.middleware.runtime_context.turn import RulesKey
+
+        assert RulesKey.parse("web:AAPL@phone+automation") == RulesKey(
+            "web", "AAPL", "phone", automation=True
+        )
+        assert RulesKey.parse("slack#46a088021ed3") == RulesKey(
+            "slack", digest="46a088021ed3"
+        )
+        assert RulesKey.parse("automation") == RulesKey(automation=True)
+        assert RulesKey.parse("attended") == RulesKey(alone="attended")

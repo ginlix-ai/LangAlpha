@@ -6,7 +6,7 @@ that use the ptc-agent library for code execution in Daytona sandboxes.
 """
 
 import copy
-from typing import Annotated, Any, Callable, Dict, List, Literal, Mapping, Optional, Union
+from typing import Annotated, Any, Callable, Dict, List, Literal, Mapping, Optional, Union, get_args
 
 from pydantic import (
     AfterValidator,
@@ -31,6 +31,10 @@ ArtifactCommentId = Annotated[str, AfterValidator(uuid_text)]
 
 # Comments one chat send may carry.
 MAX_ARTIFACT_COMMENTS_PER_SEND = 50
+
+#: The layout the web app was in when the user sent a turn: ``phone`` below a
+#: 768 px viewport width, ``desktop`` at or above.
+Device = Literal["phone", "desktop"]
 
 
 class ShownComment(BaseModel):
@@ -771,6 +775,14 @@ class ChatRequest(BaseModel):
         "'market_view:AAPL', 'market_view:002851.SZ', 'telegram', 'slack', "
         "'discord', 'feishu'. Absent for system-initiated threads (see origin).",
     )
+    # Accepted from any client without gating: it only shapes the wording of
+    # the turn's surface paragraph.
+    device: Optional[Device] = Field(
+        default=None,
+        description="The layout the web app was in when the user sent the "
+        "turn: 'phone' below a 768 px viewport width, 'desktop' at or above. "
+        "The reply is shaped for that device first.",
+    )
     # The client that draws a surface owns what that surface accepts, so the
     # rules for it are text on the request rather than a branch in langalpha.
     # langalpha ships built-in rules only for the surfaces it renders itself
@@ -826,6 +838,14 @@ class ChatRequest(BaseModel):
                 "regenerate"
             )
         return self
+
+    @field_validator("device", mode="before")
+    @classmethod
+    def _known_device_or_none(cls, v: Any) -> Any:
+        """A layout this server does not know (an older or newer client's) is
+        no device rather than a 422: it only shapes wording, and refusing it
+        would refuse the whole send."""
+        return v if v in get_args(Device) else None
 
     @field_validator("surface_rules")
     @classmethod

@@ -2,6 +2,9 @@ import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useHtmlSandbox } from './useHtmlSandbox';
+import FrameActionHint from './FrameActionHint';
+import type { FramePrompts } from './widgetProtocol';
+import { WIDGET_FRAME } from './sandbox';
 import HtmlActionBar from './HtmlActionBar';
 import type { HtmlActions } from './useHtmlActions';
 import './HtmlFullscreenModal.css';
@@ -17,6 +20,9 @@ interface HtmlFullscreenModalProps {
    * artifact — see InlineWidget.
    */
   srcDoc: string;
+  prompts?: FramePrompts;
+  /** Where the widget's localStorage is kept (`useHtmlSandbox`). */
+  storageId?: string;
 }
 
 /**
@@ -25,10 +31,15 @@ interface HtmlFullscreenModalProps {
  * expands over the chat instead.
  */
 export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
-  const { open, onOpenChange, title, actions, srcDoc } = props;
+  const { open, onOpenChange, title, actions, srcDoc, prompts, storageId } = props;
   const { t } = useTranslation();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const { pushTheme } = useHtmlSandbox({ iframeRef, autoHeight: false });
+  // No zoom here: the dialog is already the enlarged view, and a lightbox
+  // portaled beside a modal dialog would sit outside its focus trap and
+  // pointer lock, so its clicks would close the dialog under it.
+  const { pushTheme, onFrameLoad, retryAt } = useHtmlSandbox({
+    iframeRef, autoHeight: false, prompts, storageId,
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -56,7 +67,7 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
             <iframe
               ref={iframeRef}
               srcDoc={srcDoc}
-              sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+              {...WIDGET_FRAME}
               className="html-fullscreen-frame"
               title={title || t('filePanel:fullscreen')}
               // A srcDoc bakes the theme in at build time, and this one is
@@ -66,8 +77,12 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
               // patched live by the observer in useHtmlSandbox, but this frame
               // did not exist to be patched, so it opens wearing whatever theme
               // the thread was first rendered in.
-              onLoad={pushTheme}
+              onLoad={() => {
+                pushTheme();
+                onFrameLoad();
+              }}
             />
+            <FrameActionHint retryAt={retryAt} />
           </div>
         </div>
       </DialogContent>

@@ -1,7 +1,8 @@
 """Shared utility functions for middleware."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from typing import Any
 
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -10,18 +11,26 @@ from langgraph.config import get_config
 from langgraph.constants import TAG_NOSTREAM
 
 
+def configurable(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """``config``'s ``configurable``, or the current run's; empty outside a
+    run, so a caller reads a key with no run to report into."""
+    if config is None:
+        try:
+            config = get_config()
+        except RuntimeError:
+            return {}
+    return config.get("configurable") or {}
+
+
 def run_ids() -> tuple[str | None, str]:
     """The thread of the graph run this is called in and which agent runs it,
     for a log line: ``main``, or a subagent's ``task:<id>``. A subagent runs
     on its parent's thread, so only the ``task:`` segment of its checkpoint
     namespace tells its lines apart; the rest names the node, which says
     nothing here. ``(None, "main")`` outside a run."""
-    try:
-        configurable = get_config().get("configurable") or {}
-    except RuntimeError:
-        return None, "main"
-    segments = (configurable.get("checkpoint_ns") or "").split("|")
-    return configurable.get("thread_id"), next((s for s in segments if s.startswith("task:")), "main")
+    current = configurable()
+    segments = (current.get("checkpoint_ns") or "").split("|")
+    return current.get("thread_id"), next((s for s in segments if s.startswith("task:")), "main")
 
 
 def nostream(config: RunnableConfig) -> RunnableConfig:

@@ -17,6 +17,14 @@ COPY web/scripts/react-plugins.ts scripts/react-plugins.ts
 COPY web/src/ src/
 RUN CHART_RENDER_OUT_DIR=/chart-render pnpm run build:chart-render
 
+# The widget render page the backend runs a ShowWidget widget in, to tell the
+# agent what it drew (src/server/services/widget_render.py). Built on the chart
+# page's stage, whose install and sources it shares. Without it the tool result
+# carries no render.
+FROM chart-render AS widget-render
+COPY web/widget-render.html web/vite.widget-render.config.js ./
+RUN WIDGET_RENDER_OUT_DIR=/widget-render pnpm run build:widget-render
+
 # Tracks Dockerfile.backend — see the note there on why 3.13 is a floor.
 FROM python:3.13-slim
 
@@ -52,7 +60,11 @@ RUN extras=""; \
 # Install browsers for Scrapling crawling (--with-deps pulls OS libraries)
 # patchright: Chromium for DynamicFetcher (Tier 2)
 # scrapling install: Camoufox for StealthyFetcher (Tier 3)
+# Playwright's own headless shell too, for the PDF and widget renders: it is
+# what a plain Playwright launch looks for, and patchright pins its revision
+# apart from Playwright's, so the two need not match. A no-op when they do.
 RUN uv run patchright install --with-deps chromium \
+    && uv run playwright install --only-shell chromium \
     && uv run scrapling install
 
 # Copy application source (will be overridden by volume mounts in dev).
@@ -63,6 +75,10 @@ COPY src/ src/
 COPY --from=chart-render /chart-render/ libs/chartkit/chartkit/render/
 COPY --from=chart-render /chart-render/ /opt/chart-render/
 ENV CHARTKIT_RENDER_DIR=/opt/chart-render
+# Same for the widget render page under the src/ mount.
+COPY --from=widget-render /widget-render/ src/server/services/widget_render_page/
+COPY --from=widget-render /widget-render/ /opt/widget-render/
+ENV WIDGET_RENDER_DIR=/opt/widget-render
 COPY server.py .
 COPY scripts/ scripts/
 COPY config*.yaml ./

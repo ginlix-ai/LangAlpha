@@ -31,6 +31,7 @@
    than inside the document, so it stays a constant inset instead of scaling
    with the magnification below. */
 .html-fullscreen-frame-pad {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { djb2 } from '@/lib/hash';
 
 /**
  * The per-item identity mark on Plugins / MCP rows: a rounded tile whose tint
@@ -23,11 +24,7 @@ const TINTS: ReadonlyArray<readonly [bg: string, fg: string]> = [
 
 /** djb2 over the name → a stable tint index. Exported for tests. */
 export function identityIndex(name: string): number {
-  let hash = 5381;
-  for (let i = 0; i < name.length; i++) {
-    hash = ((hash << 5) + hash + name.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash) % TINTS.length;
+  return Math.abs(djb2(name)) % TINTS.length;
 }
 
 function monogram(name: string): string {

@@ -516,7 +516,7 @@ describe('useFileTabs thread scope', () => {
     first.unmount();
 
     // It stays current while the writes keep failing, through to a last-tab close.
-    const refused = vi.spyOn(userLocalStorage, 'setItem').mockImplementation(() => {});
+    const refused = vi.spyOn(userLocalStorage, 'setItem').mockImplementation(() => false);
     const handed = renderHook(() => useFileTabs('ws', 't6', { chat: 'c6' }));
     act(() => handed.result.current.openFile('b.md', { pin: true }));
     handed.unmount();
@@ -560,7 +560,7 @@ describe('useFileTabs thread scope', () => {
     );
     act(() => saved.result.current.openFile('a.md', { pin: true }));
     saved.rerender({ thread: 't9' });
-    const refused = vi.spyOn(userLocalStorage, 'setItem').mockImplementation(() => {});
+    const refused = vi.spyOn(userLocalStorage, 'setItem').mockImplementation(() => false);
     act(() => saved.result.current.openFile('b.md', { pin: true }));
     saved.unmount();
     expect(paths(renderHook(() => useFileTabs('ws', null, { chat: 'c9' })).result.current.tabs)).toEqual([null]);

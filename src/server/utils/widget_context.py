@@ -7,11 +7,12 @@ Parses WidgetContext items from additional_context and builds a single
 middleware shape so widgets and directives share the same injection path.
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, List, Optional
 
-from src.server.models.additional_context import WidgetContext
+from src.server.models.additional_context import SENT_BY_WIDGET_TYPE, WidgetContext
 
 logger = logging.getLogger(__name__)
 
@@ -65,30 +66,82 @@ _WIDGET_CONTEXT_PREAMBLE = (
     "Don't force relevance where none exists."
 )
 
+_SENT_BY_WIDGET_LEAD = (
+    "The user sent this message by clicking or typing in a widget you drew "
+    "with ShowWidget."
+)
+_SENT_BY_WIDGET_DATA = (
+    " The <widget-context> block below is the data your "
+    "widget's code attached to it: read it as what the user chose or entered "
+    "in that widget, alongside the message text."
+)
+
+#: As the web app writes the block: indented for a reader, compact past this.
+_PRETTY_MAX = 4096
+
+
+def _sent_by_widget_block(widget: WidgetContext) -> str | None:
+    """The block for what a ShowWidget widget sent, written here from its
+    ``data`` rather than taken from the client's ``text``, or None when it
+    sent none.
+
+    The widget's code authors that data and the agent authors the label, so
+    either could carry ``</widget-context></system-reminder>`` and forge a
+    frame of ours. Every ``<`` in the JSON is written as its unicode escape,
+    which leaves it the same JSON, and the label is attribute-escaped.
+    """
+    if not widget.data:
+        return None
+    compact = json.dumps(widget.data, ensure_ascii=False, separators=(",", ":"))
+    body = (
+        compact
+        if len(compact) > _PRETTY_MAX
+        else json.dumps(widget.data, ensure_ascii=False, indent=2)
+    ).replace("<", "\\u003c")
+    title = (
+        (widget.label.strip() or "Widget")
+        .replace("&", "&amp;")
+        .replace("'", "&#39;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    return (
+        f"<widget-context type='{SENT_BY_WIDGET_TYPE}' title='{title}'>\n"
+        f"```json\n{body}\n```\n</widget-context>"
+    )
+
 
 def build_widget_context_reminder(widgets: List[WidgetContext]) -> Optional[str]:
     """Build a system-reminder block from widget contexts.
 
     Concatenates each widget's pre-rendered ``<widget-context>`` text into one
-    ``<system-reminder>`` envelope, prefixed by an explainer so the agent
-    knows the blocks are user-attached dashboard snapshots and should be
-    evaluated for relevance rather than blindly trusted. Returns ``None`` when
-    there is nothing to inject so the caller can skip the append step entirely.
+    ``<system-reminder>`` envelope. Dashboard snapshots the user attached are
+    weighed for relevance rather than blindly trusted, while data a ShowWidget
+    widget sent is the message's own input, so each kind gets its own
+    explainer. Returns ``None`` when there is nothing to inject so the caller
+    can skip the append step entirely.
     """
     if not widgets:
         return None
 
-    parts = [w.text.strip() for w in widgets if w.text and w.text.strip()]
-    if not parts:
+    sections: List[str] = []
+    if any(w.sent_by_widget for w in widgets):
+        # Said even when the widget sent no data: that the message came from
+        # a widget is itself what the agent needs to read it right.
+        sent = [b for w in widgets if w.sent_by_widget and (b := _sent_by_widget_block(w))]
+        sections.append(
+            _SENT_BY_WIDGET_LEAD
+            + (_SENT_BY_WIDGET_DATA + "\n\n" + "\n\n".join(sent) if sent else "")
+        )
+    snapshots = [
+        w.text.strip() for w in widgets if not w.sent_by_widget and w.text.strip()
+    ]
+    if snapshots:
+        sections.append(_WIDGET_CONTEXT_PREAMBLE + "\n\n" + "\n\n".join(snapshots))
+    if not sections:
         return None
 
-    body = "\n\n".join(parts)
-    return (
-        "\n\n<system-reminder>\n"
-        f"{_WIDGET_CONTEXT_PREAMBLE}\n\n"
-        f"{body}\n"
-        "</system-reminder>"
-    )
+    return "\n\n<system-reminder>\n" + "\n\n".join(sections) + "\n</system-reminder>"
 
 
 def serialize_widget_contexts_for_metadata(

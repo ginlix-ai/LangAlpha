@@ -38,11 +38,9 @@ from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.artifacts.events import publish_artifact_change
 from src.server.services.file_grants import (
     grant_prefix,
-    mint_file_grant,
-    mint_shared_file_grant,
     seconds_left,
+    viewer_file_grant,
 )
-from src.server.database.shared_workspaces import is_holder
 from src.server.services.shared_workspaces.access import member_or_404, workspace_access
 from src.server.services.shared_workspaces.share_out import refuse_link_change
 from src.server.services.workspace_files import reached_workspace_on_computer
@@ -118,10 +116,9 @@ async def mint_workspace_file_grant(
     """A path grant for the caller's own viewers; see ``services/file_grants``.
     A shared workspace's member gets one bound to them."""
     workspace, _ = await reached_workspace_on_computer(workspace_id, x_user_id)
-    if is_holder(workspace["user_id"]):
-        grant = await mint_shared_file_grant(str(workspace["workspace_id"]), x_user_id)
-    else:
-        grant = await mint_file_grant(str(workspace["workspace_id"]))
+    grant = await viewer_file_grant(
+        str(workspace["workspace_id"]), workspace["user_id"], x_user_id
+    )
     return FileGrantResponse(
         prefix=grant_prefix(grant), expires_in=seconds_left(grant.expires_at)
     )

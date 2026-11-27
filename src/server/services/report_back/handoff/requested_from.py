@@ -28,8 +28,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from ptc_agent.agent.middleware.runtime_context.surface import parse_surface
-from ptc_agent.agent.middleware.runtime_context.turn import BUILT_IN_SURFACES
+from ptc_agent.agent.middleware.runtime_context.surface import (
+    is_chat_app,
+    parse_surface,
+)
 from src.server.services import automation_delivery
 from src.server.services.automation_delivery import Delivery
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_FIELD
@@ -60,9 +62,9 @@ def of_turn(configurable: dict[str, Any], question: str) -> dict[str, Any]:
     if run and targets:
         entry["delivery"] = automation_delivery.stamp(Delivery(run.id, targets))
         return entry
-    surface = parse_surface(configurable.get("platform")).name
-    if surface and surface not in BUILT_IN_SURFACES:
-        entry["surface"] = surface
+    platform = configurable.get("platform")
+    if is_chat_app(platform):
+        entry["surface"] = parse_surface(platform).name
     return entry
 
 

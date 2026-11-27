@@ -14,6 +14,7 @@ from pydantic import (
     Discriminator,
     Field,
     Tag,
+    field_validator,
     model_validator,
 )
 
@@ -68,8 +69,15 @@ class DirectiveContext(AdditionalContextBase):
     content: str = Field(..., description="Directive text to inject inline with user message")
 
 
+#: The ``widget_type`` of data a widget the agent drew sends with a message
+#: (ShowWidget's ``sendPrompt(text, data)``), which the web app spells the same
+#: (``SHOW_WIDGET_CONTEXT_TYPE``).
+SENT_BY_WIDGET_TYPE = "chat.show_widget"
+
+
 class WidgetContext(AdditionalContextBase):
-    """Context attached from a dashboard widget snapshot.
+    """Context from a widget: a dashboard widget snapshot the user attached, or
+    the data a ShowWidget widget sent with the message (``sent_by_widget``).
 
     Carries pre-rendered ``<widget-context>...</widget-context>`` markdown that
     is concatenated into a single ``<system-reminder>`` and appended to the last
@@ -86,6 +94,31 @@ class WidgetContext(AdditionalContextBase):
     data: dict[str, Any] = Field(default_factory=dict, description="Structured raw payload for replay")
     captured_at: Optional[datetime] = Field(None, description="When the snapshot was taken (client clock)")
     description: Optional[str] = Field(None, description="Optional caption / freshness note")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sent_by_widget_needs_no_text(cls, value: Any) -> Any:
+        """What a ShowWidget widget sent may carry no data, and so no text:
+        the server writes that block from ``data`` itself (``widget_context``),
+        so a text-only send is still told apart from the user typing."""
+        if (
+            isinstance(value, dict)
+            and value.get("widget_type") == SENT_BY_WIDGET_TYPE
+            and value.get("text") is None
+        ):
+            return {**value, "text": ""}
+        return value
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def _no_data_is_empty(cls, value: Any) -> Any:
+        return {} if value is None else value
+
+    @property
+    def sent_by_widget(self) -> bool:
+        """Whether a widget the agent drew sent this: the user's own input,
+        not ambient context to weigh for relevance."""
+        return self.widget_type == SENT_BY_WIDGET_TYPE
 
 
 # Defensive cap on transported bars — a region selection should never need more

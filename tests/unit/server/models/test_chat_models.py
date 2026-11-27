@@ -363,6 +363,16 @@ class TestChatRequest:
         with pytest.raises(ValidationError):
             ChatRequest(platform=platform)
 
+    @pytest.mark.parametrize("device", ["tablet", "Phone", "", 1, None])
+    def test_an_unknown_device_is_no_device_not_a_refused_send(self, device):
+        """The surface line names only these two layouts; a client sending
+        any other (an older or newer build) still gets its send through."""
+        assert ChatRequest(platform="web", device=device).device is None
+
+    @pytest.mark.parametrize("device", ["phone", "desktop"])
+    def test_a_known_device_is_kept(self, device):
+        assert ChatRequest(platform="web", device=device).device == device
+
     def test_surface_rules_defaults_to_none(self):
         assert ChatRequest().surface_rules is None
 

@@ -19,6 +19,7 @@
   "include": [
     "vite.config.js",
     "vite.chart-render.config.js",
+    "vite.widget-render.config.js",
     "vitest.config.ts",
     "playwright.config.js",
     "eslint.config.js",

@@ -21,6 +21,7 @@ import type { OpenFileHandler } from '../../utils/fileLocation';
 import type { ChartTabSpec } from '../filePanel/types';
 import type { ArtifactCommentOpeners } from '../artifactComments/artifactCommentReply';
 import type { EditDraftStore } from '../../hooks/utils/editDrafts';
+import type { WidgetPrompts } from '../../utils/widgetPrompt';
 
 export interface MessageActions {
   /** Opens a task's transcript. `ownerThreadId` names the thread that holds
@@ -102,7 +103,10 @@ export interface MessageActions {
   onThumbDown?: (turnIndex: number, issueCategories: string[], comment: string | null, consentHumanReview: boolean) => Promise<FeedbackResult | null>;
   /** Add to a sent thumbs-down's report, or withdraw it. */
   onThumbDownFollowUp?: (turnIndex: number, action: ThumbDownFollowUp) => Promise<ThumbDownFollowUpOutcome>;
-  onWidgetSendPrompt?: (text: string) => void;
+  /** What a ShowWidget widget's prompt calls do here, one identity-stable
+   *  object (`useWidgetPromptActions`). A call left out does nothing: a shared
+   *  view answers none. */
+  widgetPrompts?: WidgetPrompts;
   /** The thread a failed turn's card offers to report, once the server has
    *  named it. Absent where reporting is not offered (a shared view). */
   reportThreadId?: string;

@@ -43,7 +43,7 @@ import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
@@ -59,9 +59,17 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
     rows_in_view,
 )
 from ptc_agent.agent.middleware.runtime_context.state import STATE_BASELINE, state_get
-from ptc_agent.agent.middleware.runtime_context.surface import Surface, parse_surface
+# BUILT_IN_SURFACES is also read from here by callers outside this package.
+from ptc_agent.agent.middleware.runtime_context.surface import (
+    BUILT_IN_SURFACES,
+    Surface,
+    parse_surface,
+)
 from ptc_agent.agent.middleware.runtime_context.templates import render_template
 from ptc_agent.agent.middleware.runtime_context.turn_context import ForkNotice, HomeAway
+
+if TYPE_CHECKING:
+    from src.server.models.chat import Device
 
 logger = logging.getLogger(__name__)
 
@@ -200,8 +208,8 @@ ATTENDED_KEY = "attended"
 #: The key of a turn that arrived with no rules after one that stated some: the
 #: return to the default shape is itself a rule, stated once.
 DEFAULT_KEY = "default"
-# The surfaces `surface_rules.md.j2` carries a line for itself.
-BUILT_IN_SURFACES = frozenset({"web", "market_view"})
+#: A subagent's key: it has no surface, so its key stands alone.
+SUBAGENT_KEY = "subagent"
 
 TURN_SCHEMA_VERSION = 1
 
@@ -294,6 +302,8 @@ class TurnContextMiddleware(AgentMiddleware):
             thread's first turn, which drops the gap line and states the
             market unconditionally.
         platform: Surface this turn arrived on (web, slack, market_view, ...).
+        device: The layout the web app was in when the user sent the turn
+            (``phone`` or ``desktop``); None from every other client.
         origin: Who started the thread (agent, automation, system).
         origin_agent: Which agent, for an ``agent`` origin.
         surface_rules: Delivery rules the posting client wrote for its own
@@ -324,6 +334,7 @@ class TurnContextMiddleware(AgentMiddleware):
         preferred_market: str | None = None,
         last_turn_at: datetime | None = None,
         platform: str | None = None,
+        device: Device | None = None,
         origin: str | None = None,
         origin_agent: str | None = None,
         surface_rules: str | None = None,
@@ -341,6 +352,7 @@ class TurnContextMiddleware(AgentMiddleware):
         self._preferred_market = preferred_market
         self._last_turn_at = last_turn_at
         self._platform = platform
+        self._device = device
         self._origin = origin
         self._origin_agent = origin_agent
         self._surface_rules = surface_rules
@@ -363,15 +375,11 @@ class TurnContextMiddleware(AgentMiddleware):
         self._opened = True
         try:
             now = self._now or datetime.now(tz=UTC)
-            surface = parse_surface(self._platform)
+            surface = parse_surface(self._platform).sent_from(self._device)
             market = self._market(state)
             zone = self._zone(state)
             key = rules_key(
-                surface.name,
-                self._origin,
-                self._is_subagent,
-                self._surface_rules,
-                symbol=surface.symbol,
+                surface, self._origin, self._is_subagent, self._surface_rules
             )
             last = _last_rules_key(state)
             if resumed or self._inherits_rules:
@@ -414,7 +422,7 @@ class TurnContextMiddleware(AgentMiddleware):
             # paragraph says the earlier rules no longer apply.
             leaves_channel = (
                 standing is not None
-                and "#" in standing
+                and standing.digest is not None
                 and surface.name in BUILT_IN_SURFACES
             )
             if key is None:
@@ -735,41 +743,115 @@ def started_by(origin: str | None, agent: str | None) -> str | None:
 # -- the delivery rules -----------------------------------------------------
 
 
+class RulesKey(NamedTuple):
+    """A rules key taken apart, so its readers read fields rather than split
+    the string; ``str()`` writes it back byte for byte.
+
+    The grammar is ``<head>[+automation]``, or one of the keys that stand
+    alone (``subagent``, ``default``, ``attended``). The head is
+    ``<surface>[:<symbol>][@<device>]`` for a built-in line or a bare surface,
+    and ``[<surface>]#<digest>`` for caller text, which replaces the line and
+    so carries neither symbol nor device. A key of ``automation`` alone is an
+    automation on no surface. Every key since the first build parses: a key
+    from before the device has no ``@``.
+    """
+
+    surface: str | None = None
+    symbol: str | None = None
+    device: Device | None = None
+    digest: str | None = None
+    automation: bool = False
+    #: A key that stands alone (``subagent``, ``default``, ``attended``).
+    alone: str | None = None
+
+    @classmethod
+    def parse(cls, key: str) -> RulesKey:
+        if key in (SUBAGENT_KEY, DEFAULT_KEY, ATTENDED_KEY):
+            return cls(alone=key)
+        parts = key.split("+")
+        automation = parts[-1] == "automation"
+        head = parts[0]
+        if head == "automation":
+            return cls(automation=automation)
+        if "#" in head:
+            surface, _, digest = head.partition("#")
+            return cls(surface=surface or None, digest=digest, automation=automation)
+        head, _, device = head.partition("@")
+        surface, _, symbol = head.partition(":")
+        return cls(
+            surface=surface or None,
+            symbol=symbol or None,
+            device=device or None,
+            automation=automation,
+        )
+
+    def __str__(self) -> str:
+        if self.alone is not None:
+            return self.alone
+        if self.digest is not None:
+            head = f"{self.surface or ''}#{self.digest}"
+        else:
+            head = self.surface or ""
+            if head and self.symbol:
+                head = f"{head}:{self.symbol}"
+            if head and self.device:
+                head = f"{head}@{self.device}"
+        return "+".join(part for part in (head, "automation" if self.automation else "") if part)
+
+    @property
+    def names_surface(self) -> bool:
+        """Whether the key names a surface: not one that stands alone, nor an
+        automation's on no surface."""
+        return self.alone is None and (self.surface is not None or self.digest is not None)
+
+    @property
+    def states_surface(self) -> bool:
+        """Whether the key's surface states a paragraph: caller text (the
+        digest) or a built-in line. A bare surface only names itself on the
+        run line."""
+        return self.digest is not None or self.surface in BUILT_IN_SURFACES
+
+
 def rules_key(
-    surface: str | None,
+    surface: Surface,
     origin: str | None,
     is_subagent: bool,
     surface_rules: str | None = None,
-    *,
-    symbol: str | None = None,
 ) -> str | None:
     """One comparable token for the delivery rules this turn needs.
 
     A subagent has no surface, so its key stands alone. Everything else is the
     surface, its symbol when it has one (the market_view paragraph names the
-    chart the user has open, so a change of chart is a change of rules), and
-    whether an automation started the thread, because those are the inputs the
-    rules paragraph reads. Caller-supplied rules add a digest of the text: the
-    gateway may reword them without changing surface, and the turn after it
-    does is the one that has to restate them.
+    chart the user has open, so a change of chart is a change of rules), the
+    device on a surface whose line reads it (``web@phone``: the web line sizes
+    the reply for the layout the user sent from, so moving between phone and
+    desktop restates it once), and whether an automation started the thread,
+    because those are the inputs the rules paragraph reads. Caller-supplied
+    rules add a digest of the text: the gateway may reword them without
+    changing surface, and the turn after it does is the one that has to
+    restate them. They replace the built-in line, so the device drops out.
     """
     if is_subagent:
-        return "subagent"
+        return SUBAGENT_KEY
     caller = (surface_rules or "").strip()
-    head = f"{surface}:{symbol}" if surface and symbol else surface
+    automation = origin == "automation"
     if caller:
         digest = hashlib.sha256(caller.encode("utf-8")).hexdigest()[:12]
-        head = f"{surface or ''}#{digest}"
-    parts = [
-        part
-        for part in (head, "automation" if origin == "automation" else None)
-        if part
-    ]
-    return "+".join(parts) or None
+        key = RulesKey(surface.name, digest=digest, automation=automation)
+    else:
+        key = RulesKey(
+            surface.name, surface.symbol, surface.device, automation=automation
+        )
+    return str(key) or None
+
+
+def _parsed(key: str | None) -> RulesKey | None:
+    return RulesKey.parse(key) if key is not None else None
 
 
 def _is_automation_key(key: str | None) -> bool:
-    return key is not None and key.split("+")[-1] == "automation"
+    parsed = _parsed(key)
+    return parsed is not None and parsed.automation
 
 
 def _states_rules(key: str | None) -> bool:
@@ -781,31 +863,15 @@ def _states_rules(key: str | None) -> bool:
     surface at all, so a turn that moves between the two has nothing to take
     back; a turn that moves onto either from a stated rule does.
     """
-    if key is None or key in (DEFAULT_KEY, ATTENDED_KEY):
+    parsed = _parsed(key)
+    if parsed is None or parsed.alone in (DEFAULT_KEY, ATTENDED_KEY):
         return False
-    return key == "subagent" or _is_automation_key(key) or _surface_states(key)
+    return parsed.alone == SUBAGENT_KEY or parsed.automation or parsed.states_surface
 
 
-def _surface_part(key: str) -> str | None:
-    """The surface a rules key names, with its symbol or digest, or None for
-    a key that names none: an automation's alone, a handoff's, a subagent's
-    and the return to the default."""
-    if key in (DEFAULT_KEY, ATTENDED_KEY, "subagent"):
-        return None
-    head = key.split("+")[0]
-    return None if head == "automation" else head
-
-
-def _surface_states(key: str) -> bool:
-    """Whether the key's surface states a paragraph: caller text (the digest)
-    or a built-in line. A bare surface only names itself on the run line."""
-    head = _surface_part(key)
-    return head is not None and ("#" in head or head.split(":")[0] in BUILT_IN_SURFACES)
-
-
-def _standing_surface(state: Any) -> str | None:
-    """The surface whose paragraph is still the last word on the surface
-    among the rows in view (its key's surface part), or None.
+def _standing_surface(state: Any) -> RulesKey | None:
+    """The key whose surface paragraph is still the last word on the surface
+    among the rows in view, or None.
 
     The last key alone does not say: an automation's paragraph, and the
     handoff that takes it back, say nothing about the surface, so a channel's
@@ -815,17 +881,17 @@ def _standing_surface(state: Any) -> str | None:
     none standing.
     """
     for row in reversed(rows_in_view(state)):
-        key = row.provenance.get("rules_key") if row.kind == TURN_ROW_KIND else None
-        if not isinstance(key, str):
+        raw = row.provenance.get("rules_key") if row.kind == TURN_ROW_KIND else None
+        if not isinstance(raw, str):
             continue
-        if key == DEFAULT_KEY:
+        key = RulesKey.parse(raw)
+        if key.alone == DEFAULT_KEY:
             return None
-        head = _surface_part(key)
-        if head is None:
+        if not key.names_surface:
             continue
-        if _surface_states(key):
-            return head
-        if not _is_automation_key(key):
+        if key.states_surface:
+            return key
+        if not key.automation:
             return None
     return None
 
@@ -844,6 +910,7 @@ def render_surface_rules(
         "envelope/surface_rules.md.j2",
         surface=surface.name,
         symbol=surface.symbol,
+        device=surface.device,
         origin=origin,
         is_subagent=is_subagent,
         surface_rules=surface_rules,

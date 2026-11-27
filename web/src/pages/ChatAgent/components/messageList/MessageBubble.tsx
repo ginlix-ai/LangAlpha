@@ -15,7 +15,7 @@ import { ReportFailure } from '@/components/ui/error-banner';
 import { isReportable } from '@/lib/upstreamFailure';
 import { SentMessageBody } from './SentMessageBody';
 import type { StructuredError } from '@/utils/rateLimitError';
-import { countDedupedSources, type CreditPauseState, type MessageProvenance, type UserMessage, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState, type TurnStop } from '@/types/chat';
+import { countDedupedSources, type CreditPauseState, type MessageProvenance, type UserMessage, type PendingToolCallChunk, type ProvenanceRecord, type PTCAgentProposalState, type SubagentTaskRecord, type ToolApprovalState, type TurnStop, type WidgetDraft } from '@/types/chat';
 import { TextShimmer } from '@/components/ui/text-shimmer';
 import { AttachmentCard, InlineSelectionCards, InlineWidgetDeck } from './attachments';
 import type { AttachmentData, WidgetChipShape } from './attachments';
@@ -51,6 +51,7 @@ import { onScreenKeyboardUp } from '@/lib/visualViewport';
 import { EMPTY_OBJ } from './types';
 import { CapturedImagesContext } from '../../contexts/CapturedImagesContext';
 import type { ContentSegmentRecord, FeedbackResult, FoldState, MessageRecord, ToolCallProcessRecord } from './types';
+import type { HtmlWidgetData } from '../../hooks/utils/types';
 
 // --- MessageBubble ---
 
@@ -611,10 +612,11 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     <>
     {/* Render content segments in chronological order. A call streaming
         before any of them draws too, or the turn's first call would show
-        nothing until it landed. */}
+        nothing until it landed; a widget being written draws as a block. */}
     {isUser && typeof message.content === 'string' ? (
       <SentMessageBody content={message.content} isStreaming={message.isStreaming as boolean} onOpenFile={onOpenFile} />
-    ) : ((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null ? (
+    ) : ((message.contentSegments as ContentSegmentRecord[] | undefined)?.length ?? 0) > 0 || projection.preparingToolCall !== null
+      || projection.blocks.length > 0 ? (
       <CitationMetadataProvider toolCallProcesses={(message.toolCallProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}>
       <MessageContentSegments
         contentProjection={projection}
@@ -626,6 +628,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
         questionProposals={(message.questionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
         pendingToolCallChunks={(message.pendingToolCallChunks as Record<string, PendingToolCallChunk> | undefined) ?? EMPTY_OBJ}
+        widgetDrafts={(message.widgetDrafts as Record<string, WidgetDraft> | undefined) ?? EMPTY_OBJ}
         isStreaming={message.isStreaming as boolean}
         fold={fold}
         isTurnTail={isTurnTail}
@@ -635,7 +638,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
         secretaryActionProposals={(message.secretaryActionProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
         creditPauses={(message.creditPauses as Record<string, CreditPauseState>) || EMPTY_OBJ}
         toolApprovals={(message.toolApprovals as Record<string, ToolApprovalState>) || EMPTY_OBJ}
-        htmlWidgetProcesses={(message.htmlWidgetProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
+        htmlWidgetProcesses={(message.htmlWidgetProcesses as Record<string, HtmlWidgetData> | undefined) || EMPTY_OBJ}
         readOnly={readOnly}
         othersPause={!shared.answersPause}
         dispatcherContext={dispatcherContext}

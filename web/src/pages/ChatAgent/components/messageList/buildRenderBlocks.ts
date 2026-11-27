@@ -8,7 +8,8 @@ import { inChunkOrder } from '../../session/stream/textChunks';
 import { preapprovedCardOf, type PreapprovedCard } from '../../utils/preapprovedCards';
 import { isPlanTool, readPastPlan, type PastPlanOutcome } from './pastPlan';
 import { readArtifactCommentReply, type ArtifactCommentReply } from '../artifactComments/artifactCommentReply';
-import type { PTCAgentProposalState } from '@/types/chat';
+import type { PTCAgentProposalState, WidgetDraft } from '@/types/chat';
+import { placeWidgets, widgetSegmentBlock } from './widgetBlocks';
 import type { ChartKey } from '@/lib/bars/chartId';
 import type { ContentSegmentRecord, ToolCallProcessRecord } from './types';
 import type { ActivityItem, ToolActivityItem, LiveState, ToolCallData, ToolCallResultData } from './activityTypes';
@@ -136,8 +137,14 @@ export interface NotificationRenderBlock {
 }
 export interface HtmlWidgetRenderBlock {
   type: 'html_widget';
+  /** The widget's segment id, the same for its draft and for the widget, so
+   *  the draft hands over in place. */
   key: string;
-  segment: ContentSegmentRecord;
+  widgetId: string;
+  /** The artifact's segment, once it has landed. */
+  widget?: ContentSegmentRecord;
+  /** The widget drawn from its call's arguments, until the artifact lands. */
+  preview?: WidgetDraft;
 }
 
 export type RenderBlock =
@@ -225,6 +232,7 @@ export function buildRenderBlocks(
     now = Date.now(),
     root,
     cardedCharts,
+    widgetDrafts,
   }: {
     reasoningProcesses: Record<string, Record<string, unknown>>;
     toolCallProcesses: Record<string, ToolCallProcessRecord>;
@@ -243,12 +251,15 @@ export function buildRenderBlocks(
     /** Charts whose card this turn draws under its report row: the message
      *  draws none for them (see `planReportChartCards`). */
     cardedCharts?: ReadonlySet<ChartKey>;
+    /** ShowWidget calls whose widget is drawn from their arguments (`placeWidgets`). */
+    widgetDrafts?: Record<string, WidgetDraft>;
   },
 ): { blocks: RenderBlock[]; nextExpiry: number | null; pinnedLive: boolean; pinnedSettledAt: number | null } {
     // A hidden secretary call the user approved in advance has no proposal
     // segment, so it draws its card where the call sits, as does a workspace
     // `la` created, which leaves its Bash row for that card.
     const preapproved = new Map<string, PreapprovedCard>();
+    const widgets = placeWidgets(groupedSegments, toolCallProcesses, widgetDrafts);
     const filtered = groupedSegments.filter((s) => {
         if (s.type === 'text' || s.type === 'reasoning') return true;
         if (s.type === 'notification') return true;
@@ -262,8 +273,9 @@ export function buildRenderBlocks(
         if (s.type === 'delete_thread') return true;
         if (s.type === 'credit_pause') return true;
         if (s.type === 'tool_approval') return true;
-        if (s.type === 'html_widget') return true;
+        if (s.type === 'html_widget') return !widgets.absorbed.has(s.widgetId!);
         if (s.type === 'tool_call') {
+          if (widgets.atCall.has(s.toolCallId!)) return true;
           const proc = toolCallProcesses[s.toolCallId!];
           const toolName = proc?.toolName as string | undefined;
           const args = (proc?.toolCall as ToolCallData | undefined)?.args;
@@ -363,6 +375,12 @@ export function buildRenderBlocks(
         } else if (seg.type === 'tool_call') {
           const proc = toolCallProcesses[seg.toolCallId!];
           if (!proc) continue;
+          const widget = widgets.atCall.get(seg.toolCallId!);
+          if (widget) {
+            flushActivity();
+            blocks.push(widget);
+            continue;
+          }
           const card = preapproved.get(seg.toolCallId!);
           if (card) {
             flushActivity();
@@ -462,7 +480,7 @@ export function buildRenderBlocks(
           blocks.push({ type: 'tool_approval', key: `tool-approval-${seg.proposalId}`, segment: seg });
         } else if (seg.type === 'html_widget') {
           flushActivity();
-          blocks.push({ type: 'html_widget', key: `widget-${seg.widgetId}`, segment: seg });
+          blocks.push(widgetSegmentBlock(seg));
         } else if (seg.type === 'notification') {
           flushActivity();
           blocks.push({ type: 'notification', key: `notification-${seg.order}`, segment: seg });
@@ -473,6 +491,7 @@ export function buildRenderBlocks(
       }
       // Flush trailing activity items
       flushActivity();
+      blocks.push(...widgets.trailing);
       if (preparing && blocks[blocks.length - 1]?.type !== 'activity') {
         blocks.push({ type: 'activity', key: `activity-${activityCounter++}`, items: [] });
       }

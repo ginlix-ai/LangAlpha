@@ -76,7 +76,7 @@ function headOf() {
 }
 
 // The app's CSS variables as one block of declarations, the shape the
-// viewer's resolveThemeVars() produces. Applied as a :root rule ahead of
+// viewer's paletteCss(readThemePalette()) produces. Applied as a :root rule ahead of
 // the page's own styles, so a variable the page defines itself wins.
 /** @param {string} css */
 function applyTheme(css) {

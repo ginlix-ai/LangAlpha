@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from ptc_agent.agent.middleware.runtime_context.surface import is_chat_app
 from ptc_agent.agent.transcript.sender import MEMBER_SENDER_KEY, MemberSender
 from src.server.models.chat import ShownSend
 
@@ -64,17 +65,6 @@ async def open_with_steers_ahead(
     return input_id
 
 
-def is_chat_app(platform: str | None) -> bool:
-    """Whether a steer came through a channel gateway, which resubmits what
-    its run missed itself, rather than a surface langalpha draws (``web``,
-    ``market_view:<SYMBOL>``), whose missed steers become the next turn."""
-    from ptc_agent.agent.middleware.runtime_context.surface import parse_surface
-    from ptc_agent.agent.middleware.runtime_context.turn import BUILT_IN_SURFACES
-
-    name = parse_surface(platform).name
-    return name is not None and name not in BUILT_IN_SURFACES
-
-
 #: The steer payload key naming the member a shared thread's steer is for.
 MEMBER_KEY = "member"
 
@@ -86,6 +76,7 @@ def steer_payload(
     sender: str = "user",
     workspace_id: str | None = None,
     platform: str | None = None,
+    device: str | None = None,
     request_key: str | None = None,
     origin: dict | None = None,
     artifact_comments: ShownSend | None = None,
@@ -107,6 +98,8 @@ def steer_payload(
     so a steer no turn read starts its own turn held to the computer its send
     was checked on. ``llm_model`` is the model a hand-off named: only a run on
     it reads the steer, and one no run read starts its own turn on it.
+    ``device`` is the layout it was sent from, so a steer that becomes its own
+    turn is answered for that device as the send would have been.
     """
     # Half a surrogate pair gets through the request's JSON parser but cannot
     # be stored as JSONB or encoded for the wire.
@@ -119,6 +112,8 @@ def steer_payload(
         "workspace_id": workspace_id,
         "timestamp": time.time(),
         "platform": platform or None,
+        # A chat app's gateway resubmits what its run missed itself; a steer
+        # from a surface langalpha draws becomes the next turn instead.
         "chat_app": is_chat_app(platform),
         "request_key": request_key,
         "origin": origin,
@@ -133,6 +128,8 @@ def steer_payload(
         payload["checked_computer_id"] = checked_computer_id
     if llm_model:
         payload["llm_model"] = llm_model
+    if device:
+        payload["device"] = device
     return payload
 
 

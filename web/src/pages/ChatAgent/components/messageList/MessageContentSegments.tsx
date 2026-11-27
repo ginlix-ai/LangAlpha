@@ -19,11 +19,12 @@ import AnalystHandoffRun, { type AnalystHandoffMember } from './AnalystHandoffRu
 import { ArtifactCommentReplyLines, type CommentReplyMember } from '../artifactComments/ArtifactCommentReplyLine';
 import { WORKFLOW_TASK_TYPE } from '../../session/subagents/workflowRunState';
 import { SubagentStopNotices } from '../SubagentStopNotice';
-import type { CreditPauseState, PendingToolCallChunk, PTCAgentProposalState, SubagentTaskRecord, ToolApprovalState } from '@/types/chat';
+import type { CreditPauseState, PendingToolCallChunk, PTCAgentProposalState, SubagentTaskRecord, ToolApprovalState, WidgetDraft } from '@/types/chat';
 import TextMessageContent from '../TextMessageContent';
 import { visibleParagraphPrefix } from '@/lib/paragraphGate';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
-import InlineWidget from '../viewers/InlineWidget';
+import WidgetBlock from '../viewers/WidgetBlock';
+import type { HtmlWidgetData } from '../../hooks/utils/types';
 import { renderNotification } from './notices';
 import { normalizeSubagentText } from './normalizeSubagentText';
 import StructuredResultBlock from './StructuredResultBlock';
@@ -65,6 +66,8 @@ interface MessageContentSegmentsProps {
   workspaceProposals?: Record<string, Record<string, unknown>>;
   questionProposals?: Record<string, Record<string, unknown>>;
   pendingToolCallChunks?: Record<string, PendingToolCallChunk>;
+  /** Landed ShowWidget calls still drawing their preview (`AssistantMessage.widgetDrafts`). */
+  widgetDrafts?: Record<string, WidgetDraft>;
   isStreaming?: boolean;
   /** How much of the turn this bubble draws; `unfolded` is the full transcript. */
   fold?: FoldState;
@@ -82,7 +85,7 @@ interface MessageContentSegmentsProps {
   secretaryActionProposals?: Record<string, Record<string, unknown>>;
   creditPauses?: Record<string, CreditPauseState>;
   toolApprovals?: Record<string, ToolApprovalState>;
-  htmlWidgetProcesses?: Record<string, Record<string, unknown>>;
+  htmlWidgetProcesses?: Record<string, HtmlWidgetData>;
   dispatcherContext?: { threadId: string; workspaceId: string } | null;
   /** The message these are, under which its prose reports its typing. */
   messageId?: string;
@@ -169,7 +172,7 @@ function TextBlock({ block, isStreaming, isSubagentView, isReplyStart, onOpenFil
   return isReplyStart && rendersNow ? <div data-reply-start="">{textEl}</div> : textEl;
 }
 
-export const MessageContentSegments = memo(function MessageContentSegments({ segments, contentProjection, reasoningProcesses, toolCallProcesses, subagentTasks, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, isStreaming, fold = 'unfolded', isTurnTail = false, endsReply = isTurnTail, isSubagentView = false, readOnly = false, othersPause = false, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, creditPauses = EMPTY_OBJ, toolApprovals = EMPTY_OBJ, htmlWidgetProcesses = EMPTY_OBJ, dispatcherContext, messageId, taskThreadId = null }: MessageContentSegmentsProps): React.ReactElement {
+export const MessageContentSegments = memo(function MessageContentSegments({ segments, contentProjection, reasoningProcesses, toolCallProcesses, subagentTasks, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, widgetDrafts = EMPTY_OBJ, isStreaming, fold = 'unfolded', isTurnTail = false, endsReply = isTurnTail, isSubagentView = false, readOnly = false, othersPause = false, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, creditPauses = EMPTY_OBJ, toolApprovals = EMPTY_OBJ, htmlWidgetProcesses = EMPTY_OBJ, dispatcherContext, messageId, taskThreadId = null }: MessageContentSegmentsProps): React.ReactElement {
   const { turnDisplay } = useTranscriptDisplay();
   const motionSafe = useMotionSafe();
   const {
@@ -181,7 +184,7 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
     onApproveSecretaryAction, onRejectSecretaryAction,
     onResumeCreditPause,
     onApproveToolCall, onRejectToolCall,
-    onWidgetSendPrompt,
+    widgetPrompts,
   } = useMessageActions();
   const onOpenSubagentTask = useMemo(
     () => (openSubagentTask && taskThreadId
@@ -219,11 +222,11 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
     const skip = contentProjection?.skipSegments ?? 0;
     const next = projectContent({
       segments: skip ? segments.slice(skip) : segments,
-      reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root,
+      reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, widgetDrafts, now, root,
       cardedCharts: contentProjection?.cardedCharts,
     }, contentProjection);
     return (next.skipSegments ?? 0) === skip ? next : { ...next, skipSegments: skip };
-  }, [contentProjection, segments, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, now, root]);
+  }, [contentProjection, segments, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, pendingToolCallChunks, widgetDrafts, now, root]);
   const { blocks: renderBlocks, preparingToolCall, nextExpiry } = projection;
 
   useEffect(() => {
@@ -444,20 +447,17 @@ export const MessageContentSegments = memo(function MessageContentSegments({ seg
         }
 
         if (block.type === 'html_widget') {
-          const widgetSeg = (block as HtmlWidgetRenderBlock).segment;
-          const widgetData = (htmlWidgetProcesses as Record<string, { html: string; title: string; data?: Record<string, string> }> | undefined)?.[widgetSeg.widgetId!];
-          if (!widgetData) return null;
+          const { widgetId, preview } = block as HtmlWidgetRenderBlock;
+          const widget = htmlWidgetProcesses[widgetId];
+          if (!widget && !preview) return null;
           return (
             // Keep the widget's own margins inside a stable transcript block.
             // Otherwise the list's gap overrides them until the preceding fold hides,
             // then restores them in one frame at the end of the animation.
+            // One element from the first streamed argument to the finished
+            // widget: the block keeps its key, so the preview hands over in place.
             <div key={block.key} className="flow-root">
-              <InlineWidget
-                html={widgetData.html}
-                title={widgetData.title}
-                onSendPrompt={onWidgetSendPrompt}
-                data={widgetData.data}
-              />
+              <WidgetBlock widget={widget} preview={preview} widgetId={widgetId} prompts={widgetPrompts} />
             </div>
           );
         }

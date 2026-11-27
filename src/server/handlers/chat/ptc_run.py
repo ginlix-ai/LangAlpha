@@ -391,6 +391,7 @@ async def astream_ptc_workflow(
                 user_id,
                 steer_only=request.steer_only,
                 platform=request.platform,
+                device=request.device,
                 request_key=request.request_key,
                 workspace_id=workspace_id,
                 steer_job_id=request.steer_job_id,

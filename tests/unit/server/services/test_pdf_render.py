@@ -18,6 +18,7 @@ import httpx
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
+from src.server.services import headless_browser as hb
 from src.server.services import pdf_render
 from src.server.services.pdf_render import (
     PdfRenderError,
@@ -36,7 +37,7 @@ _PUBLIC_HOSTS = [
 
 
 def _allowed(url: str, prefix: str) -> bool:
-    return asyncio.run(pdf_render._is_request_allowed(url, prefix))
+    return asyncio.run(hb._is_request_allowed(url, prefix))
 
 
 @pytest.fixture(autouse=True)
@@ -165,13 +166,13 @@ def upstream(monkeypatch):
             raise answer
         return answer
 
-    monkeypatch.setattr(pdf_render, "_fetch_transport", lambda: httpx.MockTransport(handler))
+    monkeypatch.setattr(hb, "_fetch_transport", lambda: httpx.MockTransport(handler))
     return answers, asked
 
 
 def _answer(
     url: str,
-    budget: pdf_render._Budget | None = None,
+    budget: hb.Budget | None = None,
     headers: dict[str, str] | None = None,
     method: str = "GET",
     body: bytes | None = None,
@@ -185,7 +186,7 @@ def _answer(
         post_data_buffer=body,
         resource_type=resource_type,
     )
-    asyncio.run(pdf_render._answer_request(route, request, _PREFIX, budget or pdf_render._Budget()))
+    asyncio.run(hb.RequestGate(_PREFIX, budget or hb.Budget()).answer(route, request))
     return route
 
 
@@ -298,10 +299,10 @@ def test_a_3xx_fetch_does_not_follow_reaches_the_page_as_it_is(upstream, status)
 
 def test_a_chain_past_the_hop_cap_is_aborted(upstream):
     answers, asked = upstream
-    for i in range(pdf_render._MAX_REDIRECT_HOPS + 2):
+    for i in range(hb._MAX_REDIRECT_HOPS + 2):
         answers[f"https://a.example.com/{i}"] = _redirect(f"https://a.example.com/{i + 1}")
     route = _answer("https://a.example.com/0")
-    assert len(asked) == pdf_render._MAX_REDIRECT_HOPS + 1
+    assert len(asked) == hb._MAX_REDIRECT_HOPS + 1
     assert route.outcome == ("aborted", None)
 
 
@@ -331,14 +332,14 @@ def test_a_fetch_that_fails_aborts_the_request(upstream):
     ids=["declared", "streamed", "compressed"],
 )
 def test_an_answer_past_its_cap_is_aborted(monkeypatch, upstream, answer):
-    monkeypatch.setattr(pdf_render, "_MAX_FETCH_BYTES", 1024)
+    monkeypatch.setattr(hb, "_MAX_FETCH_BYTES", 1024)
     answers, _ = upstream
     answers["https://a.example.com/big"] = answer()
     assert _answer("https://a.example.com/big").outcome == ("aborted", None)
 
 
 def test_an_answer_within_its_cap_streams_through_whole(monkeypatch, upstream):
-    monkeypatch.setattr(pdf_render, "_MAX_FETCH_BYTES", 4096)
+    monkeypatch.setattr(hb, "_MAX_FETCH_BYTES", 4096)
     answers, _ = upstream
     answers["https://a.example.com/big"] = _ok(*[b"x" * 512] * 8)
     assert _answer("https://a.example.com/big").outcome == ("fulfilled", (200, b"x" * 4096))
@@ -348,7 +349,7 @@ def test_a_render_stops_taking_answers_once_its_budget_is_spent(upstream):
     answers, _ = upstream
     answers["https://a.example.com/1"] = _ok(b"x" * 600)
     answers["https://a.example.com/2"] = _ok(b"x" * 600)
-    budget = pdf_render._Budget(1000)
+    budget = hb.Budget(1000)
     assert _answer("https://a.example.com/1", budget).outcome[0] == "fulfilled"
     assert _answer("https://a.example.com/2", budget).outcome == ("aborted", None)
 
@@ -378,7 +379,7 @@ def test_a_redirected_stylesheet_imports_where_it_landed(upstream):
 def test_the_import_takes_what_the_redirect_fetched_once(upstream):
     answers, asked = upstream
     _sheet_redirects(answers)
-    budget = pdf_render._Budget()
+    budget = hb.Budget()
     _answer(_SHEET, budget, headers=_NO_CORS, resource_type="stylesheet")
     left = budget.left
 
@@ -395,10 +396,38 @@ def test_the_import_takes_what_the_redirect_fetched_once(upstream):
     assert len(asked) == 3
 
 
+def test_a_post_to_where_a_redirect_landed_leaves_the_held_answer(upstream):
+    answers, asked = upstream
+    _sheet_redirects(answers)
+    budget = hb.Budget()
+    _answer(_SHEET, budget, headers=_NO_CORS, resource_type="stylesheet")
+    answers[_LANDED] = _ok(b"posted")
+
+    posted = _answer(_LANDED, budget, method="POST", body=b"x")
+
+    assert posted.outcome == ("fulfilled", (200, b"posted"))
+    assert [r.method for r in asked] == ["GET", "GET", "POST"]
+    # The GET the stand-in sends on still takes what was held for it.
+    sheet = _answer(_LANDED, budget, headers=_NO_CORS, resource_type="stylesheet")
+    assert sheet.outcome == ("fulfilled", (200, b"@font-face{src:url(../fonts/inter.woff2)}"))
+    assert len(asked) == 3
+
+
+@pytest.mark.parametrize(("method", "status"), [("HEAD", 200), ("GET", 304)])
+def test_a_bodyless_answer_is_not_judged_by_its_declared_length(upstream, method, status):
+    answers, _ = upstream
+    url = "https://cdn.example.com/big.bin"
+    answers[url] = httpx.Response(status, headers={"content-length": str(64 * 1024 * 1024)}, stream=_Chunks())
+
+    route = _answer(url, method=method)
+
+    assert route.outcome == ("fulfilled", (status, b""))
+
+
 def test_the_import_still_meets_the_gate(monkeypatch, upstream):
     answers, asked = upstream
     _sheet_redirects(answers)
-    budget = pdf_render._Budget()
+    budget = hb.Budget()
     _answer(_SHEET, budget, headers=_NO_CORS, resource_type="stylesheet")
     monkeypatch.setattr(
         socket,
@@ -426,7 +455,7 @@ def test_the_import_still_meets_the_gate(monkeypatch, upstream):
 def test_anything_else_redirected_takes_the_answer_as_fetched(upstream, resource_type, headers):
     answers, _ = upstream
     _sheet_redirects(answers)
-    budget = pdf_render._Budget()
+    budget = hb.Budget()
     route = _answer(_SHEET, budget, headers=headers, resource_type=resource_type)
     assert route.outcome == ("fulfilled", (200, b"@font-face{src:url(../fonts/inter.woff2)}"))
     assert budget.held == {}
@@ -437,7 +466,7 @@ def test_a_redirected_framed_document_is_refreshed_to_where_it_landed(upstream):
     page = "https://b.example.com/reports/q3/index.html"
     answers["https://a.example.com/start"] = _redirect(page)
     answers[page] = _ok(b'<img src="chart.png">')
-    budget = pdf_render._Budget()
+    budget = hb.Budget()
     route = _answer("https://a.example.com/start", budget, headers={"accept": "text/html"}, resource_type="document")
     # Under the URL the page asked for, its chart.png would resolve on a.example.com.
     assert route.outcome == (
@@ -453,8 +482,8 @@ def test_a_redirected_framed_document_is_refreshed_to_where_it_landed(upstream):
 
 def test_a_refresh_names_where_it_landed_as_an_attribute_holds_it():
     request = MagicMock(resource_type="document", method="GET", headers={})
-    fetched = pdf_render._Fetched(200, {}, b"", url="https://b.example.com/a'b\"<c>.html")
-    _, body = pdf_render._stand_in(request, "https://a.example.com/x", fetched)
+    fetched = hb._Fetched(200, {}, b"", url="https://b.example.com/a'b\"<c>.html")
+    _, body = hb._stand_in(request, "https://a.example.com/x", fetched)
     assert body == (
         b"<!doctype html><meta http-equiv=\"refresh\" "
         b"content=\"0; url='https://b.example.com/a%27b&quot;&lt;c&gt;.html'\">"
@@ -486,14 +515,14 @@ def test_every_cookie_an_answer_sets_reaches_the_browser_apart(upstream):
 def test_a_stylesheet_that_did_not_redirect_is_answered_as_it_is(upstream):
     answers, _ = upstream
     answers[_LANDED] = _ok(b".x{}")
-    budget = pdf_render._Budget()
+    budget = hb.Budget()
     route = _answer(_LANDED, budget, headers=_NO_CORS, resource_type="stylesheet")
     assert route.outcome == ("fulfilled", (200, b".x{}"))
     assert budget.held == {}
 
 
 def test_the_import_quotes_its_url_as_css_does():
-    assert pdf_render._css_string('https://a.example.com/a"b\\c\n.css') == (
+    assert hb._css_string('https://a.example.com/a"b\\c\n.css') == (
         '"https://a.example.com/a\\"b\\\\c\\a .css"'
     )
 
@@ -589,23 +618,35 @@ def test_footer_page_numbers_only():
 @pytest.fixture
 def _isolated_browser_globals():
     """Save/restore the module's browser singleton globals around a test."""
-    saved = (pdf_render._browser, pdf_render._playwright_cm)
-    pdf_render._browser = None
-    pdf_render._playwright_cm = None
+    saved = (hb._browser, hb._playwright, hb._oom_wrapper, hb._users, hb._idle_watch)
+    hb._browser = None
+    hb._playwright = None
+    # No OOM wrapper: finding the headless shell would spawn Playwright's driver.
+    hb._oom_wrapper = False
+    hb._users = 0
+    hb._idle_watch = None
     try:
         yield
     finally:
-        pdf_render._browser, pdf_render._playwright_cm = saved
+        if hb._idle_watch is not None:
+            hb._idle_watch.cancel()
+        hb._browser, hb._playwright, hb._oom_wrapper, hb._users, hb._idle_watch = saved
 
 
 def _fake_launch_patch(launched):
-    """Patch ``async_playwright`` so each launch yields the next fake browser."""
-    cm = MagicMock()
-    cm.start = AsyncMock()
-    cm.stop = AsyncMock()
-    pw = cm.start.return_value
+    """Patch ``async_playwright`` so each launch yields the next fake browser.
+
+    Returns the started Playwright, the one with ``stop``: the context manager
+    is specced on the real one, which has none.
+    """
+    from playwright.async_api._context_manager import PlaywrightContextManager
+
+    cm = MagicMock(spec=PlaywrightContextManager)
+    pw = MagicMock()
+    pw.stop = AsyncMock()
     pw.chromium.launch = AsyncMock(side_effect=list(launched))
-    return patch("playwright.async_api.async_playwright", return_value=cm), cm
+    cm.start = AsyncMock(return_value=pw)
+    return patch("playwright.async_api.async_playwright", return_value=cm), pw
 
 
 @pytest.mark.asyncio
@@ -616,21 +657,38 @@ async def test_get_browser_relaunches_after_disconnect(_isolated_browser_globals
     fresh = MagicMock()
     fresh.is_connected.return_value = True
 
-    launch_patch, cm = _fake_launch_patch([dead, fresh])
+    launch_patch, pw = _fake_launch_patch([dead, fresh])
     with launch_patch:
-        first = await pdf_render._get_browser()
+        first = await hb.get_browser()
         assert first is dead
         # Cached handle is reused while connected.
-        assert await pdf_render._get_browser() is dead
+        assert await hb.get_browser() is dead
 
         # Chromium crashes: the cached handle now reports disconnected.
         dead.is_connected.return_value = False
-        second = await pdf_render._get_browser()
+        second = await hb.get_browser()
 
     assert second is fresh
     dead.close.assert_awaited_once()  # dead handle torn down
-    cm.stop.assert_awaited_once()  # its playwright driver stopped too
-    assert pdf_render._browser is fresh
+    pw.stop.assert_awaited_once()  # its playwright driver stopped too
+    assert hb._browser is fresh
+
+
+@pytest.mark.asyncio
+async def test_get_browser_stops_the_driver_when_launch_fails(_isolated_browser_globals):
+    launch_patch, pw = _fake_launch_patch([PlaywrightError("boom")])
+    with launch_patch, pytest.raises(hb.BrowserError):
+        await hb.get_browser()
+    pw.stop.assert_awaited_once()
+    assert hb._playwright is None
+
+
+@pytest.mark.asyncio
+async def test_get_browser_stops_the_driver_when_launch_is_cancelled(_isolated_browser_globals):
+    launch_patch, pw = _fake_launch_patch([asyncio.CancelledError()])
+    with launch_patch, pytest.raises(asyncio.CancelledError):
+        await hb.get_browser()
+    pw.stop.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -640,10 +698,10 @@ async def test_get_browser_reuses_live_handle(_isolated_browser_globals):
 
     launch_patch, _ = _fake_launch_patch([live])
     with launch_patch:
-        assert await pdf_render._get_browser() is live
-        assert await pdf_render._get_browser() is live
+        assert await hb.get_browser() is live
+        assert await hb.get_browser() is live
         # A single launch backs every call while the handle stays connected.
-        assert pdf_render._browser is live
+        assert hb._browser is live
 
 
 # --- shutdown hook (Finding 3) ---------------------------------------------
@@ -655,24 +713,44 @@ async def test_close_browser_tears_down_singleton(_isolated_browser_globals):
     # then null the globals so a later render relaunches cleanly.
     browser = MagicMock()
     browser.close = AsyncMock()
-    cm = MagicMock()
-    cm.stop = AsyncMock()
-    pdf_render._browser = browser
-    pdf_render._playwright_cm = cm
+    pw = MagicMock()
+    pw.stop = AsyncMock()
+    hb._browser = browser
+    hb._playwright = pw
 
     await pdf_render.close_browser()
 
     browser.close.assert_awaited_once()
-    cm.stop.assert_awaited_once()
-    assert pdf_render._browser is None
-    assert pdf_render._playwright_cm is None
+    pw.stop.assert_awaited_once()
+    assert hb._browser is None
+    assert hb._playwright is None
+
+
+@pytest.mark.asyncio
+async def test_reset_browser_stops_the_driver_when_the_close_is_cancelled(
+    _isolated_browser_globals,
+):
+    # The idle watch can be inside the reset when close_browser cancels it;
+    # the handles are already cleared, so a skipped stop would never happen.
+    browser = MagicMock()
+    browser.close = AsyncMock(side_effect=asyncio.CancelledError())
+    pw = MagicMock()
+    pw.stop = AsyncMock()
+    hb._browser = browser
+    hb._playwright = pw
+
+    with pytest.raises(asyncio.CancelledError):
+        await hb._reset_browser()
+
+    pw.stop.assert_awaited_once()
+    assert hb._browser is None and hb._playwright is None
 
 
 @pytest.mark.asyncio
 async def test_close_browser_noop_when_never_launched(_isolated_browser_globals):
     # No browser was ever launched (the pdf extra unused) — shutdown is a no-op.
     await pdf_render.close_browser()
-    assert pdf_render._browser is None
+    assert hb._browser is None
 
 
 # --- new_context error taxonomy (Finding 1b) -------------------------------
@@ -685,7 +763,7 @@ async def test_new_context_playwright_error_maps_to_taxonomy(_isolated_browser_g
     browser = MagicMock()
     browser.is_connected.return_value = True
     browser.new_context = AsyncMock(side_effect=PlaywrightError("target closed"))
-    pdf_render._browser = browser
+    hb._browser = browser
 
     with pytest.raises(PdfRenderError):
         await pdf_render.render_workspace_pdf(
@@ -700,11 +778,14 @@ async def test_new_page_playwright_error_maps_to_taxonomy(_isolated_browser_glob
     # the taxonomy, and the opened context must still be closed.
     context = MagicMock()
     context.new_page = AsyncMock(side_effect=PlaywrightError("page crashed"))
+    context.route = AsyncMock()
+    context.route_web_socket = AsyncMock()
+    context.add_init_script = AsyncMock()
     context.close = AsyncMock()
     browser = MagicMock()
     browser.is_connected.return_value = True
     browser.new_context = AsyncMock(return_value=context)
-    pdf_render._browser = browser
+    hb._browser = browser
 
     with pytest.raises(PdfRenderError):
         await pdf_render.render_workspace_pdf(

@@ -12,6 +12,8 @@ node_modules/
 # A host build of chartkit's render page: the images build their own, and stale
 # hashed assets from the host would ship into every sandbox beside it.
 libs/chartkit/chartkit/render/
+# Likewise the widget render page beside the backend service that drives it.
+src/server/services/widget_render_page/
 .ruff_cache/
 web/node_modules/
 web/.pnpm-store/

@@ -54,7 +54,7 @@ export interface PageAnchorItem {
  * parts, so it answers only the theme, the scroll and the address.
  */
 export type ViewerToPage =
-  /** The app's CSS variables, as `resolveThemeVars()` writes them. */
+  /** The app's CSS variables, as `paletteCss(readThemePalette())` writes them. */
   | { type: 'page:theme'; css: string }
   /** Where the reader was on the document this one replaced. */
   | { type: 'page:restore-scroll'; x: number; y: number }

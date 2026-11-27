@@ -30,10 +30,10 @@ from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.config import get_config
 
 from langchain.agents.middleware.types import AgentMiddleware
 
+from ptc_agent.agent.middleware._utils import configurable as run_configurable
 from ptc_agent.agent.middleware.provenance.body_store import (
     drain_body_writes,
     schedule_body_write,
@@ -79,14 +79,6 @@ _MOVING_PHASES = (MarketPhase.PRE, MarketPhase.REGULAR, MarketPhase.POST)
 # the model; when the current batch has one for a watched ticker we skip the
 # redundant injection. A stale/renamed entry only loses this optimization.
 _QUOTE_TOOL_NAMES = {"get_quote", "get_company_overview"}
-
-
-def _configurable() -> dict:
-    """The current run's configurable dict; empty outside a runnable context."""
-    try:
-        return get_config().get("configurable") or {}
-    except Exception:
-        return {}
 
 
 def _any_venue_open(symbols: list[str]) -> bool:
@@ -225,7 +217,7 @@ class MarketWatchMiddleware(AgentMiddleware):
         if not isinstance(tail, (HumanMessage, ToolMessage)):
             return None
 
-        configurable = _configurable()
+        configurable = run_configurable()
         thread_id = configurable.get("thread_id")
         if not thread_id:
             return None

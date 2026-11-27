@@ -20,6 +20,9 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 
+/** The `widget_type` of what a ShowWidget widget in the chat sent with a message. */
+export const SHOW_WIDGET_CONTEXT_TYPE = 'chat.show_widget';
+
 export interface WidgetContextSnapshot {
   widget_type: string;
   widget_id: string;

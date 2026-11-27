@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional, get_args
 
 
 from ptc_agent.agent.limits import UNBOUNDED_RECURSION_LIMIT
@@ -46,7 +46,7 @@ from src.server.services.runs.pending_input import (
 )
 from src.server.database.runs import lifecycle as tl_db
 from src.server.database.runs.hook_jobs import SURFACE_META
-from src.server.models.chat import CommandReport, summarize_hitl_response_map
+from src.server.models.chat import CommandReport, Device, summarize_hitl_response_map
 from src.server.utils.chart_view_context import chart_views_env
 from src.server.utils.skill_context import (
     detect_slash_commands,
@@ -650,6 +650,7 @@ def build_turn_context(
         keep_full_context=request.keep_full_context,
         sent_at=sent_at,
         platform=request.platform,
+        device=request.device,
         origin=request.origin.type if request.origin else None,
         origin_agent=request.origin.agent if request.origin else None,
         surface_rules=request.surface_rules,
@@ -726,8 +727,8 @@ def surface_stamp(
 
     ``/retry`` builds its attempt from the run row, with no surface, and the
     thread's bound surface would make a web turn on a channel's thread the
-    channel's. So each attempt records where it ran and the rules it ran
-    under, and a retry of it runs there too (:func:`retried_on_its_surface`),
+    channel's. So each attempt records where it ran, the device it was sent
+    from and the rules it ran under, and a retry of it runs there too (:func:`retried_on_its_surface`),
     as does a resume of it (:func:`turn_surface`). A plain web-app turn
     records nothing.
     """
@@ -737,6 +738,8 @@ def surface_stamp(
         stamp["platform"] = platform
     if request.surface_rules:
         stamp["rules"] = request.surface_rules
+    if request.device:
+        stamp["device"] = request.device
     if inherits_rules:
         stamp["inherits_rules"] = True
     return {SURFACE_META: stamp} if stamp else {}
@@ -757,10 +760,12 @@ async def retried_on_its_surface(request: ChatRequest) -> tuple[ChatRequest, boo
     if not isinstance(stamp, dict):
         return request, False
     platform, rules = stamp.get("platform"), stamp.get("rules")
+    device = stamp.get("device")
     request = request.model_copy(
         update={
             "platform": platform if isinstance(platform, str) and platform else None,
             "surface_rules": rules if isinstance(rules, str) and rules else None,
+            "device": device if device in get_args(Device) else None,
         }
     )
     return request, stamp.get("inherits_rules") is True

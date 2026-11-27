@@ -188,7 +188,7 @@ async def _call(middleware, messages, *, thread_id="thread-1", configurable=None
     handler = AsyncMock(return_value="model-response")
     config = {"configurable": {"thread_id": thread_id, **(configurable or {})}}
     with (
-        patch(f"{_MW}.get_config", return_value=config),
+        patch("ptc_agent.agent.middleware._utils.get_config", return_value=config),
         patch(f"{_MW}.get_stream_writer", return_value=emitted.append),
         patch(_STORE_PATH, store),
     ):
@@ -524,7 +524,7 @@ async def _status_call(middleware, artifact):
     result = ToolMessage(content="listing", tool_call_id="s1", artifact=artifact)
     request = SimpleNamespace(tool_call={"name": "ThreadStatus", "args": {}, "id": "s1"})
     with (
-        patch(f"{_MW}.get_config", return_value={"configurable": {"thread_id": "thread-1"}}),
+        patch("ptc_agent.agent.middleware._utils.get_config", return_value={"configurable": {"thread_id": "thread-1"}}),
         patch(f"{_MW}.get_stream_writer", return_value=emitted.append),
         patch(_STORE_PATH, AsyncMock()),
     ):
