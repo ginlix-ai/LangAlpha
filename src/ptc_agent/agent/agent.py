@@ -185,6 +185,7 @@ from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import PTCSandbox
 from ptc_agent.core.sandbox.livefs_mount import CallContext, HistoryFiles
 from ptc_agent.agent.tools.command_handoff import HandOff
+from ptc_agent.agent.tools.command_wake import TaskWake, ThreadWake
 
 from ptc_agent.agent.turn import build_model_resilience_middleware, turn_model
 
@@ -570,6 +571,26 @@ class PTCAgent:
             else None
         )
 
+        _bg_registry = background_registry or BackgroundTaskRegistry()
+
+        # What the main agent's next model call takes in. Without subagents
+        # there is no TaskOutput to read a task report's result with, nor a
+        # task to resume, so only steers are taken in. A Claude Code turn
+        # takes the other reports in either way (a command's end, a wakeup,
+        # an alert), which its tool hook hands Claude mid-turn, and resumes
+        # only as it opens.
+        steer_kinds = (
+            ("report", "steer") if claude_code and disable_subagents
+            else ("steer",) if disable_subagents
+            else ("report", "steer", "resume")
+        )
+        # What cuts a command's wait short for each: what its next model call
+        # would take in.
+        main_wake = (
+            ThreadWake(_bg_registry, thread_id, steer_kinds) if thread_id else None
+        )
+        task_wake = TaskWake(_bg_registry)
+
         # Create the execute_code tool for MCP invocation. The builders are
         # kept for the subagents, which get their own: theirs wait until a run
         # ends, and one limited to some servers gets a copy of its own.
@@ -582,7 +603,7 @@ class PTCAgent:
             call_context=call_context,
             file_tools_only=file_tools_only,
         )
-        execute_code_tool = code_tool(hand_off=hand_off)
+        execute_code_tool = code_tool(hand_off=hand_off, wake=main_wake)
 
         # Create the Bash tool for shell command execution
         shell_tool = partial(
@@ -593,12 +614,12 @@ class PTCAgent:
             call_context=call_context,
             file_tools_only=file_tools_only,
         )
-        bash_tool = shell_tool(hand_off=hand_off)
+        bash_tool = shell_tool(hand_off=hand_off, wake=main_wake)
         # A subagent already runs in the background, so its calls wait for
         # their commands instead of handing them off: nothing reports back to
         # a subagent that may have finished.
-        sub_code_tool = code_tool()
-        sub_bash_tool = shell_tool()
+        sub_code_tool = code_tool(wake=task_wake)
+        sub_bash_tool = shell_tool(wake=task_wake)
 
         # Create the preview URL tool for sandbox service previews
         workspace_id = project.workspace_id if project else ""
@@ -848,23 +869,11 @@ class PTCAgent:
         # --- Build main-only middleware (NOT passed to subagents) ---
         main_only_middleware: list[Any] = []
 
-        _bg_registry = background_registry or BackgroundTaskRegistry()
-
         # Must be first: steering context must be visible before any other
         # middleware, and its tool hook must wrap the Task interceptor so a
-        # resume it calls settles on that call's result. Without subagents
-        # there is no TaskOutput to read a task report's result with, nor a
-        # task to resume, so only steers are taken in. A Claude Code turn
-        # takes the other reports in either way (a command's end, a wakeup,
-        # an alert), which its tool hook hands Claude mid-turn, and resumes
-        # only as it opens.
+        # resume it calls settles on that call's result.
         steering = SteeringMiddleware(
-            report_inbox=_bg_registry.report_inbox,
-            kinds=(
-                ("report", "steer") if claude_code and disable_subagents
-                else ("steer",) if disable_subagents
-                else ("report", "steer", "resume")
-            ),
+            report_inbox=_bg_registry.report_inbox, kinds=steer_kinds
         )
         main_only_middleware.append(steering)
 
@@ -905,9 +914,9 @@ class PTCAgent:
                 web=[web_search_tool, web_fetch_tool],
                 finance=finance_tools,
                 search_tool=search_tool,
-                sandbox_tools=lambda allowed: [
-                    code_tool(allowed_servers=allowed),
-                    shell_tool(allowed_servers=allowed),
+                sandbox_tools=lambda allowed, *, sets_aside: [
+                    code_tool(allowed_servers=allowed, wake=task_wake if sets_aside else None),
+                    shell_tool(allowed_servers=allowed, wake=task_wake),
                 ],
                 turn_context=turn_context,
                 user_profile=user_profile,
@@ -1004,6 +1013,7 @@ class PTCAgent:
                     if hand_off is not None
                     else None
                 ),
+                "wake": main_wake,
             }
             built = [
                 create_execute_code_tool(there, mcp_registry, **machine),

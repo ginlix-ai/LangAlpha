@@ -20,6 +20,7 @@ from ptc_agent.agent.tools.code_admission import (
     resource_tiers_of,
 )
 from ptc_agent.agent.tools.command_handoff import CommandCall, HandOff
+from ptc_agent.agent.tools.command_wake import Wake
 from ptc_agent.agent.tools.mount_guard import run_guarded
 from ptc_agent.agent.tools.utils import resource_tier_of
 from ptc_agent.core.paths import (
@@ -29,7 +30,7 @@ from ptc_agent.core.paths import (
 )
 from ptc_agent.core.sandbox import livefs_mount
 from ptc_agent.core.sandbox.execution import JobExecFailed
-from ptc_agent.core.sandbox.jobs import Ended, Failed, JobContext, JobOutcome
+from ptc_agent.core.sandbox.jobs import Arrival, Ended, Failed, JobContext, JobOutcome
 from src.observability import (
     TOOL_CHANNEL,
     TOOL_PROVIDER,
@@ -123,6 +124,7 @@ def create_execute_code_tool(
     file_tools_only: tuple[str, ...] = (),
     allowed_servers: frozenset[str] | None = None,
     hand_off: HandOff | None = None,
+    wake: Wake | None = None,
 ) -> BaseTool:
     """Factory function to create execute_code tool with injected dependencies.
 
@@ -143,6 +145,8 @@ def create_execute_code_tool(
         hand_off: The main agent's thread, which a run still going at the
             wait is handed to. None for a subagent, whose call waits until the
             run ends.
+        wake: What ends a call's wait early: something arriving for the
+            agent to read (``command_wake``).
 
     Returns:
         Configured execute_code tool function
@@ -199,7 +203,7 @@ def create_execute_code_tool(
         stamp_resource_tier(resource_tier_of(session, backend))
         logger.info("Executing code in sandbox", code_length=len(call.command), thread_id=thread_id)
 
-        async def launch(wait_s: float) -> JobOutcome:
+        async def launch(wait_s: float, until: Arrival | None) -> JobOutcome:
             return await backend.start_code_job(
                 call.command,
                 wait_s=wait_s,
@@ -209,11 +213,12 @@ def create_execute_code_tool(
                     allowed_servers=allowed_servers,
                     env=command_handoff.turn_job_env(call.config),
                 ),
+                until=until,
             )
 
         try:
             return await command_handoff.run_command(
-                backend, call, launch, _result, hand_off=hand_off, slot=_slot
+                backend, call, launch, _result, hand_off=hand_off, slot=_slot, wake=wake
             )
         except Exception as e:
             return _raised(e)

@@ -20,6 +20,7 @@ from pydantic.json_schema import SkipJsonSchema
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.tools import command_handoff
 from ptc_agent.agent.tools.command_handoff import CommandCall, HandOff
+from ptc_agent.agent.tools.command_wake import Wake
 from ptc_agent.agent.tools.mount_guard import run_guarded
 from ptc_agent.agent.tools.utils import resource_tier_of
 from ptc_agent.core.paths import (
@@ -30,7 +31,7 @@ from ptc_agent.core.paths import (
 from ptc_agent.core.sandbox import livefs_mount
 from ptc_agent.core.sandbox.execution import JobExecFailed
 from ptc_agent.core.sandbox.jobs import (
-    Ended, Failed, JobContext, JobHandle, JobNotLaunched, JobOutcome
+    Arrival, Ended, Failed, JobContext, JobHandle, JobNotLaunched, JobOutcome
 )
 from src.observability import (
     TOOL_CHANNEL,
@@ -140,7 +141,9 @@ rerun resumes where it stopped.
 )
 
 # A subagent's: it already runs in the background, so its call waits until
-# the command ends, and nothing reports back to it later.
+# the command ends, and nothing reports back to it later. A message sent to
+# it can set the command aside instead (``command_wake``), which wait_for and
+# stop then reach.
 _SUBAGENT_BASH_DOC = (
     _BASH_SUMMARY
     + """
@@ -149,14 +152,18 @@ Args:
     description: Brief description (5-10 words, active voice)
     working_dir: Where to run (default: your workspace folder, which
         relative paths in the command resolve against)
+    wait_for: A command_id that was set aside; waits on it again instead
+        of running a command.
+    stop: A command_id that was set aside; stops it.
 
 Returns:
     Combined stdout and stderr, or an ERROR message.
 
 The call waits until the command ends, which can take hours; if your own
-time limit runs out first, the command is stopped. To leave a server
-running, end the command with & and send its output to a file, as in
-nohup python -m http.server 8050 > server.log 2>&1 &
+time limit runs out first, the command is stopped. A message sent to you
+meanwhile may set the command aside, still running, so you can read it. To
+leave a server running, end the command with & and send its output to a
+file, as in nohup python -m http.server 8050 > server.log 2>&1 &
 """
 )
 
@@ -187,11 +194,19 @@ class _SubagentBashArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
-    command: str
+    command: str | None = None
     description: str | None = None
     working_dir: str | None = None
+    wait_for: str | None = None
+    stop: str | None = None
     run_in_background: SkipJsonSchema[Any] = _NOT_GIVEN
     timeout: SkipJsonSchema[Any] = _NOT_GIVEN
+
+
+_ONE_ACTION = (
+    "ERROR: Give exactly one of command, wait_for or stop: wait_for and stop "
+    "name a command_id that was set aside, in place of a command to run."
+)
 
 
 def subagent_refusal(**given: Any) -> str | None:
@@ -228,6 +243,7 @@ def create_execute_bash_tool(
     file_tools_only: tuple[str, ...] = (),
     allowed_servers: frozenset[str] | None = None,
     hand_off: HandOff | None = None,
+    wake: Wake | None = None,
 ) -> BaseTool:
     """Factory function to create Bash tool with injected dependencies.
 
@@ -245,6 +261,8 @@ def create_execute_bash_tool(
         hand_off: The main agent's thread, which a command still running at
             the wait is handed to. None for a subagent, whose call waits until
             the command ends.
+        wake: What ends a call's wait early: something arriving for the
+            agent to read (``command_wake``).
 
     Returns:
         Configured Bash tool function
@@ -275,9 +293,11 @@ def create_execute_bash_tool(
         )
 
     async def SubagentBash(
-        command: str,
+        command: str | None = None,
         description: str | None = None,
         working_dir: str | None = None,
+        wait_for: str | None = None,
+        stop: str | None = None,
         run_in_background: Any = _NOT_GIVEN,
         timeout: Any = _NOT_GIVEN,
         *,
@@ -286,6 +306,17 @@ def create_execute_bash_tool(
         refused = subagent_refusal(run_in_background=run_in_background, timeout=timeout)
         if refused is not None:
             return refused, {"mcp_trace": []}
+        wait_for, stop = (wait_for or "").strip(), (stop or "").strip()
+        if sum(map(bool, ((command or "").strip(), wait_for, stop))) != 1:
+            return _ONE_ACTION, {"mcp_trace": []}
+        try:
+            if wait_for:
+                return await command_handoff.wait_again(wait_for, config, wake)
+            if stop:
+                return await command_handoff.stop_aside(stop)
+        except Exception as e:
+            return _raised(e)
+        assert command is not None
         call = CommandCall("Bash", command, description, config, None, session)
         return await _guarded(
             command, working_dir, config, lambda call_id: _run(call, working_dir, call_id)
@@ -327,7 +358,7 @@ def create_execute_bash_tool(
             thread_id=thread_id or None,
         )
 
-        async def launch(wait_s: float) -> JobOutcome:
+        async def launch(wait_s: float, until: Arrival | None) -> JobOutcome:
             try:
                 return await backend.start_bash_job(
                     call.command,
@@ -339,6 +370,7 @@ def create_execute_bash_tool(
                         allowed_servers=allowed_servers,
                         env=command_handoff.turn_job_env(call.config),
                     ),
+                    until=until,
                 )
             except JobNotLaunched as e:
                 return await _not_launched(e, wait_s, call.config)
@@ -352,6 +384,7 @@ def create_execute_bash_tool(
                 hand_off=hand_off,
                 first_wait=first_wait,
                 background=background,
+                wake=wake,
             )
         except Exception as e:
             return _raised(e)

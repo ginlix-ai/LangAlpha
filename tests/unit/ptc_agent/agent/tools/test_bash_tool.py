@@ -217,7 +217,7 @@ class TestTheWait:
             },
         }
         await _main(backend).ainvoke(
-            tool_call("Bash", command="sleep 900", timeout=900_000), config
+            tool_call("Bash", command="python train.py", timeout=900_000), config
         )
         assert low <= backend.start_bash_job.await_args.kwargs["wait_s"] <= high
 
@@ -229,7 +229,7 @@ class TestTheWait:
             "configurable": {TURN_DEADLINE_KEY: time.time() + 121, TURN_TIME_LIMIT_KEY: 120},
         }
         with patch(_RECORD, new=AsyncMock()):
-            msg = await _main(backend).ainvoke(tool_call("Bash", command="sleep 400"), config)
+            msg = await _main(backend).ainvoke(tool_call("Bash", command="python train.py"), config)
         assert msg.content.startswith("Still running after 1m, so it moved")
 
     @pytest.mark.asyncio
@@ -254,7 +254,7 @@ class TestTheWait:
         config = {
             "configurable": {TURN_DEADLINE_KEY: time.time() + 3600, TURN_TIME_LIMIT_KEY: 3600}
         }
-        msg = await tool.ainvoke(tool_call("Bash", command="sleep 400"), config)
+        msg = await tool.ainvoke(tool_call("Bash", command="python train.py"), config)
         # To its own clock, where its tools stop, past its first wait.
         assert 2900 < backend.continue_job.await_args.args[1] < 3600
         assert msg.content == "ok"
@@ -265,7 +265,7 @@ class TestTheWait:
         off to: unbounded, a hung command would hold the call forever."""
         backend = _backend(outcome(done=False, duration_s=300))
         tool = create_execute_bash_tool(backend)
-        msg = await tool.ainvoke(tool_call("Bash", command="sleep 400"))
+        msg = await tool.ainvoke(tool_call("Bash", command="python train.py"))
         backend.continue_job.assert_not_awaited()
         backend.stop_job_with_trace.assert_awaited_once()
         assert msg.content.startswith("ERROR: Stopped after 5m: your time limit ran out")
@@ -310,7 +310,7 @@ class TestTheWait:
     def test_the_subagents_schema_still_names_only_its_own_arguments(self):
         tool = create_execute_bash_tool(_backend())
         assert set(tool.tool_call_schema.model_json_schema()["properties"]) == {
-            "command", "description", "working_dir",
+            "command", "description", "working_dir", "wait_for", "stop",
         }
 
     @pytest.mark.asyncio
@@ -324,7 +324,7 @@ class TestTheWait:
             "configurable": {TURN_DEADLINE_KEY: time.time() + 90, TURN_TIME_LIMIT_KEY: 90}
         }
 
-        msg = await tool.ainvoke(tool_call("Bash", command="sleep 400"), config)
+        msg = await tool.ainvoke(tool_call("Bash", command="python train.py"), config)
 
         assert 70 < backend.start_bash_job.await_args.kwargs["wait_s"] <= 75
         backend.stop_job_with_trace.assert_awaited_once()
@@ -347,7 +347,7 @@ class TestTheWait:
             "configurable": {TURN_DEADLINE_KEY: time.time() + 90, TURN_TIME_LIMIT_KEY: 90}
         }
 
-        msg = await tool.ainvoke(tool_call("Bash", command="sleep 400"), config)
+        msg = await tool.ainvoke(tool_call("Bash", command="python train.py"), config)
 
         backend.read_ended_job.assert_awaited_once()
         backend.continue_job.assert_not_awaited()
@@ -367,7 +367,7 @@ class TestTheWait:
             "configurable": {TURN_DEADLINE_KEY: time.time() + 90, TURN_TIME_LIMIT_KEY: 90}
         }
 
-        msg = await tool.ainvoke(tool_call("Bash", command="sleep 400"), config)
+        msg = await tool.ainvoke(tool_call("Bash", command="python train.py"), config)
 
         assert msg.content == (
             "ERROR: Stopped after 1m: your time limit ran out before it ended. "
@@ -811,9 +811,10 @@ class TestDescription:
         # A server it starts with & outlives the call, which returns at once.
         assert text.endswith(
             "The call waits until the command ends, which can take hours; if your own\n"
-            "time limit runs out first, the command is stopped. To leave a server\n"
-            "running, end the command with & and send its output to a file, as in\n"
-            "nohup python -m http.server 8050 > server.log 2>&1 &"
+            "time limit runs out first, the command is stopped. A message sent to you\n"
+            "meanwhile may set the command aside, still running, so you can read it. To\n"
+            "leave a server running, end the command with & and send its output to a\n"
+            "file, as in nohup python -m http.server 8050 > server.log 2>&1 &"
         )
 
 

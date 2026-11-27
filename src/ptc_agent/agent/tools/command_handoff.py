@@ -8,13 +8,19 @@ at hand-off. A subagent's call waits until its job ends instead
 (``hand_off=None`` on the tool factories), up to its own clock: it already
 runs in the background, so its wait blocks nobody, and its own result covers
 the command.
+
+Either call's wait also ends when something arrives for the agent to read
+(``command_wake``): anything, for a command that is only waiting, else a
+message sent with Send now. The main agent's command is handed off then, and
+a subagent's is set aside in its run (``command_shelf``), for a later call to
+wait on again or stop. Nothing is stopped for an arrival.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,8 +29,20 @@ from typing import Any
 import structlog
 
 from ptc_agent.agent.limits import pending_read, read_a_running_thread
+from ptc_agent.agent.tools.command_shelf import Aside, CommandShelf, current_shelf, unfollow
+from ptc_agent.agent.tools.command_wake import Wake
+from ptc_agent.agent.tools.waiting import is_waiting
 from ptc_agent.agent.tools.utils import mark_sandbox_failed, note_sandbox_exit
-from ptc_agent.core.sandbox.jobs import Ended, Failed, JobOutcome, JobRef, Outbox, Running
+from ptc_agent.core.sandbox.jobs import (
+    Arrival,
+    Ended,
+    Failed,
+    JobOutcome,
+    JobRef,
+    Outbox,
+    Running,
+    until_arrived,
+)
 from src.utils.durations import format_duration
 
 logger = structlog.get_logger(__name__)
@@ -63,8 +81,9 @@ JOB_ENV_KEY = "job_env"
 
 #: Renders a job that ended, or a call that failed, as the tool returns it.
 Render = Callable[[Ended | Failed], Awaitable[tuple[str, dict[str, Any]]]]
-#: Starts the tool's job with the wait it is given.
-Launch = Callable[[float], Awaitable[JobOutcome]]
+#: Starts the tool's job with the wait it is given, ended early by the
+#: arrival when there is one.
+Launch = Callable[[float, Arrival | None], Awaitable[JobOutcome]]
 #: What a call returns: its text and its artifact.
 Result = tuple[str, dict[str, Any]]
 
@@ -209,6 +228,7 @@ async def run_command(
     first_wait: float = HANDOFF_WAIT_S,
     background: bool = False,
     slot: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    wake: Wake | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Launch a command, wait on it, and return what the call answers.
 
@@ -223,7 +243,8 @@ async def run_command(
     the ledger owns a job, a cancel stops it, since nothing else would ever
     end it. A job that ended in the call, whichever way, has its outbox
     published here, once, as the call returns; the watcher publishes one
-    handed off.
+    handed off. ``wake`` ends a wait early when something arrives for the
+    agent (see the module doc).
     """
     result, outbox = await _drive(
         backend,
@@ -234,21 +255,32 @@ async def run_command(
         first_wait=first_wait,
         background=background,
         slot=slot,
+        wake=wake,
     )
+    return await _published(result, outbox, call)
+
+
+async def _published(result: Result, outbox: Outbox, call: CommandCall) -> Result:
+    """``result`` with what an ended job published to its outbox."""
     if not outbox:
         return result
-    # Lazy: a build with no server behind it, and every run that published
-    # nothing, never loads the store.
-    from src.tools.chart_annotation.layers import publish_outbox
-
-    workspace_id = ((call.config or {}).get("configurable") or {}).get("workspace_id")
-    published = await publish_outbox(outbox, str(workspace_id) if workspace_id else None)
+    published = await _publish(outbox, call)
     content, artifact = result
     if published.layers:
         artifact = {**artifact, "chart_layers": published.layers}
     if published.text:
         content = content.rstrip("\n") + "\n\n" + published.text
     return content, artifact
+
+
+async def _publish(outbox: Outbox, call: CommandCall) -> Any:
+    """Store and stream what a job published, for the workspace it ran for."""
+    # Lazy: a build with no server behind it, and every run that published
+    # nothing, never loads the store.
+    from src.tools.chart_annotation.layers import publish_outbox
+
+    workspace_id = ((call.config or {}).get("configurable") or {}).get("workspace_id")
+    return await publish_outbox(outbox, str(workspace_id) if workspace_id else None)
 
 
 def _marking_running_reads(render: Render) -> Render:
@@ -278,47 +310,229 @@ async def _drive(
     first_wait: float,
     background: bool,
     slot: Callable[[], AbstractAsyncContextManager[Any]] | None,
+    wake: Wake | None,
 ) -> tuple[Result, Outbox]:
     """``run_command``'s result, and the outbox of a job that ended in it."""
-
-    async def ended(outcome: Ended | Failed) -> tuple[Result, Outbox]:
-        return await render(outcome), _outbox_of(outcome)
-
+    # A command asked for the background is handed off at once: nothing to cut.
+    until = (
+        wake.arrival(call.config, waiting=is_waiting(call.tool, call.command))
+        if wake is not None and not background
+        else None
+    )
     held = _Held(backend)
     try:
         async with slot() if slot is not None else contextlib.nullcontext():
             wait_s, waits_on = _first_wait(call.config, hand_off, first_wait, background)
             # Held before the slot is let go, whose release can be cancelled.
-            outcome = held.hold(await launch(wait_s))
+            outcome = held.hold(await launch(wait_s, until))
         if not isinstance(outcome, Running):
-            return await ended(outcome)
-        if hand_off is not None:
-            if await held.hand_over(call, hand_off):
-                log = hand_off.log_path(outcome.ref)
-                after = await _after_turn(call.computer_id(), wakeups=hand_off.wakeups)
-                text = (
-                    background_result(outcome, after_turn=after, log=log)
-                    if background
-                    else handoff_result(outcome, waited_s=wait_s, after_turn=after, log=log)
-                )
-                return (text, {"mcp_trace": [], "command_id": outcome.ref.command_id}), Outbox()
-            if background:
-                # Unrecorded, nothing would report it or stop it after the turn.
-                await held.stop()
-                return (not_handed_off_result(), {"mcp_trace": []}), Outbox()
-        left = wait_left(call.config) if waits_on else None
-        if left is not None:
-            # The call keeps the command it started, until its tools stop:
-            # past that the turn could not end. With no clock (an agent built
-            # outside a turn, or a turn with no limit) its first wait was its
-            # bound, as its timeout was before commands ran as jobs.
-            outcome = held.hold(await backend.continue_job(outcome, left))
-            if not isinstance(outcome, Running):
-                return await ended(outcome)
-        return await stop_at_deadline(backend, outcome, render, log_of(outcome.ref, hand_off))
+            return await _ended(render, outcome)
+        if hand_off is None:
+            return await _after_subagent_wait(
+                backend, call, held, outcome, render, waits_on=waits_on, until=until
+            )
+        return await _after_main_wait(
+            backend,
+            call,
+            held,
+            outcome,
+            render,
+            hand_off,
+            wait_s=wait_s,
+            waits_on=waits_on,
+            background=background,
+        )
     except asyncio.CancelledError:
         await held.release()
         raise
+
+
+async def _ended(render: Render, outcome: Ended | Failed) -> tuple[Result, Outbox]:
+    return await render(outcome), _outbox_of(outcome)
+
+
+async def _after_main_wait(
+    backend: Any,
+    call: CommandCall,
+    held: _Held,
+    outcome: Running,
+    render: Render,
+    hand_off: HandOff,
+    *,
+    wait_s: float,
+    waits_on: bool,
+    background: bool,
+) -> tuple[Result, Outbox]:
+    """The main agent's command still running when its wait ended: handed to
+    the thread. One whose row could not be written is waited on to the call's
+    clock, whatever arrives."""
+    if await held.hand_over(call, hand_off):
+        log = hand_off.log_path(outcome.ref)
+        after = await _after_turn(call.computer_id(), wakeups=hand_off.wakeups)
+        if background:
+            text = background_result(outcome, after_turn=after, log=log)
+        elif outcome.woken:
+            text = arrival_handoff_result(outcome, after_turn=after, log=log)
+        else:
+            text = handoff_result(outcome, waited_s=wait_s, after_turn=after, log=log)
+        return (text, {"mcp_trace": [], "command_id": outcome.ref.command_id}), Outbox()
+    if background:
+        # Unrecorded, nothing would report it or stop it after the turn.
+        await held.stop()
+        return (not_handed_off_result(), {"mcp_trace": []}), Outbox()
+    outcome = await _wait_on(backend, call, held, outcome, waits_on=waits_on, until=None)
+    if not isinstance(outcome, Running):
+        return await _ended(render, outcome)
+    return await stop_running(backend, outcome, render, hand_off.log_path(outcome.ref))
+
+
+async def _after_subagent_wait(
+    backend: Any,
+    call: CommandCall,
+    held: _Held,
+    outcome: Running,
+    render: Render,
+    *,
+    waits_on: bool,
+    until: Arrival | None,
+) -> tuple[Result, Outbox]:
+    """A subagent's command still running at its first wait: waited on to
+    the call's clock and stopped there. Something arriving meanwhile sets it
+    aside in the run (``TaskWake`` arms only where the run has a shelf)."""
+    log = log_of(outcome.ref, None)
+    if not outcome.woken:
+        outcome = await _wait_on(backend, call, held, outcome, waits_on=waits_on, until=until)
+        if not isinstance(outcome, Running):
+            return await _ended(render, outcome)
+        if not outcome.woken:
+            return await stop_running(backend, outcome, render, log)
+    shelf = current_shelf.get()
+    assert shelf is not None, "a subagent's wait is cut short only in a run with a shelf"
+    shelf.keep(backend, call, held.let_go(), render, log)
+    # Its MCP calls ride the result of the call that waits on it again.
+    return (set_aside_result(outcome, log), {"mcp_trace": []}), Outbox()
+
+
+async def _wait_on(
+    backend: Any,
+    call: CommandCall,
+    held: _Held,
+    outcome: Running,
+    *,
+    waits_on: bool,
+    until: Arrival | None,
+) -> JobOutcome:
+    """Wait on a job past the call's first wait, to the call's clock.
+
+    The call keeps the command it started until its tools stop: past that
+    the turn could not end. With no clock (an agent built outside a turn, or
+    a turn with no limit) its first wait was its bound, as its timeout was
+    before commands ran as jobs.
+    """
+    left = wait_left(call.config) if waits_on else None
+    if left is None:
+        return outcome
+    return held.hold(await backend.continue_job(outcome, left, until=until))
+
+
+async def wait_again(command_id: str, config: Mapping[str, Any] | None, wake: Wake | None) -> Result:
+    """A subagent's ``wait_for``: wait again on a command it set aside, until
+    it ends, something else arrives, or the run's clock runs out, which
+    stops it as it stops any command of the run."""
+    shelf = current_shelf.get()
+    aside = shelf.get(command_id) if shelf is not None else None
+    if aside is None:
+        return not_set_aside_result(command_id), {"mcp_trace": []}
+    waiting = is_waiting(aside.call.tool, aside.call.command)
+    until = wake.arrival(config, waiting=waiting) if wake is not None else None
+    watch = asyncio.ensure_future(until_arrived(until)) if until is not None else None
+    try:
+        await asyncio.wait(
+            [aside.follow, *([watch] if watch is not None else [])],
+            timeout=wait_left(config),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        if watch is not None:
+            watch.cancel()
+    if not aside.follow.done() and watch is not None and watch.done():
+        return set_aside_again_result(aside.running, aside.log), {"mcp_trace": []}
+    # Ended or out of time: this call ends it, unless another call has.
+    if shelf.take(command_id) is not aside:
+        return not_set_aside_result(command_id), {"mcp_trace": []}
+    return await _end_aside(shelf, aside, deadline_result)
+
+
+async def stop_aside(command_id: str) -> Result:
+    """A subagent's ``stop``: end a command it set aside. One that ended
+    meanwhile is returned as it ended."""
+    shelf = current_shelf.get()
+    aside = shelf.take(command_id) if shelf is not None else None
+    if shelf is None or aside is None:
+        return not_set_aside_result(command_id), {"mcp_trace": []}
+    return await _end_aside(shelf, aside, stopped_result)
+
+
+@contextlib.asynccontextmanager
+async def run_shelf() -> AsyncIterator[CommandShelf]:
+    """A background subagent run's shelf, for its calls to set commands aside
+    on. What is still on it when the run ends is stopped, the end every
+    command of a subagent's has, and what each published is published, their
+    logs left where they are. The close never raises."""
+    shelf = CommandShelf()
+    token = current_shelf.set(shelf)
+    try:
+        yield shelf
+    finally:
+        current_shelf.reset(token)
+        await asyncio.gather(*(_close_aside(aside) for aside in shelf.take_all()))
+
+
+async def _end_aside(
+    shelf: CommandShelf, aside: Aside, said: Callable[[Running, str], str]
+) -> Result:
+    """Read a set-aside command that ended, or stop one still running. One
+    this fails or is cancelled on goes back on the shelf for the run's end."""
+    try:
+        if aside.follow.done():
+            return await _collect(aside)
+        return await _stop_aside(aside, said)
+    except BaseException:
+        shelf.restore(aside)
+        raise
+
+
+async def _collect(aside: Aside) -> Result:
+    """Read a set-aside command its follow saw end, as its call would have."""
+    outcome = await aside.backend.continue_job(aside.running, 0)
+    assert not isinstance(outcome, Running), "a job that ended does not run again"
+    return await _published(await aside.render(outcome), _outbox_of(outcome), aside.call)
+
+
+async def _stop_aside(aside: Aside, said: Callable[[Running, str], str]) -> Result:
+    await unfollow(aside)
+    result, outbox = await stop_running(
+        aside.backend, aside.running, aside.render, aside.log, said=said
+    )
+    return await _published(result, outbox, aside.call)
+
+
+async def _close_aside(aside: Aside) -> None:
+    await unfollow(aside)
+    command_id = aside.running.ref.command_id
+    try:
+        # A stop reaps nothing, so an ended one's log stays too.
+        stopped = await asyncio.shield(aside.backend.stop_job_with_trace(aside.running))
+        if stopped.outbox:
+            await _publish(stopped.outbox, aside.call)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 - a later launch prunes its state
+        logger.warning(
+            "Could not stop a set-aside command at its run's end",
+            command_id=command_id,
+            error=str(e),
+        )
 
 
 class _Held:
@@ -332,6 +546,12 @@ class _Held:
     def hold(self, outcome: JobOutcome) -> JobOutcome:
         self.running = outcome if isinstance(outcome, Running) else None
         return outcome
+
+    def let_go(self) -> Running:
+        """Give the held job to whatever keeps it from here (a run's shelf)."""
+        running, self.running = self.running, None
+        assert running is not None
+        return running
 
     def _stop(self, running: Running) -> Awaitable[Any]:
         return self._backend.stop_job(running.ref, discard=True)
@@ -465,11 +685,17 @@ async def _row_exists(thread_id: str, command_id: str) -> bool:
         return False
 
 
-async def stop_at_deadline(
-    backend: Any, outcome: Running, render: Render, log: str
+async def stop_running(
+    backend: Any,
+    outcome: Running,
+    render: Render,
+    log: str,
+    *,
+    said: Callable[[Running, str], str] | None = None,
 ) -> tuple[Result, Outbox]:
-    """Stop a job the call's clock ran out on: what the call returns, and
-    what the job published before the stop, for the call to publish.
+    """Stop a job the call holds, by default because the call's clock ran out
+    (``said`` words another reason): what the call returns, and what the job
+    published before the stop, for the call to publish.
 
     The MCP calls ride the result as an ended job's do, read by the stop's
     own exec, as is the outbox: a wait would reap the stopped job and move
@@ -490,8 +716,8 @@ async def stop_at_deadline(
         else:
             if not isinstance(done, Running):
                 return await render(done), _outbox_of(done)
-    result = deadline_result(outcome, log), {"mcp_trace": list(stopped.mcp_trace)}
-    return result, stopped.outbox
+    text = (said or deadline_result)(outcome, log)
+    return (text, {"mcp_trace": list(stopped.mcp_trace)}), stopped.outbox
 
 
 async def settle(backend: Any, outcome: Ended | Failed, hand_off: HandOff | None) -> str:
@@ -559,6 +785,57 @@ def handoff_result(outcome: Running, *, waited_s: float, after_turn: str, log: s
         "finishes. To stop it early, use ThreadStatus with stop.\n\n"
         f"{after_turn}\n\n"
         "Meanwhile do other work, or tell the user it is running and end your turn."
+    )
+
+
+def arrival_handoff_result(outcome: Running, *, after_turn: str, log: str) -> str:
+    """What a call whose wait something arriving cut short returns, its
+    command handed off."""
+    return (
+        f"Moved to the background after {_ran_for(outcome.handle.ran_for())} so you "
+        f"can read what just reached you. It is still running as command_id "
+        f"{outcome.ref.command_id}; its output goes to {log}, and you will be "
+        "notified when it finishes. To stop it, use ThreadStatus with stop.\n\n"
+        f"{after_turn}"
+    )
+
+
+def set_aside_result(outcome: Running, log: str) -> str:
+    """What a subagent's call returns for a command set aside."""
+    command_id = outcome.ref.command_id
+    return (
+        f"Set aside after {_ran_for(outcome.handle.ran_for())} so you can read the "
+        f"message just sent to you. It is still running as command_id {command_id}, "
+        f'writing to {log}. Call Bash with wait_for="{command_id}" to keep waiting '
+        f'on it, or stop="{command_id}" to end it. It is stopped when you finish.'
+    )
+
+
+def set_aside_again_result(outcome: Running, log: str) -> str:
+    """What a subagent's ``wait_for`` returns when another message arrives."""
+    command_id = outcome.ref.command_id
+    return (
+        f"Still running after {_ran_for(outcome.handle.ran_for())}, and set aside "
+        f"again so you can read the message just sent to you. Its output goes to "
+        f'{log}. Call Bash with wait_for="{command_id}" to keep waiting on it, or '
+        f'stop="{command_id}" to end it.'
+    )
+
+
+def stopped_result(outcome: Running, log: str) -> str:
+    """What a subagent's ``stop`` returns."""
+    return (
+        f"Stopped command_id {outcome.ref.command_id} after "
+        f"{_ran_for(outcome.handle.ran_for())}. What it wrote is in {log}."
+    )
+
+
+def not_set_aside_result(command_id: str) -> str:
+    """What ``wait_for`` or ``stop`` returns for a command not set aside."""
+    return (
+        f"ERROR: No command {command_id} is set aside in this run. A command still "
+        "running when a run ends is stopped, so one from an earlier run is no "
+        "longer running; read its log for what it wrote."
     )
 
 

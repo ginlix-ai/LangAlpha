@@ -245,7 +245,7 @@ class TestSubagent:
 
         backend = _backend(outcome(done=False, duration_s=300))
         trace = [{"server": "s", "tool": "t"}]
-        backend.continue_job.side_effect = lambda *a: order.append("wait") or outcome(
+        backend.continue_job.side_effect = lambda *a, **k: order.append("wait") or outcome(
             output="late", mcp_trace=trace
         )
         tool = create_execute_code_tool(

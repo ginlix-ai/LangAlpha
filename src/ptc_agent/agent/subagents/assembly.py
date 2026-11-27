@@ -16,6 +16,7 @@ from ptc_agent.agent.context_stack import SubagentContext
 from ptc_agent.agent.middleware import SubAgentMiddleware
 from ptc_agent.agent.middleware.background_subagent.subagent import ClaudeCodeSubagent
 from ptc_agent.agent.subagents import SubagentCompiler
+from ptc_agent.agent.subagents.compiler import SandboxTools
 from ptc_agent.agent.tools import think_tool
 
 if TYPE_CHECKING:
@@ -40,7 +41,7 @@ def subagent_compiler(
     web: list[Any],
     finance: list[Any],
     search_tool: Callable[..., Any],
-    sandbox_tools: Callable[[frozenset[str]], list[Any]],
+    sandbox_tools: SandboxTools,
     turn_context: TurnContext | None,
     user_profile: dict[str, Any] | None,
     user_data_counts: dict[str, Any] | None,
