@@ -3893,5 +3893,8 @@
     "close": "Close {{title}}",
     "untitled": "LangAlpha",
     "full": "{{count}} tabs are open. Close one to open another."
+  },
+  "accountPortal": {
+    "title": "Account"
   }
 }

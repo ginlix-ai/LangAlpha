@@ -3871,5 +3871,8 @@
     "close": "关闭{{title}}",
     "untitled": "LangAlpha",
     "full": "已打开 {{count}} 个标签页，请先关闭一个再打开新的。"
+  },
+  "accountPortal": {
+    "title": "账户"
   }
 }
