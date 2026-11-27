@@ -2,6 +2,7 @@
   "title": "Drive",
   "listLabel": "文件和文件夹",
   "crumbs": "文件夹路径",
+  "crumbsFolded_other": "另外 {{count}} 个文件夹",
   "empty": "Drive 存放你和 Agent 共用的文件，在任何工作区都能读写。先上传一个文件吧。",
   "emptyFolder": "这个文件夹是空的。把文件拖到这里，或者点上传。",
   "dropHere": "松开即可上传到 {{folder}}",

@@ -2,6 +2,8 @@
   "title": "Drive",
   "listLabel": "Files and folders",
   "crumbs": "Folder path",
+  "crumbsFolded_one": "{{count}} more folder",
+  "crumbsFolded_other": "{{count}} more folders",
   "empty": "Your Drive holds files you and your agent both read and change, from any workspace. Upload a file to start.",
   "emptyFolder": "This folder is empty. Drop files here or upload them.",
   "dropHere": "Drop to upload to {{folder}}",

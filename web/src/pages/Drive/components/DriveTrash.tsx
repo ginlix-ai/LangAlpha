@@ -12,6 +12,7 @@ import { useDriveContext } from '../driveContext';
 import { parentOf } from '../drivePaths';
 import { loadFailedLine } from '../driveRefusal';
 import { EntryGlyph } from './EntryGlyph';
+import { EntryName } from './EntryName';
 import { PaneFrame } from './PaneFrame';
 
 const DAY_MS = 86_400_000;
@@ -60,7 +61,7 @@ function TrashRow({ item, trashDays, onRestored }: {
       <div className="drive-trash-row">
         <EntryGlyph name={entry.name} folder={entry.kind === 'folder'} className="drive-row-icon" />
         <div className="drive-trash-text">
-          <span className="drive-row-name">{entry.name}</span>
+          <EntryName name={entry.name} folder={entry.kind === 'folder'} className="drive-row-name" />
           <span className="drive-row-sub">
             {[
               from ? t('drive:trash.from', { folder: from }) : t('drive:trash.fromRoot'),

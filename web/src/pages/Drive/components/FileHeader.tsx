@@ -23,6 +23,7 @@ import type { DriveEditor } from '../useDriveEditor';
 import { whoLabel } from '../who';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
+import { EntryName } from './EntryName';
 import { MemoChip } from './MemoBadges';
 import { BackButton, ICON_BUTTON } from './PaneFrame';
 
@@ -77,10 +78,11 @@ export function FileHeader({ path, entry, mobile, editor, canEdit, html, childre
         <EntryGlyph name={name} className="drive-file-glyph" />
         <div className="drive-file-title">
           <div className="drive-file-name-row">
-            <h2 className="drive-file-name" title={path}>{name}</h2>
+            <h2 className="drive-file-name"><EntryName name={name} title={path} /></h2>
             {memoState(entry).kind === 'memo' && <MemoChip />}
           </div>
-          {meta && <p className="drive-file-meta" title={entry ? formatTimestamp(entry.modified_at, locale) : undefined}>{meta}</p>}
+          {/* The line is there before the entry is, so the header never grows under the reader. */}
+          <p className="drive-file-meta" title={entry ? formatTimestamp(entry.modified_at, locale) : undefined}>{meta || '\u00a0'}</p>
         </div>
         {entry && (
           <div className="drive-file-actions">

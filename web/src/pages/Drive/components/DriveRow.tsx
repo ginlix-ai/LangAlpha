@@ -26,6 +26,7 @@ import type { DriveDrop } from '../useDriveDrop';
 import { whoLabel } from '../who';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
+import { EntryName } from './EntryName';
 import { MemoChip, MemoStatus } from './MemoBadges';
 
 /** Moves keyboard focus to the row before or after the one focused. */
@@ -94,15 +95,26 @@ export function DriveRow({ entry, compact, active, drop }: {
             <EntryGlyph name={entry.name} folder={folder} className="drive-row-icon" />
             <span className="drive-row-text">
               <span className="drive-row-title">
-                <span className="drive-row-name">{entry.name}</span>
-                {state.kind === 'memo' && (
+                <EntryName name={entry.name} folder={folder} className="drive-row-name" />
+                {/* Beside a file the column is narrow: the memo's marks go under the name, which keeps the width. */}
+                {state.kind === 'memo' && !compact && (
                   <>
                     <MemoChip />
                     <MemoStatus mark={state.mark} head={entry.version} />
                   </>
                 )}
               </span>
-              {compact && <span className="drive-row-sub">{[when, who, size].filter(Boolean).join(' · ')}</span>}
+              {compact && (
+                <span className="drive-row-sub">
+                  {state.kind === 'memo' && (
+                    <span className="drive-row-marks">
+                      <MemoChip />
+                      <MemoStatus mark={state.mark} head={entry.version} />
+                    </span>
+                  )}
+                  <span className="drive-row-facts">{[when, who, size].filter(Boolean).join(' · ')}</span>
+                </span>
+              )}
             </span>
             {!compact && (
               <>

@@ -60,9 +60,6 @@
   color: var(--color-text-primary);
   margin-right: auto;
 }
-.drive-shell.has-file .drive-title {
-  font-size: 1rem;
-}
 /* The Files / Memos switch takes the room after the title. */
 .drive-title.has-views { margin-right: 10px; }
 .drive-views {
@@ -86,16 +83,21 @@
   color: var(--color-text-tertiary);
 }
 
+/* One line at any depth: the folders between give way alongside the one in
+   view, each keeping a few letters, and the root never does. */
 .drive-crumbs {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 2px;
   margin-top: 8px;
   font-size: 0.8125rem;
   min-width: 0;
+  height: 24px;
 }
 .drive-crumb {
+  flex: 0 1 auto;
+  min-width: 5em;
   padding: 2px 6px;
   border-radius: 4px;
   color: var(--color-text-tertiary);
@@ -105,10 +107,15 @@
   white-space: nowrap;
   transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
+.drive-crumb.is-root,
+.drive-crumb.is-fold { flex-shrink: 0; min-width: 0; }
+.drive-crumb.is-here { max-width: none; }
+.drive-crumb-sep { flex-shrink: 0; }
 .drive-crumb:first-child { margin-left: -6px; }
 .drive-crumb:hover { background-color: var(--color-bg-hover); color: var(--color-text-secondary); }
 .drive-crumb.is-here { color: var(--color-text-primary); font-weight: 500; }
-.drive-crumb.is-drop { background-color: var(--color-bg-hover); outline: 1px dashed var(--color-border-strong); }
+.drive-crumb.is-drop,
+.drive-crumb-item.is-drop { background-color: var(--color-bg-hover); outline: 1px dashed var(--color-border-strong); outline-offset: -1px; }
 .drive-crumb-sep { color: var(--color-text-quaternary); }
 
 .drive-pane-scroll {
@@ -154,6 +161,13 @@
 .drive-columns .drive-col-name { padding-left: 24px; }
 .drive-col-size { text-align: right; justify-self: end; }
 
+/* Rows stand apart by a hairline, so a hovered row beside the open one reads
+   as two rows rather than one block with notches where their corners meet. */
+[data-drive-rows] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .drive-row {
   position: relative;
   display: flex;
@@ -165,8 +179,10 @@
 .drive-row[data-state='open'] {
   background-color: var(--color-bg-hover);
 }
-.drive-row.is-active {
-  background-color: var(--color-bg-hover);
+/* The open file is a selection, a step above a hover, and stays so under the pointer. */
+.drive-row.is-active,
+.drive-row.is-active:hover {
+  background-color: var(--color-bg-surface);
 }
 .drive-row.is-active .drive-row-name { font-weight: 500; }
 .drive-row.is-drop {
@@ -204,19 +220,44 @@
   color: var(--color-icon-muted);
   flex-shrink: 0;
 }
-.drive-row-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
+.drive-row-name { color: var(--color-text-primary); }
+/* A name gives way from its stem; its extension stays (EntryName). */
+.drive-name {
+  display: flex;
+  min-width: 0;
   white-space: nowrap;
-  color: var(--color-text-primary);
 }
-.drive-row-sub {
+.drive-name-stem {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.drive-name-ext { flex-shrink: 0; }
+/* Copied, a name is its whole hidden copy, not the two parts drawn. */
+.drive-name-stem,
+.drive-name-ext { user-select: none; }
+.drive-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-size: 0.6875rem;
+  line-height: 1rem;
   color: var(--color-text-tertiary);
   margin-top: 1px;
+}
+.drive-row-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+.drive-row-facts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .drive-col {
   font-size: 0.75rem;
@@ -595,7 +636,7 @@
   border-radius: 8px;
 }
 .drive-trash-text { display: flex; flex-direction: column; min-width: 0; flex: 1; font-size: 0.8125rem; }
-.drive-trash-text .drive-row-sub { white-space: normal; }
+.drive-trash-text .drive-row-sub { display: block; white-space: normal; }
 .drive-trash-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .drive-more { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 0 4px; }
 .drive-more [role="alert"] { font-size: 0.8125rem; color: var(--color-text-secondary); }
