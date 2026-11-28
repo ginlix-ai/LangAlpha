@@ -18,7 +18,14 @@ from src.server.database.artifacts.comments import (
     append_message,
     messages_by_comment,
 )
-from src.server.database.artifacts.records import RecordKind
+from src.server.database.artifacts.records import (
+    DRIVE_JOIN,
+    ENDED_SQL,
+    PLACE_SQL,
+    SENDABLE_SQL,
+    TRASHED_SQL,
+    RecordKind,
+)
 from src.server.database.artifacts.routing import destination_sql
 from src.server.database.conversation.thread_reach import visible_sql
 from src.server.database.home_workspace import get_home_workspace_id
@@ -63,8 +70,11 @@ class AgentReply:
     artifact_id: str
     workspace_id: str
     kind: RecordKind
-    #: A file's path, or a chart's id.
+    #: The record's key, what its events name: a file's path, a chart's id,
+    #: a Drive file's entry id.
     path: str
+    #: Where the file is now (``PLACE_SQL``).
+    place: str
     number: int
     #: Whether the comment is resolved after the reply.
     resolved: bool
@@ -84,7 +94,9 @@ async def add_agent_reply(
     ``thread_id``, resolving it when asked.
 
     Any other comment is not found: one never sent, or sent on to another
-    thread since, belongs to that thread's agent. A comment holding owner
+    thread since, belongs to that thread's agent, and one on a Drive file
+    ended as a tombstone (``ENDED_SQL``) is gone to its owner already, so an
+    answer there would only wait for the sweep. A comment holding owner
     words the agent has not been sent stays open: a resolve would hide them
     from the owner as answered.
     """
@@ -92,11 +104,13 @@ async def add_agent_reply(
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    """
+                    f"""
                     SELECT c.artifact_id::text, c.number, c.delivery, c.status,
-                           l.path, l.workspace_id::text, l.kind
+                           l.path, {PLACE_SQL} AS place, l.workspace_id::text,
+                           l.kind
                       FROM artifact_comments c
                       JOIN share_links l ON l.artifact_id = c.artifact_id
+                      {DRIVE_JOIN}
                      WHERE c.comment_id = %s AND c.user_id = %s
                        AND (SELECT m.thread_id
                               FROM artifact_comment_messages m
@@ -104,6 +118,7 @@ async def add_agent_reply(
                                AND m.author = 'user' AND m.sent_at IS NOT NULL
                              ORDER BY m.seq DESC
                              LIMIT 1) = %s
+                       AND NOT {ENDED_SQL}
                        FOR UPDATE OF c
                     """,
                     (comment_id, user_id, thread_id),
@@ -138,6 +153,7 @@ async def add_agent_reply(
         artifact_id=row["artifact_id"],
         workspace_id=row["workspace_id"],
         path=row["path"],
+        place=row["place"],
         number=row["number"],
         resolved=resolved,
         kept_open=kept_open,
@@ -153,8 +169,11 @@ class ClaimedComment:
     artifact_id: str
     workspace_id: str
     kind: RecordKind
-    #: The file to edit, workspace-relative; a chart's id.
+    #: The record's key, what its events name: a file's workspace-relative
+    #: path, a chart's id, a Drive file's entry id.
     path: str
+    #: Where the file is now (``PLACE_SQL``): what the agent is told to open.
+    place: str
     #: The document's title when the comment was made, read off the file.
     title: str | None
     number: int
@@ -164,6 +183,20 @@ class ClaimedComment:
     #: Everything said in the comment before them, ``(author, body)``.
     earlier: list[tuple[str, str]] = field(default_factory=list)
     message_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Claim:
+    """What one send took, in the order the agent reads it."""
+
+    comments: list[ClaimedComment]
+    #: A named comment is on a Drive file in the trash, which keeps its words
+    #: unsent: when nothing was taken, the reason to give the owner.
+    in_trash: bool = False
+    #: A named comment is on a Drive file and the owner's Drive is off, which
+    #: keeps its words unsent wherever the file is: the reason before
+    #: ``in_trash``, since a restore alone would not send them.
+    drive_off: bool = False
 
 
 #: Leaves out a comment that waits for, or went to, a thread the sender
@@ -183,13 +216,15 @@ async def claim_comments(
     comment_ids: list[str],
     request_key: str,
     caller: str,
-) -> list[ClaimedComment]:
+    drive_on: bool,
+) -> Claim:
     """Take what a send on ``thread_id`` carries from each named comment,
     marked under its key and that thread.
 
     A comment counts only if it is this user's and the thread is one its
-    comments may go to (owner's, not archived, in the artifact's workspace or,
-    on a file, the owner's Home). It gives the owner's words that are unsent,
+    comments may go to (``destination_sql``) and a send may carry them
+    (``SENDABLE_SQL``, ``drive_on`` the caller's one read of the owner's
+    Drive for the send). It gives the owner's words that are unsent,
     or those already marked by this same ``request_key`` where any are, so a retransmit
     takes again what its first copy carried, and not words added since, which
     a copy that lost the race would mark sent and never deliver. One with
@@ -204,21 +239,25 @@ async def claim_comments(
                 await cur.execute(
                     f"""
                     SELECT c.comment_id::text, c.artifact_id::text, c.number,
-                           c.title, c.anchor, l.path, l.workspace_id::text,
-                           l.kind, l.created_at AS recorded_at
+                           c.title, c.anchor, l.path, {PLACE_SQL} AS place,
+                           l.workspace_id::text, l.kind,
+                           l.created_at AS recorded_at, {SENDABLE_SQL} AS sendable,
+                           {TRASHED_SQL} AS trashed
                       FROM artifact_comments c
                       JOIN share_links l ON l.artifact_id = c.artifact_id
+                      {DRIVE_JOIN}
                       JOIN workspaces w
                         ON w.workspace_id = l.workspace_id
                        AND w.user_id = %(user_id)s AND w.status <> 'deleted'
                       JOIN conversation_threads t
                         ON t.conversation_thread_id = %(thread_id)s
-                       AND {destination_sql('l', 't')}
                       JOIN workspaces tw
                         ON tw.workspace_id = t.workspace_id
                        AND tw.user_id = %(user_id)s AND tw.status <> 'deleted'
-                     WHERE c.comment_id = ANY(%(comment_ids)s::uuid[])
+                     WHERE {destination_sql('l', 't', 'tw')}
+                       AND c.comment_id = ANY(%(comment_ids)s::uuid[])
                        AND c.user_id = %(user_id)s{_KEPT_FROM_NONE}
+                       AND NOT {ENDED_SQL}
                      ORDER BY c.comment_id
                        FOR UPDATE OF c
                     """,
@@ -228,9 +267,17 @@ async def claim_comments(
                         "home_id": get_home_workspace_id(user_id),
                         "comment_ids": comment_ids,
                         "caller": caller,
+                        "drive_on": drive_on,
                     },
                 )
                 rows = await cur.fetchall()
+                # A Drive file's comments a send may not carry are read only
+                # to say why they stay behind. A tombstone's are not read:
+                # its file is gone, as a deleted comment is.
+                held = [r for r in rows if not r["sendable"]]
+                drive_off = bool(held) and not drive_on
+                in_trash = drive_on and any(r["trashed"] for r in held)
+                rows = [r for r in rows if r["sendable"]]
                 messages = await messages_by_comment(
                     cur, [r["comment_id"] for r in rows]
                 )
@@ -263,6 +310,7 @@ async def claim_comments(
                                 artifact_id=row["artifact_id"],
                                 workspace_id=row["workspace_id"],
                                 path=row["path"],
+                                place=row["place"],
                                 title=row["title"],
                                 number=row["number"],
                                 anchor=row["anchor"] or {},
@@ -274,7 +322,7 @@ async def claim_comments(
                         )
                     )
                 if not claimed:
-                    return []
+                    return Claim([], in_trash=in_trash, drive_off=drive_off)
                 await cur.execute(
                     """
                     UPDATE artifact_comment_messages
@@ -300,7 +348,9 @@ async def claim_comments(
                     (thread_id, [c.comment_id for _, c in claimed]),
                 )
     claimed.sort(key=lambda pair: (pair[0], pair[1].artifact_id, pair[1].number))
-    return [c for _, c in claimed]
+    return Claim(
+        [c for _, c in claimed], in_trash=in_trash, drive_off=drive_off
+    )
 
 
 async def confirm_claim(

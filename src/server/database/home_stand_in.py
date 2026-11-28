@@ -23,6 +23,7 @@ from ptc_agent.core.sandbox.providers import RECREATABLE_KINDS
 from src.server.database.home_away import OWED_SQL, left_on_stand_in, left_sql
 from src.server.database.home_workspace import (
     HOME_STAND_IN_KEY,
+    excluding_stand_in,
     get_home_stand_in_id,
     home_id_sql,
     stand_in_id_sql,
@@ -49,7 +50,7 @@ _KINDS = ", ".join(f"'{kind}'" for kind in RECREATABLE_KINDS)
 
 # A read of what the user keeps on a computer leaves the stand-in out by its
 # mark: it is placed again on the next need, so it alone keeps nothing.
-EXCLUDE_STAND_IN = f"NOT COALESCE(config, '{{}}'::jsonb) ? '{HOME_STAND_IN_KEY}'"
+EXCLUDE_STAND_IN = excluding_stand_in()
 
 # Marks the cloud computer kept for the stand-in, made for it or adopted, which
 # takes the plan's size at its first build if that comes after the mark, and

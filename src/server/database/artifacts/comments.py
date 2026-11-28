@@ -1,5 +1,5 @@
-"""The owner's comments on a file or a chart, their messages, and the owner's
-read cursor.
+"""The owner's comments on a file, a chart or a Drive file, their messages,
+and the owner's read cursor.
 
 Every change to a comment's messages locks the comment row first; see the
 package docstring for why that orders the thread and keeps ``delivery`` true.
@@ -17,10 +17,15 @@ from psycopg.rows import dict_row
 from src.server.database.artifacts.routing import require_destination, require_reached
 from src.server.database.artifacts.records import (
     COMMENT_RECORDS,
+    DELETED_SQL,
+    DRIVE_JOIN,
+    PLACE_SQL,
+    SENDABLE_SQL,
     ArtifactNotFound,
     RecordKind,
     clip_title,
 )
+from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.pool import get_db_connection
 from src.server.utils.pg_sanitize import SafeJson
 
@@ -66,7 +71,8 @@ class Comment:
     #: The record's: on a chart, ``path`` is its id and there is no file.
     kind: RecordKind
     number: int
-    #: The file's path when the comment was made; a chart's id.
+    #: The file's path when the comment was made; a chart's id; a Drive
+    #: file's path in its space (``entry_id`` names the file).
     path: str
     #: Both None on a chart, which has no file to hash or title to read.
     file_sha256: str | None
@@ -86,8 +92,11 @@ class Comment:
     #: The agent's messages past ``read_through``.
     unread: int
     messages: tuple[CommentMessage, ...] = ()
-    #: The record's workspace, on a thread's queue, which spans artifacts.
+    #: On a thread's queue, which spans artifacts: the record's workspace,
+    #: where its file is now (``PLACE_SQL``), and a Drive file's entry.
     workspace_id: str | None = None
+    place: str | None = None
+    entry_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -308,8 +317,9 @@ async def create_comment(
     title: str | None = None,
     caller: str,
 ) -> Comment:
-    """The owner's new comment on the live file or a chart, with its first
-    message, written by ``caller`` (:func:`_writer`).
+    """The owner's new comment on the live file, a chart or a Drive file
+    (kept under the file's path then), with its first message, written by
+    ``caller`` (:func:`_writer`).
 
     The record row is locked while the comment takes the next number, so two
     comments never share one. A queued comment waits for ``thread_id``, which
@@ -322,13 +332,17 @@ async def create_comment(
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     f"""
-                    UPDATE share_links l
-                       SET last_comment_number = l.last_comment_number + 1
-                      FROM workspaces w
-                     WHERE l.artifact_id = %(artifact_id)s AND {COMMENT_RECORDS}
-                       AND w.workspace_id = l.workspace_id
-                       AND w.user_id = %(user_id)s AND w.status <> 'deleted'
-                    RETURNING l.last_comment_number, l.path
+                    WITH l AS (
+                        UPDATE share_links l
+                           SET last_comment_number = l.last_comment_number + 1
+                          FROM workspaces w
+                         WHERE l.artifact_id = %(artifact_id)s AND {COMMENT_RECORDS}
+                           AND w.workspace_id = l.workspace_id
+                           AND w.user_id = %(user_id)s AND w.status <> 'deleted'
+                        RETURNING l.last_comment_number, l.path, l.drive_entry_id
+                    )
+                    SELECT l.last_comment_number, {PLACE_SQL} AS path
+                      FROM l {DRIVE_JOIN}
                     """,
                     {"artifact_id": artifact_id, "user_id": user_id},
                 )
@@ -526,6 +540,89 @@ async def update_comment(
     return comment, current["thread_id"]
 
 
+async def edit_owner_message(
+    *,
+    user_id: str,
+    artifact_id: str,
+    comment_id: str,
+    message_id: str,
+    body: str,
+    caller: str,
+) -> Comment:
+    """Change the words of an owner's message that no send has taken, as
+    the one who wrote it (:func:`_writer`); the anchor stays.
+
+    One statement decides it by the rows' state: it locks the comment row as
+    a send's claim does (``claim_comments``), so whichever comes second sees
+    the other's outcome. A comment a send took is ``sent``, and a message it
+    carried has ``sent_at``; either leaves nothing to change, which is
+    refused as reached rather than written where the agent already read it.
+    A message the caller did not write, or none by that id, is not found.
+    """
+    async with get_db_connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    WITH c AS (
+                        UPDATE artifact_comments
+                           SET updated_at = NOW()
+                         WHERE comment_id = %(comment_id)s
+                           AND artifact_id = %(artifact_id)s
+                           AND user_id = %(user_id)s
+                           AND delivery <> 'sent'
+                        RETURNING comment_id
+                    )
+                    UPDATE artifact_comment_messages m
+                       SET body = %(body)s
+                      FROM c
+                     WHERE m.comment_id = c.comment_id
+                       AND m.message_id = %(message_id)s
+                       AND m.author = 'user'
+                       AND m.sent_at IS NULL AND m.request_key IS NULL
+                       AND m.written_by IS NOT DISTINCT FROM %(writer)s
+                    RETURNING m.message_id
+                    """,
+                    {
+                        "comment_id": comment_id,
+                        "artifact_id": artifact_id,
+                        "user_id": user_id,
+                        "message_id": message_id,
+                        "body": body,
+                        "writer": _writer(user_id, caller),
+                    },
+                )
+                if await cur.fetchone() is None:
+                    # Words the caller did not write are not theirs to reach,
+                    # as a comment of another user's is not; only their own
+                    # words a send took are refused as reached.
+                    await cur.execute(
+                        """
+                        SELECT m.author, m.written_by
+                          FROM artifact_comments c
+                          LEFT JOIN artifact_comment_messages m
+                            ON m.comment_id = c.comment_id
+                           AND m.message_id = %s
+                         WHERE c.comment_id = %s AND c.artifact_id = %s
+                           AND c.user_id = %s
+                        """,
+                        (message_id, comment_id, artifact_id, user_id),
+                    )
+                    found = await cur.fetchone()
+                    if (
+                        found is None
+                        or found["author"] != "user"
+                        or found["written_by"] != _writer(user_id, caller)
+                    ):
+                        raise CommentNotFound(comment_id)
+                    raise CommentConflict(
+                        "comment_sent",
+                        "These words have reached the agent, so they can no "
+                        "longer be edited.",
+                    )
+                return await _read_comment(cur, comment_id)
+
+
 @dataclass(frozen=True)
 class DeletedComment:
     #: The thread it waited for or went to.
@@ -614,24 +711,29 @@ async def delete_comment(
     )
 
 
-async def list_queued_comments(*, user_id: str, thread_id: str) -> list[Comment]:
+async def list_queued_comments(
+    *, user_id: str, thread_id: str, drive_on: bool
+) -> list[Comment]:
     """The comments waiting for ``thread_id``'s next send, on any artifact of
-    a workspace that still stands, the only ones a send can claim."""
+    a workspace that still stands, the only ones a send can claim
+    (``SENDABLE_SQL``, ``drive_on`` the owner's Drive)."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
-                SELECT {_COMMENT_COLUMNS}, l.workspace_id::text
+                SELECT {_COMMENT_COLUMNS}, l.workspace_id::text,
+                       {PLACE_SQL} AS place, de.entry_id::text AS entry_id
                   FROM artifact_comments c
                   JOIN share_links l ON l.artifact_id = c.artifact_id
                   JOIN workspaces w
                     ON w.workspace_id = l.workspace_id AND w.status <> 'deleted'
+                  {DRIVE_JOIN}
                   {_COMMENT_JOINS}
-                 WHERE c.thread_id = %s AND c.user_id = %s
-                   AND c.delivery = 'queued'
+                 WHERE c.thread_id = %(thread_id)s AND c.user_id = %(user_id)s
+                   AND c.delivery = 'queued' AND {SENDABLE_SQL}
                  ORDER BY l.created_at, l.artifact_id, c.number
                 """,
-                (thread_id, user_id),
+                {"thread_id": thread_id, "user_id": user_id, "drive_on": drive_on},
             )
             return await _with_messages(cur, await cur.fetchall())
 
@@ -736,3 +838,41 @@ async def comment_counts(artifact_id: str, *, user_id: str) -> CommentCounts:
             )
             row = await cur.fetchone()
     return CommentCounts(**row) if row else CommentCounts(open=0, unread=0)
+
+
+async def drive_comment_counts(
+    *, user_id: str, space_id: str
+) -> dict[str, CommentCounts]:
+    """:func:`comment_counts` for each file of a Drive space, by entry id, as
+    the Drive's lists mark them: only a live file with one of the two, so
+    one in the trash only once it is back."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                SELECT de.entry_id::text,
+                       COUNT(*) FILTER (WHERE c.status = 'open')::int AS open,
+                       COUNT(*) FILTER (WHERE {_UNREAD_SQL} > 0)::int AS unread
+                  FROM share_links l
+                  JOIN drive_entries de
+                    ON de.entry_id = l.drive_entry_id
+                   AND de.space_id = %(space_id)s AND NOT {DELETED_SQL}
+                  JOIN artifact_comments c
+                    ON c.artifact_id = l.artifact_id AND c.user_id = %(user_id)s
+                  LEFT JOIN artifact_comment_reads r
+                    ON r.comment_id = c.comment_id AND r.user_id = c.user_id
+                 WHERE l.workspace_id = %(home_id)s AND l.kind = 'drive'
+                 GROUP BY de.entry_id
+                """,
+                {
+                    "user_id": user_id,
+                    "space_id": space_id,
+                    "home_id": get_home_workspace_id(user_id),
+                },
+            )
+            rows = await cur.fetchall()
+    return {
+        r["entry_id"]: CommentCounts(open=r["open"], unread=r["unread"])
+        for r in rows
+        if r["open"] or r["unread"]
+    }

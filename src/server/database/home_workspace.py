@@ -20,8 +20,15 @@ HOME_WORKSPACE_NAMESPACE = uuid.UUID("f1a50000-0000-5000-e000-f1a500000000")
 UNBOUND = "unbound"
 
 # The config key that marks Home's stand-in, so a listing leaves it out by the
-# row alone (``home_stand_in.EXCLUDE_STAND_IN``) without knowing whose it is.
+# row alone (``excluding_stand_in``) without knowing whose it is.
 HOME_STAND_IN_KEY = "home_stand_in"
+
+
+def excluding_stand_in(workspace: str = "") -> str:
+    """SQL true for a ``workspaces`` row that is not Home's stand-in, the row
+    named by the alias ``workspace``, or the statement's only one."""
+    config = f"{workspace}.config" if workspace else "config"
+    return f"NOT COALESCE({config}, '{{}}'::jsonb) ? '{HOME_STAND_IN_KEY}'"
 
 # What a user's id is suffixed with to name their stand-in's id.
 _STAND_IN_NAME = "/stand-in"

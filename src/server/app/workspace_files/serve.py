@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -14,8 +13,9 @@ from src.config.env import SERVER_LOOPBACK_URL
 from src.server.preview_proxy.page_bridge import (
     Variant,
     bridge_for,
+    bridged,
+    is_html,
     parse_inject,
-    with_bridge,
 )
 from src.server.services.file_grants import (
     FileGrantError,
@@ -130,10 +130,6 @@ _PDF_GRANT_TTL_SECONDS = 5 * 60
 def _guess_content_type(path: str) -> str:
     """Resolve a Content-Type for a served file via the canonical pinned map."""
     return resolve_content_type(path)
-
-
-def _is_html_content_type(content_type: str) -> bool:
-    return content_type.split(";", 1)[0].strip().lower() in ("text/html", "text/htm")
 
 
 def _has_traversal(path: str) -> bool:
@@ -283,12 +279,8 @@ async def serve_workspace_file(
         )
         content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
-    if inject is not None and _is_html_content_type(content_type) and is_utf8(content):
-        # Only a UTF-8 body is bridged. The bridge is ASCII, but a document in
-        # another encoding (GBK, Shift-JIS) is served byte-faithful, as the
-        # redaction above preserved it, rather than risk a splice the browser
-        # reads as something else.
-        content = await asyncio.to_thread(with_bridge, content, bridge_for(inject))
+    if inject is not None and is_html(content_type):
+        content = await bridged(content, bridge_for(inject))
 
     headers = {
         "Content-Security-Policy": _WSFILES_CSP,
@@ -338,7 +330,7 @@ async def render_workspace_file_pdf(
     served = await _read_served_file(
         workspace_id, path, workspace=workspace, visible=visible
     )
-    if not _is_html_content_type(served.content_type):
+    if not is_html(served.content_type):
         raise HTTPException(status_code=404, detail="Not found")
 
     from src.server.services import pdf_render
@@ -473,7 +465,7 @@ async def serve_workspace_file_endpoint(
         inject="nested" if framed else asked,
         workspace=workspace,
     )
-    if asked is None and _is_html_content_type(response.media_type or ""):
+    if asked is None and is_html(response.media_type or ""):
         # One URL with two bodies: a download, a fetch of the file or the PDF
         # render must never get the framed copy from the browser's cache, nor a
         # frame the bytes as they are.

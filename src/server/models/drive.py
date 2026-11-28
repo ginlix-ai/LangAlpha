@@ -359,3 +359,17 @@ class UploadPartIn(BaseModel):
 
 class UploadSignIn(BaseModel):
     parts: list[UploadPartIn] = Field(min_length=1, max_length=32)
+
+
+class CommentCountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    #: The owner's open comments on the file.
+    open: int
+    #: Comments holding an answer the owner has not read.
+    unread: int
+
+
+class CommentCountsOut(BaseModel):
+    #: By entry id: only live files with one of the two above zero.
+    entries: dict[str, CommentCountOut]

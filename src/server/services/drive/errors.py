@@ -6,6 +6,8 @@ from __future__ import annotations
 
 HTTP_STATUS: dict[str, int] = {
     "not_found": 404,
+    # An entry asked for by id that is in the trash: not found, said truly.
+    "in_trash": 404,
     "exists": 409,
     "is_folder": 409,
     "not_folder": 409,

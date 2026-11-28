@@ -23,13 +23,22 @@ from psycopg.rows import dict_row
 from src.server.database import pool
 from src.server.utils.pg_sanitize import normalize_uuid
 
+def personal_workspace_sql(workspace_id: str) -> str:
+    """SQL true when the workspace ``workspace_id`` (a column) is personal:
+    no row of ``shared_workspaces`` makes it a shared one."""
+    return f"""NOT EXISTS (
+        SELECT 1 FROM shared_workspaces s WHERE s.workspace_id = {workspace_id})"""
+
+
 def served_on_computer_sql(thread: str) -> str:
     """SQL true for a thread whose transcript its computer serves to any agent
     there, where no person asks: every thread of a personal workspace, and a
     shared workspace's once shared with it. The workspace's own row decides
     which kind it is."""
-    return f"""({thread}.workspace_shared_at IS NOT NULL OR NOT EXISTS (
-        SELECT 1 FROM shared_workspaces s WHERE s.workspace_id = {thread}.workspace_id))"""
+    return (
+        f"({thread}.workspace_shared_at IS NOT NULL"
+        f" OR {personal_workspace_sql(f'{thread}.workspace_id')})"
+    )
 
 
 def reaches_sql(thread: str, user: str) -> str:

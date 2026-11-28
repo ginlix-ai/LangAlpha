@@ -13,6 +13,7 @@ ActorKind = Literal["person", "agent", "system"]
 Via = Literal["app", "cli", "tool", "mount", "api", "import"]
 ErrorCode = Literal[
     "not_found",
+    "in_trash",
     "exists",
     "changed",
     "is_folder",

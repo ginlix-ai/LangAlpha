@@ -100,6 +100,18 @@ async def live_entry(
     return entry_from_row(found[0]) if found else None
 
 
+async def entry_by_id(space_id: str, entry_id: str, conn=None) -> Entry | None:
+    """The entry ``entry_id`` names, live or deleted (``deleted_at``): in the
+    trash (``trash_id``) or a tombstone."""
+    found = await fetch(
+        f"SELECT {ENTRY_COLUMNS} FROM {ENTRY_FROM}"
+        " WHERE e.space_id = %(space)s AND e.entry_id = %(id)s",
+        {"space": space_id, "id": entry_id},
+        conn,
+    )
+    return entry_from_row(found[0]) if found else None
+
+
 async def live_file(space_id: str, entry_id: str, conn=None) -> Entry:
     """The live file ``entry_id`` names, any spelling of an id; refused as
     ``a_file`` refuses."""

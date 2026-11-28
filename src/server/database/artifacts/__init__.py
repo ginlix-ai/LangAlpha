@@ -10,6 +10,8 @@ joins the workspace and checks its user.
 A chart has a record too, keyed by its chart id, which holds comments and
 nothing else: no file, so no version, share or creator. Its comments go only
 to threads in its own workspace, since nothing outside it reads that chart.
+A Drive file has one in its owner's Home, keyed by its entry id, which
+follows the file wherever it moves.
 
 A version is cut in one transaction under the record's row lock, which also
 numbers comments, so two publishes never take one ``seq`` and two comments
@@ -49,9 +51,11 @@ from src.server.database.artifacts.comments import (
     Delivery,
     Status,
     add_owner_message,
+    edit_owner_message,
     comment_counts,
     create_comment,
     delete_comment,
+    drive_comment_counts,
     list_comments,
     list_queued_comments,
     mark_artifact_read,
@@ -60,6 +64,7 @@ from src.server.database.artifacts.comments import (
 )
 from src.server.database.artifacts.delivery import (
     AgentReply,
+    Claim,
     ClaimedComment,
     add_agent_reply,
     claim_comments,
@@ -75,7 +80,10 @@ from src.server.database.artifacts.routing import (
     Destinations,
     DestinationThread,
     DestinationUnavailable,
+    HOME_KINDS,
+    PickableThread,
     bind,
+    destination_threads,
     destinations,
     unbind,
 )
@@ -131,6 +139,7 @@ __all__ = [
     "AgentReply",
     "Artifact",
     "ArtifactNotFound",
+    "Claim",
     "ClaimedComment",
     "Comment",
     "CommentConflict",
@@ -144,8 +153,10 @@ __all__ = [
     "DestinationThread",
     "DestinationUnavailable",
     "Destinations",
+    "HOME_KINDS",
     "LeftOutChanged",
     "Origin",
+    "PickableThread",
     "PublishResult",
     "ReadBasis",
     "RecordKind",
@@ -157,6 +168,7 @@ __all__ = [
     "VersionFile",
     "add_agent_reply",
     "add_owner_message",
+    "edit_owner_message",
     "artifact_from_row",
     "artifact_workspace_id",
     "bind",
@@ -166,7 +178,9 @@ __all__ = [
     "confirm_claim",
     "create_comment",
     "delete_comment",
+    "destination_threads",
     "destinations",
+    "drive_comment_counts",
     "ensure_record",
     "find_record",
     "get_artifact",
