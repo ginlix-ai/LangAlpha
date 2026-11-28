@@ -48,6 +48,18 @@ def codex_identity_headers() -> dict[str, str]:
 # session-id/thread-id, opencode/hermes session_id.
 _SESSION_HEADERS = ("session-id", "thread-id", "session_id")
 
+# Fields the codex backend leaves out of a Responses stream on request, as
+# codex-rs asks for them (``build_responses_headers``, ``with_default_stream_exclusions``):
+# the tool list echoed on created, in_progress and completed, per-item usage,
+# sequence numbers on text deltas, and the ciphertext on a reasoning item's
+# ``added``, which langchain-openai discards for the complete one on ``done``.
+# Nothing reads any of them, and on a short turn they are most of the download.
+# api.openai.com ignores both headers.
+_STREAM_EXCLUSIONS = {
+    "x-codex-exclude": "tools,usage.attribution",
+    "x-codex-exclude-stream-fields": "delta.sequence_number,reasoning.added.encrypted_content",
+}
+
 
 def codex_request_headers(pinned: dict[str, str], session_id: str | None) -> dict[str, str]:
     """The headers codex-rs sends, under the ones a model's config pins.
@@ -57,7 +69,7 @@ def codex_request_headers(pinned: dict[str, str], session_id: str | None) -> dic
     affinity: the backend routes its prompt cache by them, not by
     ``prompt_cache_key`` (wire-tested ~3x fewer warm-chain misses).
     """
-    defaults = codex_identity_headers()
+    defaults = {**codex_identity_headers(), **_STREAM_EXCLUSIONS}
     if session_id:
         defaults |= dict.fromkeys(_SESSION_HEADERS, session_id)
     taken = {name.lower() for name in pinned}

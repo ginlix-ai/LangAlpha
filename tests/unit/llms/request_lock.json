@@ -3020,7 +3020,9 @@
     "connection": "keep-alive",
     "content-type": "application/json",
     "host": "chatgpt.com",
-    "originator": "codex_cli_rs"
+    "originator": "codex_cli_rs",
+    "x-codex-exclude": "tools,usage.attribution",
+    "x-codex-exclude-stream-fields": "delta.sequence_number,reasoning.added.encrypted_content"
    },
    "method": "POST",
    "url": "https://chatgpt.com/backend-api/codex/responses"
@@ -3298,7 +3300,9 @@
     "connection": "keep-alive",
     "content-type": "application/json",
     "host": "chatgpt.com",
-    "originator": "codex_cli_rs"
+    "originator": "codex_cli_rs",
+    "x-codex-exclude": "tools,usage.attribution",
+    "x-codex-exclude-stream-fields": "delta.sequence_number,reasoning.added.encrypted_content"
    },
    "method": "POST",
    "url": "https://chatgpt.com/backend-api/codex/responses"
@@ -3576,7 +3580,9 @@
     "connection": "keep-alive",
     "content-type": "application/json",
     "host": "chatgpt.com",
-    "originator": "codex_cli_rs"
+    "originator": "codex_cli_rs",
+    "x-codex-exclude": "tools,usage.attribution",
+    "x-codex-exclude-stream-fields": "delta.sequence_number,reasoning.added.encrypted_content"
    },
    "method": "POST",
    "url": "https://chatgpt.com/backend-api/codex/responses"
@@ -3854,7 +3860,9 @@
     "connection": "keep-alive",
     "content-type": "application/json",
     "host": "chatgpt.com",
-    "originator": "codex_cli_rs"
+    "originator": "codex_cli_rs",
+    "x-codex-exclude": "tools,usage.attribution",
+    "x-codex-exclude-stream-fields": "delta.sequence_number,reasoning.added.encrypted_content"
    },
    "method": "POST",
    "url": "https://chatgpt.com/backend-api/codex/responses"
