@@ -3876,6 +3876,7 @@
   },
   "linkMenu": {
     "openInBrowser": "Open in agent browser",
+    "openInDrive": "Open in Drive",
     "openInNewTab": "Open in new tab",
     "copyLink": "Copy link"
   },

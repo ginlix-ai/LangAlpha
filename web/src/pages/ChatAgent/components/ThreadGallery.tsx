@@ -42,9 +42,11 @@ import SandboxSettingsPanel from './SandboxSettingsPanel';
 import { updateThreadTitle } from '../utils/api';
 import { isValidUuid } from '../utils/uuid';
 import { WorkspaceProvider } from '../contexts/WorkspaceContext';
+import { LinkActionsContext, NO_LINK_ACTIONS } from '../contexts/LinkActionsContext';
+import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useComputerFolders } from '../hooks/useComputerFolders';
 import { usePanelFiles } from './chatView/usePanelFiles';
-import { usePanelAsks, usePanelLinkOpen } from './chatView/usePanelLinks';
+import { usePanelAsks, usePanelLinkOpen, usePanelOpen } from './chatView/usePanelLinks';
 import { useFileDeepLink } from './chatView/useFileDeepLink';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
 import iconComputerLight from '../../../assets/img/icon-computer.svg';
@@ -278,14 +280,17 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     handleFilesLeaveGuardChange,
     leaveFiles,
   } = usePanelAsks();
-  const handleOpenFile = usePanelLinkOpen({
+  const openInPanel = usePanelOpen({
     workspaceId,
-    folders,
     override: panelOverride,
     setOverride: setPanelOverride,
     land: askPanel,
     leave: leaveFiles,
   });
+  const handleOpenFile = usePanelLinkOpen(openInPanel, folders);
+  // The panel's documents read Drive links as the chat's replies do: text where the person has no Drive.
+  const driveOn = useFeatureEnabled('drive');
+  const panelLinks = useMemo(() => ({ ...NO_LINK_ACTIONS, drive: driveOn }), [driveOn]);
   // The gallery stays mounted from one workspace to the next, and a sibling
   // the last one's panel showed need not be a sibling of this one.
   useEffect(() => {
@@ -944,6 +949,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
               style={panelExpanded ? undefined : { width: isMobile ? '100%' : filePanelWidth }}
             >
               <WorkspaceProvider workspaceId={shownWorkspaceId} downloadFile={null} folders={panelFolders}>
+              <LinkActionsContext value={panelLinks}>
               <FilePanel
                 workspaceId={shownWorkspaceId ?? workspaceId}
                 onClose={() => setShowFilePanel(false)}
@@ -975,6 +981,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 returnLabel={panelAccess.returnLabel}
                 browserView={browserViewFor(shownWorkspaceId ?? workspaceId)}
               />
+              </LinkActionsContext>
               </WorkspaceProvider>
             </div>
           </motion.div>

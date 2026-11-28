@@ -791,6 +791,43 @@ body.drive-resizing iframe { pointer-events: none; }
 .drive-move-here { margin-left: auto; font-size: 0.6875rem; color: var(--color-text-tertiary); }
 .drive-move-note { padding: 6px 8px; font-size: 0.75rem; color: var(--color-text-tertiary); }
 
+/* ====== The Drive in the chat's panel ====== */
+.drive-panel-tab {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The panel's tab strip is above it, so each pane's header sits as close
+   under it as a workspace file's does, and the panel's width, not the
+   window's, sets the list's gutter. */
+.drive-page.is-panel {
+  flex: 1;
+  min-height: 0;
+  --page-top: 12px;
+}
+.drive-page.is-panel .drive-shell:not(.has-file) { --drive-gutter: 16px; }
+/* A panel is narrower than the page: while editing, the save's mark and then
+   the "What changed?" box give way before the file's name does. */
+.drive-page.is-panel .drive-file-title { min-width: min(40%, 160px); }
+.drive-page.is-panel .drive-file-actions { flex-shrink: 1; min-width: 0; }
+.drive-page.is-panel .drive-save-note { flex: 0 1 160px; width: 160px; min-width: 72px; }
+/* The save's mark gives way first: Cancel and Save already say an edit is open. */
+.drive-page.is-panel .drive-save-state {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The folders the open file sits in, above its name, the first crumb's text
+   on the name's glyph. */
+.drive-file-crumbs {
+  margin-top: 0;
+  padding: var(--page-top) 16px 0;
+}
+.drive-file-crumbs + .drive-file-head { padding-top: 4px; }
+
 /* ====== Phone ====== */
 @media (max-width: 767px) {
   .drive-shell, .drive-shell:not(.has-file) { --drive-gutter: 16px; }

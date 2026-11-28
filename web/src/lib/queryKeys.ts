@@ -412,6 +412,7 @@ export const queryKeys = {
     list:     (space: string, path: string) => [...queryKeys.drive.space(space), 'list', path],
     folders:  (space: string) => [...queryKeys.drive.space(space), 'folders'],
     entry:    (space: string, path: string) => [...queryKeys.drive.space(space), 'entry', path],
+    entryById: (space: string, id: string) => [...queryKeys.drive.space(space), 'entry-id', id],
     versions: (space: string, entryId: string) => [...queryKeys.drive.space(space), 'versions', entryId],
     trash:    (space: string) => [...queryKeys.drive.space(space), 'trash'],
     trashPage: (space: string, limit: number) => [...queryKeys.drive.trash(space), limit],

@@ -3854,6 +3854,7 @@
   },
   "linkMenu": {
     "openInBrowser": "在 Agent 浏览器中打开",
+    "openInDrive": "在 Drive 中打开",
     "openInNewTab": "在新标签页中打开",
     "copyLink": "复制链接"
   },

@@ -19,7 +19,7 @@ describe('DriveList', () => {
     await act(() => i18n.changeLanguage('en-US'));
     const ctx = {
       space: 'personal', actions: { moveInto: vi.fn(), pending: {} } as unknown as DriveActions, go: vi.fn(), open: vi.fn(),
-      trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
+      trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, host: 'page' as const, fileCrumbs: false, ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
     } as DriveContextValue;
     renderWithProviders(
       <DriveContext value={ctx}>
@@ -36,7 +36,7 @@ describe('DriveList', () => {
   it('marks the open file when the URL spells it in another case', () => {
     const ctx = {
       space: 'personal', actions: { moveInto: vi.fn(), pending: {} } as unknown as DriveActions, go: vi.fn(), open: vi.fn(),
-      trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
+      trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, host: 'page' as const, fileCrumbs: false, ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
     } as DriveContextValue;
     const { container } = renderWithProviders(
       <DriveContext value={ctx}>

@@ -12,6 +12,7 @@
   "loadMore": "显示更多",
   "backToFolder": "返回文件夹",
   "backToMemos": "返回备忘录",
+  "openInDrive": "在 Drive 中打开",
   "retrying": "服务器繁忙，正在重试",
   "columns": {
     "modified": "修改时间",

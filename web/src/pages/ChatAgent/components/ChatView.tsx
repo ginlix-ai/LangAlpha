@@ -1075,6 +1075,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     shared: sharedWorkspace,
     browserOn,
   });
+  // A reader without a Drive sees its links as text.
+  const driveOn = useFeatureEnabled('drive');
+  const links = useMemo(() => ({ ...linkActions, drive: driveOn }), [linkActions, driveOn]);
 
   // Whether the file panel covers the chat, and the composer that moves to the
   // file's foot while it does (chatView/useChatCover).
@@ -1649,7 +1652,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         panel beside it, so it leaves through the panel's guard like the
         panel's own exits do. */}
     <RouteLeaveGuardContext value={leaveFiles}>
-    <LinkActionsContext value={linkActions}>
+    <LinkActionsContext value={links}>
     <ThreadCommandsContext value={panelThreadId ?? null}>
     <ChatCommentSendsProvider value={commentSends}>
     <ComposerDockContext value={composerDock.context}>

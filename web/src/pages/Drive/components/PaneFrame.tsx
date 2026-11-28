@@ -4,6 +4,7 @@ import { HeaderButton } from '@/components/mcp/McpPrimitives';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
+import { useDriveContext } from '../driveContext';
 
 /** The page's small icon buttons (back, more): the ghost button at the list's 28px. */
 export const ICON_BUTTON = 'tap-target h-7 w-7 shrink-0 text-(--color-text-tertiary) hover:text-(--color-text-secondary)';
@@ -41,9 +42,10 @@ export function BackButton({ label, onClick }: { label: string; onClick: () => v
 }
 
 /**
- * The left pane's frame, shared by a folder and the trash: a title row with
- * its actions, whatever sits under it, the scrolling body, and anything pinned
- * at the foot.
+ * The left pane's frame, shared by a folder, the memo list and the trash: a
+ * title row with its actions and the host's, whatever sits under it, the
+ * scrolling body, and anything pinned at the foot. On the page the row starts
+ * with the hidden sidebar's toggle; in the chat's panel the panel has its own.
  */
 export function PaneFrame({
   title,
@@ -66,15 +68,21 @@ export function PaneFrame({
   children: React.ReactNode;
   foot?: React.ReactNode;
 } & React.HTMLAttributes<HTMLDivElement>) {
+  const { host, pageAction } = useDriveContext();
   return (
     <div className={cn('drive-pane', className)} {...rest}>
       <div className="drive-pane-head">
         <div className="drive-pane-title-row">
-          <SidebarReveal />
+          {host === 'page' && <SidebarReveal />}
           {back && <BackButton {...back} />}
           <h1 className={cn('drive-title', !!views && 'has-views')}>{title}</h1>
           {views}
-          {actions && <div className="drive-pane-actions">{actions}</div>}
+          {(actions || pageAction) && (
+            <div className="drive-pane-actions">
+              {actions}
+              {pageAction}
+            </div>
+          )}
         </div>
         {below}
       </div>

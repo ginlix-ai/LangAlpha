@@ -4,7 +4,7 @@ import { editReducer, isDirty, isPast, VIEWING, type EditAction, type EditState,
 
 const base = { sha: 'a'.repeat(64), content: 'one\n' };
 const theirs = { sha: 'b'.repeat(64), content: 'theirs\n' };
-const open = (sitting = 'web-1', path = 'a.md'): EditAction => ({ type: 'open', path, sitting, modelPath: `m-${sitting}`, base });
+const open = (sitting = 'web-1', path = 'a.md'): EditAction => ({ type: 'open', path, entryId: null, sitting, modelPath: `m-${sitting}`, base });
 const req = (text: string, ifMatch = base.sha, sitting = 'web-1', path = 'a.md'): SaveRequest => ({ sitting, path, text, ifMatch });
 
 function run(...actions: EditAction[]): EditState {

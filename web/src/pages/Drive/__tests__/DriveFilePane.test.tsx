@@ -107,7 +107,7 @@ function renderPane(
   } as unknown as DriveActions;
   const go = vi.fn();
   const ctx: DriveContextValue = {
-    space: SPACE, actions, go, open: vi.fn(), trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const,
+    space: SPACE, actions, go, open: vi.fn(), trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, host: 'page' as const, fileCrumbs: false,
     ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
   };
   renderWithProviders(

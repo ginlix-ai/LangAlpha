@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { computeAgentArtifactRouting } from '../agentArtifactRouting';
+import { computeAgentArtifactRouting, driveRouteLocation } from '../agentArtifactRouting';
 import { AGENT_PATH_TRAITS } from '../agentPathTraits';
 import { classifyAgentPath } from '../agentPaths';
 
@@ -25,7 +25,7 @@ describe('Drive paths', () => {
     expect(classifyAgentPath('.agents/drive/personal/results/issue#1.md')).toMatchObject({ kind: 'drive', path: 'results/issue#1.md' });
     expect(classifyAgentPath('.agents/drive/personal/why?.md')).toMatchObject({ kind: 'drive', path: 'why?.md' });
     expect(computeAgentArtifactRouting('.agents/drive/personal/results/issue#1.md'))
-      .toEqual({ kind: 'page', href: '/drive?file=results%2Fissue%231.md' });
+      .toEqual({ target: { kind: 'drive', loc: { space: null, file: 'results/issue#1.md' } }, workspaceId: null });
   });
 
   it('reads a trailing slash or a bare space as a folder', () => {
@@ -39,11 +39,25 @@ describe('Drive paths', () => {
     expect(classifyAgentPath('drive/personal/x.md').kind).toBe('file');
   });
 
-  it('routes to the Drive page, never the panel', () => {
-    const page = (href: string) => ({ kind: 'page', href });
-    expect(computeAgentArtifactRouting('.agents/drive/personal/research/Q3 notes.md')).toEqual(page('/drive?file=research%2FQ3+notes.md'));
-    expect(computeAgentArtifactRouting('.agents/drive/personal/research/')).toEqual(page('/drive?dir=research'));
-    expect(computeAgentArtifactRouting('.agents/drive/personal/')).toEqual(page('/drive'));
+  it("opens every Drive path in the panel's Drive tab, in no workspace: a file, a folder or the Drive itself", () => {
+    const drive = (space: string | null, at: object) => ({ target: { kind: 'drive', loc: { space, ...at } }, workspaceId: null });
+    expect(computeAgentArtifactRouting('.agents/drive/personal/research/Q3 notes.md')).toEqual(drive(null, { file: 'research/Q3 notes.md' }));
+    expect(computeAgentArtifactRouting('.agents/drive/team-1/plan.md')).toEqual(drive('team-1', { file: 'plan.md' }));
+    expect(computeAgentArtifactRouting('.agents/drive/personal/a.md', 'ws-other')).toEqual(drive(null, { file: 'a.md' }));
+    expect(computeAgentArtifactRouting('.agents/drive/personal/research/')).toEqual(drive(null, { dir: 'research' }));
+    expect(computeAgentArtifactRouting('.agents/drive/personal/')).toEqual(drive(null, { dir: '' }));
+  });
+
+  it('reads any Drive page link as the place it names, and no other page', () => {
+    const loc = (over: object) => ({ space: null, dir: '', file: null, trash: false, memos: false, version: null, tab: null, against: null, ...over });
+    expect(driveRouteLocation('/drive?file=research%2FQ3+notes.md')).toEqual(loc({ file: 'research/Q3 notes.md' }));
+    expect(driveRouteLocation('/drive?space=team-1&file=plan.md&tab=changes&v=3&vs=1'))
+      .toEqual(loc({ space: 'team-1', file: 'plan.md', tab: 'changes', version: 3, against: 1 }));
+    expect(driveRouteLocation('/drive?dir=research')).toEqual(loc({ dir: 'research' }));
+    expect(driveRouteLocation('/drive?memos=1')).toEqual(loc({ memos: true }));
+    expect(driveRouteLocation('/drive?trash=1')).toEqual(loc({ trash: true }));
+    expect(driveRouteLocation('/drive')).toEqual(loc({}));
+    expect(driveRouteLocation('/chat?file=a.md')).toBeNull();
   });
 
   it('routes the Drive from a sibling workspace folder the same way', () => {
@@ -52,10 +66,10 @@ describe('Drive paths', () => {
       siblings: [{ workspaceId: 'ws-nvda', dirName: 'NVDA' }],
     };
     expect(computeAgentArtifactRouting('../NVDA/.agents/drive/personal/a.md', undefined, folders))
-      .toEqual({ kind: 'page', href: '/drive?file=a.md' });
+      .toEqual({ target: { kind: 'drive', loc: { space: null, file: 'a.md' } }, workspaceId: null });
   });
 
-  it('is a plain file to the tool rows but stays out of the panel', () => {
+  it("is a plain file to the tool rows but stays out of the turn's file deck", () => {
     expect(AGENT_PATH_TRAITS.drive).toEqual({ plainFile: true, panelFile: false });
     expect(AGENT_PATH_TRAITS.file).toEqual({ plainFile: true, panelFile: true });
     expect(AGENT_PATH_TRAITS.memo.plainFile).toBe(false);

@@ -85,6 +85,20 @@ export function readDriveLocation(params: URLSearchParams): ReadLocation {
   };
 }
 
+/** `loc` with every part filled in and its paths cleaned, as the page reads its address. */
+export function fillLocation(loc: DriveLocation): ReadLocation {
+  return {
+    space: loc.space ?? null,
+    dir: cleanDrivePath(loc.dir),
+    file: cleanDrivePath(loc.file) || null,
+    trash: !!loc.trash,
+    memos: !!loc.memos,
+    version: loc.version ?? null,
+    tab: loc.tab ?? null,
+    against: loc.against ?? null,
+  };
+}
+
 /**
  * The open file at `path` (renamed or moved) in the view the address had:
  * what a move carries, from the page's own rename or from the change feed.

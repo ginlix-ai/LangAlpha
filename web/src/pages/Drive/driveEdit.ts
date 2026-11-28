@@ -38,6 +38,8 @@ export interface EditSession {
   mode: 'editing';
   /** The file the session is for. */
   path: string;
+  /** The entry the session opened on, whose draft it is wherever that entry goes; null where it was not known. */
+  entryId: string | null;
   sitting: string;
   /** The editor model's path, kept for the session and disposed with it. */
   modelPath: string;
@@ -62,7 +64,7 @@ export type EditState = { mode: 'viewing' } | EditSession;
 
 export type EditAction =
   /** `note`: a kept draft's, coming back with it. */
-  | { type: 'open'; path: string; sitting: string; modelPath: string; base: Content; note?: string }
+  | { type: 'open'; path: string; entryId: string | null; sitting: string; modelPath: string; base: Content; note?: string }
   | { type: 'change'; draft: string }
   | { type: 'note'; note: string }
   | { type: 'saving'; req: SaveRequest }
@@ -93,6 +95,7 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     return {
       mode: 'editing',
       path: action.path,
+      entryId: action.entryId,
       sitting: action.sitting,
       modelPath: action.modelPath,
       base: action.base,

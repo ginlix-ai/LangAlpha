@@ -44,6 +44,7 @@ export function panelWidthKind(kind: PanelTabKind | null): PanelWidthKind {
     case null:
     case 'empty':
     case 'file':
+    case 'drive':
     case 'settings':
     case 'memory':
     case 'memo':

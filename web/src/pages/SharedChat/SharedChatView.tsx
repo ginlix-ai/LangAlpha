@@ -457,7 +457,7 @@ export default function SharedChatView({ shareToken, access = shareToken, metada
     if (!canBrowseFiles) return;
     setShowFilePanel(true);
     const dest = computeAgentArtifactRouting(filePath, undefined, folders);
-    const dir = dest.kind === 'panel' && 'dir' in dest.target ? dest.target.dir : null;
+    const dir = 'dir' in dest.target ? dest.target.dir : null;
     // The panel reads a request off the counter rather than off a changed
     // string, so the same folder clicked twice arrives twice here too.
     const seq = ++filePanelTargetSeq.current;
