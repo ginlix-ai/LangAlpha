@@ -24,6 +24,12 @@ describe('pinPoint', () => {
     expect(pinPoint({ ...area, point: { x: 1, y: 1 } }, rect)).toEqual({ x: 300, y: 130 });
     expect(pinPoint({ ...area, point: { x: 0, y: 0 } }, rect)).toEqual({ x: 100, y: 50 });
   });
+
+  it('stands where the page moved it off the words, over any point stored with them', () => {
+    const moved = { ...rect, pin: { x: 320, y: 72 } };
+    expect(pinPoint({ kind: 'text', quote: 'Graphics', point: { x: 0.5, y: 0.75 } }, moved)).toEqual({ x: 320, y: 72 });
+    expect(pinPoint({ kind: 'element', path: '#a' }, moved)).toEqual({ x: 320, y: 72 });
+  });
 });
 
 describe('fanOut', () => {

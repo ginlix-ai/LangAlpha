@@ -30,3 +30,21 @@ describe('postArtifactComments: what a failure says about the comments', () => {
     await expect(post()).rejects.toBeInstanceOf(CommentSendRefused);
   });
 });
+
+describe('postArtifactComments: the reason a refusal carries', () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+  });
+
+  it("keeps the words the transport says are the reader's, and none for its own line", async () => {
+    mockSend.mockRejectedValueOnce(Object.assign(new Error('Out of turns'), { status: 402, reason: 'Out of turns' }));
+    await expect(post()).rejects.toMatchObject({ reason: 'Out of turns' });
+    mockSend.mockRejectedValueOnce(Object.assign(new Error('HTTP error! status: 502'), { status: 502 }));
+    await expect(post()).rejects.toMatchObject({ reason: null, message: 'The comments were not sent.' });
+  });
+
+  it("keeps a refusal frame's words with its code", async () => {
+    mockSend.mockImplementation(answering({ event: 'error', code: 'busy', error: 'A reply is still running.' }));
+    await expect(post()).rejects.toMatchObject({ reason: 'A reply is still running.', code: 'busy' });
+  });
+});

@@ -1,4 +1,6 @@
-import { act, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import i18n from '@/i18n';
 import { renderWithProviders } from '@/test/utils';
@@ -44,5 +46,31 @@ describe('DriveList', () => {
       </DriveContext>,
     );
     expect(container.querySelectorAll('.drive-row.is-active')).toHaveLength(1);
+  });
+
+  it('opens a file from its row\'s button, named by the row, or from a press anywhere on the row', () => {
+    const open = vi.fn();
+    const ctx = {
+      space: 'shared', actions: { moveInto: vi.fn(), pending: {} } as unknown as DriveActions, go: vi.fn(), open,
+      trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, host: 'page' as const, fileCrumbs: false, ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
+    } as DriveContextValue;
+    renderWithProviders(
+      <DriveContext value={ctx}>
+        <DriveList dir="" entries={[file('Report.md')]} loading={false} error={null} openPath={null} compact usage={null} upload={vi.fn()} onRetry={vi.fn()} />
+      </DriveContext>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Report\.md/ }));
+    fireEvent.click(screen.getByText('Report.md'));
+    expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  // jsdom lays nothing out, so the title row's give is pinned on its rules.
+  it('lets a narrow list put its actions on a row of their own rather than over the view tabs', () => {
+    const css = readFileSync(resolve(__dirname, '../Drive.css'), 'utf8');
+    const rule = (selector: string) => css.match(new RegExp(`\\n${selector.replace('.', '\\.')} \\{([^}]*)\\}`))?.[1] ?? '';
+    expect(rule('.drive-pane-title-row')).toMatch(/flex-wrap: wrap;/);
+    expect(rule('.drive-views')).toMatch(/flex-shrink: 0;/);
+    expect(rule('.drive-views')).not.toMatch(/min-width: 0;/);
+    expect(rule('.drive-pane-actions')).toMatch(/margin-left: auto;/);
   });
 });

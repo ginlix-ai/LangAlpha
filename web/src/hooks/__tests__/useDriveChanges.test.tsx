@@ -98,6 +98,16 @@ describe('useDriveChanges', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['drive', 'attribution', 'personal'] });
   });
 
+  it("reads the comment markers, every chat's queue and the destinations again when a file changed elsewhere", async () => {
+    vi.mocked(getChanges).mockResolvedValueOnce(answer(11, [entry])).mockResolvedValue(answer(11));
+    const { invalidate } = follow(10);
+    await advance(0);
+    const keys = invalidate.mock.calls.map(([f]) => f?.queryKey);
+    expect(keys).toContainEqual(queryKeys.drive.commentCountsAll);
+    expect(keys).toContainEqual(queryKeys.artifacts.allQueued);
+    expect(keys).toContainEqual(queryKeys.artifacts.allDestinations);
+  });
+
   it('reads nothing again while the cursor stays where it was', async () => {
     vi.mocked(getChanges).mockResolvedValue(answer(10));
     const { onChanged, invalidate } = follow(10);
@@ -108,14 +118,22 @@ describe('useDriveChanges', () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
-  it('reads the space again, once, when the cursor moves with no entry behind it (a trash emptied elsewhere)', async () => {
+  it('reads the space and its comments again, once, when the cursor moves with no entry behind it (a trash emptied elsewhere)', async () => {
     vi.mocked(getChanges).mockResolvedValueOnce(answer(14)).mockResolvedValue(answer(14));
     const { onChanged, invalidate } = follow(10);
     await advance(0);
     await advance(CHANGES_POLL_MS * 2);
     expect(sinces()).toEqual([10, 14, 14]);
+    const keys = invalidate.mock.calls.map(([f]) => f?.queryKey);
     // The space's lists, trash, entries and versions, and the spaces with their usage.
-    expect(invalidate.mock.calls.map(([f]) => f?.queryKey)).toEqual([['drive', 'space', 'personal'], ['drive', 'spaces']]);
+    expect(keys.slice(0, 2)).toEqual([['drive', 'space', 'personal'], ['drive', 'spaces']]);
+    // A purge takes its file's comments with it: the markers, every chat's queue, the destinations.
+    expect(keys).toContainEqual(queryKeys.drive.commentCountsAll);
+    expect(keys).toContainEqual(queryKeys.artifacts.allQueued);
+    expect(keys).toContainEqual(queryKeys.artifacts.allDestinations);
+    // Once: the batches after it leave everything as it is.
+    const queued = JSON.stringify(queryKeys.artifacts.allQueued);
+    expect(keys.filter((k) => JSON.stringify(k) === queued)).toHaveLength(1);
     // Nothing for the page to follow or drop: no entry moved, and it is no resync.
     expect(onChanged).not.toHaveBeenCalled();
   });

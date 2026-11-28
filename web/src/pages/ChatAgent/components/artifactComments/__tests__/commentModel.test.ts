@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ArtifactCommentMessage } from '@/types/api';
 import { flattenMarkdown } from '@/lib/plainLine';
 import {
-  cardActions, describeComment, filterCounts, filterShowing, firstWords, inFilter, isWorking,
+  asksAttention, cardActions, cardMoves, describeComment, editableMessage, filterCounts, filterShowing, firstWords, inFilter, isWorking,
   laterMessages, newestUnread, oneLine, pinState, reachedAgent, showsDraft,
 } from '../commentModel';
 import { draftHeading } from '../anchorKinds';
@@ -27,24 +27,24 @@ describe('describeComment', () => {
   const note = { status: 'open' as const, delivery: 'note' as const, messages: [message('user', 'fix it')] };
 
   it('reads a send in flight as sent, on the pin and the card alike', () => {
-    expect(describeComment(note, sending, true)).toEqual({
-      state: 'sent', working: true, reached: true, canReply: true, pending: false, refusal: null,
+    expect(describeComment(note, sending, true, false)).toEqual({
+      state: 'sent', working: true, reached: true, canReply: true, pending: false, refusal: null, needsRetry: false,
     });
-    expect(describeComment(note, idle, true)).toEqual({
-      state: 'note', working: false, reached: false, canReply: false, pending: false, refusal: null,
+    expect(describeComment(note, idle, true, false)).toEqual({
+      state: 'note', working: false, reached: false, canReply: false, pending: false, refusal: null, needsRetry: false,
     });
   });
 
   it('keeps a resolved comment resolved and idle whatever is sending', () => {
-    const look = describeComment({ ...note, status: 'resolved' }, sending, true);
+    const look = describeComment({ ...note, status: 'resolved' }, sending, true, false);
     expect(look.state).toBe('resolved');
     expect(look.working).toBe(false);
   });
 
   it('carries the queued send\'s progress and refusal through', () => {
     const queued = { ...note, delivery: 'queued' as const };
-    expect(describeComment(queued, { ...idle, pending: true }, false).pending).toBe(true);
-    expect(describeComment(queued, { ...idle, refusal: 'busy' }, false)).toMatchObject({ state: 'queued', refusal: 'busy' });
+    expect(describeComment(queued, { ...idle, pending: true }, false, false).pending).toBe(true);
+    expect(describeComment(queued, { ...idle, refusal: 'busy' }, false, false)).toMatchObject({ state: 'queued', refusal: 'busy' });
   });
 });
 
@@ -154,7 +154,7 @@ describe('draftHeading', () => {
 });
 
 describe('cardActions', () => {
-  const both = { canSend: true, canQueue: true };
+  const both = { canSend: true, canQueue: true, canEdit: false };
 
   it('offers the moves that fit each state, Delete always last', () => {
     expect(cardActions('queued', both)).toEqual(['keepNote', 'delete']);
@@ -164,12 +164,12 @@ describe('cardActions', () => {
   });
 
   it('offers a note no queue where no thread would take it, and no send while its destination is unknown', () => {
-    expect(cardActions('note', { canSend: true, canQueue: false })).toEqual(['sendNow', 'delete']);
-    expect(cardActions('note', { canSend: false, canQueue: false })).toEqual(['delete']);
+    expect(cardActions('note', { canSend: true, canQueue: false, canEdit: false })).toEqual(['sendNow', 'delete']);
+    expect(cardActions('note', { canSend: false, canQueue: false, canEdit: false })).toEqual(['delete']);
   });
 
   it('leaves Send now out of a queued card\'s menu, which has it on its face', () => {
-    expect(cardActions('queued', { canSend: true, canQueue: false })).toEqual(['keepNote', 'delete']);
+    expect(cardActions('queued', { canSend: true, canQueue: false, canEdit: false })).toEqual(['keepNote', 'delete']);
   });
 });
 
@@ -185,5 +185,73 @@ describe('reachedAgent and laterMessages', () => {
   it("leaves out the owner's first words, which the card shows as the comment", () => {
     const messages = [message('user', 'why?'), message('agent', 'because'), message('user', 'thanks')];
     expect(laterMessages({ messages }).map((m) => m.body)).toEqual(['because', 'thanks']);
+  });
+});
+
+describe('a run that stopped on an error', () => {
+  const idle = { sending: false, pending: false, refusal: null };
+  const sent = { status: 'open' as const, delivery: 'sent' as const, messages: [message('user', 'fix it')] };
+
+  it('asks for a retry while the answer is owed, and not once it came, nor while running or sending again', () => {
+    expect(describeComment(sent, idle, false, true).needsRetry).toBe(true);
+    expect(describeComment({ ...sent, messages: [message('user', 'fix it'), message('agent', 'done', 2)] }, idle, false, true).needsRetry).toBe(false);
+    expect(describeComment(sent, idle, true, true).needsRetry).toBe(false);
+    expect(describeComment(sent, { ...idle, sending: true }, false, true).needsRetry).toBe(false);
+    expect(describeComment({ ...sent, status: 'resolved' }, idle, false, true).needsRetry).toBe(false);
+    expect(describeComment(sent, idle, false, false).needsRetry).toBe(false);
+  });
+});
+
+describe('editing words before a send takes them', () => {
+  const sentMsg = (m: ArtifactCommentMessage): ArtifactCommentMessage => ({ ...m, sent_at: '2026-01-01T00:00:00Z' });
+
+  it("offers the owner's newest unsent words on a note or a queued comment, never on a sent one", () => {
+    const first = message('user', 'fix it');
+    expect(editableMessage({ delivery: 'note', messages: [first] }, 'lee')).toBe(first);
+    expect(editableMessage({ delivery: 'queued', messages: [first] }, 'lee')).toBe(first);
+    expect(editableMessage({ delivery: 'sent', messages: [first] }, 'lee')).toBeNull();
+    // A follow-up waiting after an answer: the follow-up, not the words the agent read.
+    const later = message('user', 'and this', 3);
+    expect(editableMessage({ delivery: 'queued', messages: [sentMsg(first), message('agent', 'ok', 2), later] }, 'lee')).toBe(later);
+    // Words a send carried are not offered, whatever the comment says.
+    expect(editableMessage({ delivery: 'note', messages: [sentMsg(first)] }, 'lee')).toBeNull();
+  });
+
+  it("offers only the viewer's own words in a shared workspace, as the server changes them for their writer alone", () => {
+    const mine = { ...message('user', 'fix it'), written_by: 'lee' };
+    const theirs = { ...message('user', 'fix it'), written_by: 'maya' };
+    expect(editableMessage({ delivery: 'note', messages: [mine] }, 'lee')).toBe(mine);
+    expect(editableMessage({ delivery: 'note', messages: [theirs] }, 'lee')).toBeNull();
+    // Not the viewer's own older words either: the newest are another's.
+    expect(editableMessage({ delivery: 'queued', messages: [mine, { ...theirs, seq: 2 }] }, 'lee')).toBeNull();
+  });
+
+  it('puts Edit first in the menu where it applies', () => {
+    const both = { canSend: true, canQueue: true, canEdit: true };
+    expect(cardActions('queued', both)).toEqual(['edit', 'keepNote', 'delete']);
+    expect(cardActions('note', both)).toEqual(['edit', 'sendNow', 'addToQueue', 'delete']);
+    expect(cardActions('sent', both)).toEqual(['delete']);
+    expect(cardActions('note', { ...both, canEdit: false })).toEqual(['sendNow', 'addToQueue', 'delete']);
+  });
+});
+
+describe('what a card offers', () => {
+  const look = { state: 'queued' as const, pending: false, canReply: true };
+  const all = { writes: true, canSend: true, canQueue: true, canEdit: true };
+
+  it('offers nothing where it only reads', () => {
+    expect(cardMoves(look, { ...all, writes: false })).toEqual({ menu: null, sendNow: null, reply: false });
+  });
+
+  it('holds Send now while where it goes is not known, and Edit while a send takes the words', () => {
+    expect(cardMoves(look, { ...all, canSend: false }).sendNow).toBe('waiting');
+    expect(cardMoves(look, all)).toEqual({ menu: ['edit', 'keepNote', 'delete'], sendNow: 'ready', reply: true });
+    expect(cardMoves({ ...look, pending: true }, all).menu).toEqual(['keepNote', 'delete']);
+  });
+
+  it('asks for attention for an unread answer or one a stopped run owes', () => {
+    expect(asksAttention({ unread: 1 }, { needsRetry: false })).toBe(true);
+    expect(asksAttention({ unread: 0 }, { needsRetry: true })).toBe(true);
+    expect(asksAttention({ unread: 0 }, { needsRetry: false })).toBe(false);
   });
 });

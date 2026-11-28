@@ -77,3 +77,43 @@ describe('streamFetch error surfacing', () => {
     });
   });
 });
+
+describe('streamFetch: which refusals are worded for the reader', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const refusedWith = async (status: number, body: unknown) => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(respond(status, body));
+    const { streamFetch } = await import('../transport');
+    return streamFetch('/api/v1/threads/x/messages', {}, () => {}).then(
+      () => ({ reason: 'resolved' as string | undefined }),
+      (err: unknown) => err as { reason?: string },
+    );
+  };
+
+  it('takes a structured message or a plain-text detail as the reason', async () => {
+    expect((await refusedWith(503, GATE_503)).reason).toBe('Service temporarily unavailable. Please try again shortly.');
+    expect((await refusedWith(409, { detail: 'The thread is being deleted.' })).reason).toBe('The thread is being deleted.');
+  });
+
+  it("takes a firewall's own sentence as the reason, since the page it sent says nothing", async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      respond(403, '<html>blocked</html>', { 'content-type': 'text/html' }),
+    );
+    const { streamFetch } = await import('../transport');
+    const { edgeBlockMessage } = await import('@/lib/edgeBlock');
+    await expect(streamFetch('/api/v1/threads/x/messages', {}, () => {})).rejects.toMatchObject({
+      status: 403,
+      edgeBlocked: 'content',
+      reason: edgeBlockMessage('content'),
+    });
+  });
+
+  it('gives none for a detail it could only print as JSON', async () => {
+    expect((await refusedWith(422, { detail: [{ loc: ['body'] }] })).reason).toBeUndefined();
+  });
+});

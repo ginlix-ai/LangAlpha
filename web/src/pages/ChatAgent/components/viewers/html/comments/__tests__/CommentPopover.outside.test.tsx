@@ -20,7 +20,7 @@ async function pressOutside(words: boolean) {
       boundary={null}
       width={320}
       label="Comment"
-      focusSelf={false}
+      focus="field"
       arrival={false}
       replaced={false}
       draft={{ words }}

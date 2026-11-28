@@ -189,6 +189,24 @@ describe('markdownSpots', () => {
     expect(found && 'range' in found ? found.range.startContainer.parentElement?.getAttribute('data-source-lines') : null).toBe('21');
   });
 
+  it.each([
+    ['in a raw tag the sanitizer drops', '# Tools\n\n<available-tools>\nsome words here\n</available-tools>\n\nAfter\n', '4'],
+    ['in a raw div', '# Tools\n\n<div>\nsome words here\n</div>\n\nAfter\n', '4'],
+  ])('saves words no block holds (%s) by their own lines, and finds them again', (_, content, lines) => {
+    const root = shown(content);
+    const spots = markdownSpots(root);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let text: Text | null = null;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.textContent?.includes('words here')) text = n as Text;
+    const range = document.createRange();
+    range.setStart(text!, text!.data.indexOf('words'));
+    range.setEnd(text!, text!.data.indexOf('words') + 'words'.length);
+    const anchor = spots.words!(range);
+    expect(anchor).toMatchObject({ kind: 'text', quote: 'words', lines, label: 'Tools' });
+    const found = spots.find(anchor!);
+    expect(found && 'range' in found ? found.range.startContainer.parentElement?.getAttribute('data-source-lines') : null).toBe(lines);
+  });
+
   it('finds a single selected character again, by its lines', () => {
     const root = shown('Total = a + b\n\nAnother line with a in it\n');
     const spots = markdownSpots(root);

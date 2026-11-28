@@ -4,7 +4,7 @@ import { CommentSendRefused } from '@/pages/ChatAgent/utils/api/artifacts';
 import type { CommentInWorkspace } from '../artifactCommentSend';
 import { nextMarks, type CommentSendWriter, type Marks } from '../commentSendStore';
 import type { ArtifactCommentSender } from '../sendContext';
-import { queuedBatches, refusalReason, sendBatches } from '../commentSends';
+import { queuedBatches, refusalNotice, refusalReason, sendBatches } from '../commentSends';
 import { commentDestinations } from '../destinations';
 
 function comment(id: string, over: Partial<CommentInWorkspace> = {}): CommentInWorkspace {
@@ -81,11 +81,23 @@ describe('queuedBatches', () => {
 });
 
 describe('refusalReason', () => {
-  it('says a gone comment in the reader\'s words, a conflict as the server put it, and anything else as where it still is', () => {
-    expect(refusalReason(t, new CommentSendRefused('x', 'comments_unavailable', 409), true)).toBe('pageViewer:comments.notSentUnavailable');
-    expect(refusalReason(t, new CommentSendRefused('The agent is stopping.', 'stopping', 409), true)).toBe('The agent is stopping.');
-    expect(refusalReason(t, new CommentSendRefused('Failed to fetch', null, null), true)).toBe('pageViewer:comments.notSentQueued');
+  it('says a gone comment in the reader\'s words, a reason as it was given, and anything else as where it still is', () => {
+    expect(refusalReason(t, new CommentSendRefused('x', 'comments_unavailable'), true)).toBe('pageViewer:comments.notSentUnavailable');
+    expect(refusalReason(t, new CommentSendRefused('The agent is stopping.', 'stopping'), true)).toBe('The agent is stopping.');
+    expect(refusalReason(t, new CommentSendRefused(null), true)).toBe('pageViewer:comments.notSentQueued');
     expect(refusalReason(t, new Error('Failed to fetch'), false)).toBe('pageViewer:comments.notSentNote');
+  });
+});
+
+describe('a refusal said in a notice', () => {
+  it('is said with where the words are kept, except for a comment that is gone', () => {
+    const say = ((key: string, o?: { reason?: string; kept?: string }) =>
+      [key, o?.reason, o?.kept].filter((x) => x !== undefined).join('|')) as unknown as TFunction;
+    expect(refusalNotice(say, new CommentSendRefused('The chat is archived', 'archived'), false))
+      .toBe('pageViewer:comments.notSentBecause|The chat is archived.|pageViewer:comments.notSentNote');
+    expect(refusalNotice(say, new Error('Failed to fetch'), true)).toBe('pageViewer:comments.notSent|pageViewer:comments.notSentQueued');
+    expect(refusalNotice(say, new CommentSendRefused('x', 'comments_unavailable'), false))
+      .toBe('pageViewer:comments.notSent|pageViewer:comments.notSentUnavailable');
   });
 });
 
@@ -138,7 +150,7 @@ describe('sendBatches', () => {
     const sends = memorySends();
     const send = vi.fn((_comments: readonly CommentInWorkspace[], to: { threadId: string } | { newThreadIn: string }) => (
       'threadId' in to && to.threadId === 't1'
-        ? Promise.reject(new CommentSendRefused('A reply is still running.', null, 409))
+        ? Promise.reject(new CommentSendRefused('A reply is still running.'))
         : Promise.resolve({ threadId: 't2' })
     ));
     const sender: ArtifactCommentSender = { beside: { threadId: 't1' }, running: true, send };

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { MAX_AREA_ELEMENTS, MAX_DOC_PATH, parsePageMessage, type PageToViewer } from '../pageProtocol';
+import { MAX_AREA_ELEMENTS, MAX_DOC_PATH, parseDraftSpot, parsePageMessage, type PageToViewer } from '../pageProtocol';
 
 const RECT = { x: 10, y: 20, width: 30, height: 40 };
 
@@ -89,6 +89,14 @@ describe('an element or text anchor', () => {
     // 298 plain characters, then an emoji whose high surrogate would end the cut.
     const label = `${'x'.repeat(298)}\u{1F600}tail`;
     expect(pick({ kind: 'element', path: '#a', label })?.anchor.label).toBe(`${'x'.repeat(298)}…`);
+  });
+
+  it('keeps where words sat on their PDF page, and drops a place off it', () => {
+    const rect = { x: 0.18, y: 0.34, w: 0.2, h: 0.016 };
+    expect(selection({ anchor: { kind: 'text', page: 3, quote: 'revenue growth', rect }, rect: RECT })?.anchor)
+      .toEqual({ kind: 'text', page: 3, quote: 'revenue growth', rect });
+    expect(selection({ anchor: { kind: 'text', page: 3, quote: 'revenue growth', rect: { ...rect, y: 1.4 } }, rect: RECT })?.anchor)
+      .toEqual({ kind: 'text', page: 3, quote: 'revenue growth' });
   });
 
   it('drops a point outside the element', () => {
@@ -229,6 +237,20 @@ describe('page:positions', () => {
 
   it('refuses a message without a list', () => {
     expect(read('page:positions', { items: { a: RECT } })).toBeNull();
+  });
+
+  it('keeps where a spot\'s pin goes, and drops one it cannot trust or one with no spot', () => {
+    const pin = { x: 120, y: 40 };
+    expect(read('page:positions', { items: [{ id: 'a', rect: { ...RECT, pin } }] })?.items).toEqual([{ id: 'a', rect: { ...RECT, pin } }]);
+    expect(read('page:positions', { items: [{ id: 'a', rect: { ...RECT, pin: { x: 'bad' } } }] })?.items).toEqual([{ id: 'a', rect: RECT }]);
+    expect(read('page:positions', { items: [{ id: 'a', rect: null }] })?.items).toEqual([{ id: 'a', rect: null }]);
+  });
+
+  it('keeps where the pin on selected words goes from the start, which a kept draft keeps too', () => {
+    const pin = { x: 120, y: 40 };
+    const words = { kind: 'text', quote: 'market platform' };
+    expect(read('page:selection', { anchor: words, rect: { ...RECT, pin }, compose: true, press: 1 })?.selection?.rect).toEqual({ ...RECT, pin });
+    expect(parseDraftSpot({ anchor: words, rect: { ...RECT, pin } })?.rect).toEqual({ ...RECT, pin });
   });
 
   it('keeps where each part of an area shows, and drops parts it cannot trust rather than the spot', () => {
