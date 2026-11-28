@@ -18,7 +18,7 @@
   <a href="#full-stack-architecture"><strong>Full-stack architecture</strong></a> ·
   <a href="#security"><strong>Security</strong></a>
   <br />
-  English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja-JP.md">日本語</a>
+  English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja-JP.md">日本語</a> · <a href="README.tr.md">Türkçe</a>
 </p>
 
 <p align="center">
