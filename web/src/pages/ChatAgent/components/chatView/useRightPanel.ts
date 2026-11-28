@@ -18,12 +18,14 @@ import type { ChartTabSpec, UnsequencedTarget } from '../filePanel/types';
 import type { PreviewData } from '../../hooks/utils/types';
 import { chartParts } from '@/lib/bars/chartId';
 import { readArtifactCommentReply, type ArtifactCommentRef } from '../artifactComments/artifactCommentReply';
+import { useDriveCommentOpener } from '../artifactComments/driveCommentOpener';
 import { NO_TRANSCRIPTS, useToolCallLookup, type TranscriptMessage } from './toolCallLookup';
 import { useTranscriptReader } from '../filePanel/transcriptStore';
 import { DEFAULT_PANEL_WIDTH, detailPanelWidth } from '../filePanel/detailWidth';
 import { panelWidthFor, panelWidthKind, readKeptWidths, saveKeptWidths, withKeptWidth, type PanelTabKind } from '../filePanel/panelWidths';
 import { usePanelAsks, usePanelLinkOpen, usePanelOpen } from './usePanelLinks';
 import { driveRouteLocation } from '../../utils/agentArtifactRouting';
+import type { DriveLocation } from '@/lib/driveLinks';
 import { useFileDeepLink } from './useFileDeepLink';
 import { useChatBrowser } from './useChatBrowser';
 
@@ -654,11 +656,23 @@ export function useRightPanel({
     landInFilePanel({ kind: 'chart', ...spec });
   }, [isMobile, handleOpenInMarketView, landInFilePanel]);
 
-  /** Opens a file beside the chat on one of its comments, or a chart's tab on
-   *  one of its. The path is the file's own in its workspace, so it is not
-   *  read against an open file. A phone has no tab strip: a chart opens on
-   *  the market page, at the symbol and timeframe the comment is on. */
-  const handleOpenArtifactComment = useCallback(({ workspaceId: fileWorkspaceId, kind, path, commentId }: ArtifactCommentRef) => {
+  // A Drive file's comment opens where a Drive link does: in the panel's Drive tab, kept.
+  const placeDriveComment = useCallback(
+    (loc: DriveLocation) => openInPanel({ target: { kind: 'drive', loc }, workspaceId: null }, { pin: true }),
+    [openInPanel],
+  );
+  const openDriveComment = useDriveCommentOpener(placeDriveComment);
+  /** Opens a file beside the chat on one of its comments, a chart's tab on
+   *  one of its, or the panel's Drive tab on a Drive file's. A workspace file's path
+   *  is its own in its workspace, so it is not read against an open file. A
+   *  phone has no tab strip: a chart opens on the market page, at the symbol
+   *  and timeframe the comment is on. */
+  const handleOpenArtifactComment = useCallback((ref: ArtifactCommentRef) => {
+    if (ref.kind === 'drive') {
+      openDriveComment(ref);
+      return;
+    }
+    const { workspaceId: fileWorkspaceId, kind, path, commentId } = ref;
     if (!path) return;
     const sibling = fileWorkspaceId && fileWorkspaceId !== workspaceId ? fileWorkspaceId : undefined;
     if (kind === 'chart') {
@@ -671,7 +685,7 @@ export function useRightPanel({
       return;
     }
     handleOpenFileFromChat(path, sibling, undefined, { rooted: true, pin: true, comment: commentId });
-  }, [workspaceId, handleOpenFileFromChat, isMobile, handleOpenInMarketView, landInFilePanel]);
+  }, [workspaceId, handleOpenFileFromChat, isMobile, handleOpenInMarketView, landInFilePanel, openDriveComment]);
 
   /**
    * Show a tool call's result. On desktop it lands as a tab in the file panel

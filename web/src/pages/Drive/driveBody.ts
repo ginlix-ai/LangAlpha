@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, type QueryKey } from '@tanstack/react-query';
 import { contentParams, contentUrl, readBytes, readText } from '@/api/drive';
 import { queryKeys } from '@/lib/queryKeys';
 import { openRangedRead } from '@/lib/rangedRead';
@@ -182,11 +182,21 @@ export function atVersion(entry: DriveEntry, version: DriveVersion | null): Driv
 export function useDriveBody(space: string | null, entry: DriveEntry | null, version: { seq: number; sha: string } | null) {
   const sha = version?.sha ?? entry?.sha256 ?? '';
   const mode = entry ? driveBodyMode(entry) : 'none';
+  const keyAt = (at: string) => driveBodyKey(space ?? '', entry ?? { id: '', name: '', is_text: null, size: null }, at);
   return useQuery({
-    queryKey: driveBodyKey(space ?? '', entry ?? { id: '', name: '', is_text: null, size: null }, sha),
+    queryKey: keyAt(sha),
+    // Only the head moving on (an agent's save) keeps the bytes on screen, so
+    // the viewer and what is open over it (a comment being written, the
+    // scroll) stay; a version looked back at never stands in for another.
+    placeholderData: version ? undefined : keepSameFile(keyAt),
     // The head is read at its seq too, so bytes saved after the entry was
-    // read never land under the entry's hash.
-    queryFn: () => readDriveBody(space!, entry!, version?.seq ?? entry!.version),
+    // read never land under the entry's hash. Bytes read whole or by range
+    // carry no hash of their own, so they take the one they were read under:
+    // while they stand in for a newer head, a comment made on them is theirs.
+    queryFn: async () => {
+      const body = await readDriveBody(space!, entry!, version?.seq ?? entry!.version);
+      return body.version || !sha ? body : { ...body, version: sha };
+    },
     enabled: !!space && !!entry && entry.kind === 'file' && mode !== 'none',
     staleTime: Infinity,
     gcTime: 5 * 60_000,
@@ -194,4 +204,21 @@ export function useDriveBody(space: string | null, entry: DriveEntry | null, ver
     structuralSharing: false,
     retry: false,
   });
+}
+
+/**
+ * `placeholderData` for a read keyed by a file's bytes: while the same file,
+ * read the same way, loads at new bytes, the last bytes stay on screen and
+ * `isPlaceholderData` says they are the last ones, never another file's.
+ * `keyAt` is the read's key at any hash, so the previous key is known for
+ * the same read by differing from this one only where the hash goes.
+ */
+export function keepSameFile<T>(keyAt: (sha: string) => QueryKey) {
+  const one = keyAt('\u0000');
+  const other = keyAt('\u0001');
+  return (previous: T | undefined, previousQuery?: { queryKey: QueryKey }): T | undefined => {
+    const key = previousQuery?.queryKey;
+    const same = !!key && key.length === one.length && key.every((part, i) => one[i] !== other[i] || part === one[i]);
+    return same ? previous : undefined;
+  };
 }

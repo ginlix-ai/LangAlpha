@@ -17,6 +17,8 @@ export interface BatchOutcome {
   threadId: string | null;
   /** Why it was refused, as the cards say it; null when it went. */
   reason: string | null;
+  /** What it was refused with, for a caller that says it elsewhere ({@link refusalNotice}); null when it went. */
+  error: unknown;
 }
 
 /**
@@ -47,14 +49,30 @@ export function queuedBatches(
   });
 }
 
+/** The server's or the chat's own words for a refusal, where they say more than where the comment is. */
+function saidWhy(err: unknown): string | null {
+  return err instanceof CommentSendRefused && err.code !== 'comments_unavailable' ? err.reason : null;
+}
+
+const keptLine = (t: TFunction, queued: boolean): string =>
+  queued ? t('pageViewer:comments.notSentQueued') : t('pageViewer:comments.notSentNote');
+
 /** A refused send as a card says it, after "Not sent.": where the comments still are, unless the server said why. */
 export function refusalReason(t: TFunction, err: unknown, queued: boolean): string {
-  if (err instanceof CommentSendRefused) {
-    if (err.code === 'comments_unavailable') return t('pageViewer:comments.notSentUnavailable');
-    // A conflict's message is written for the reader (a busy agent, a move).
-    if (err.status === 409 && err.message) return err.message;
-  }
-  return queued ? t('pageViewer:comments.notSentQueued') : t('pageViewer:comments.notSentNote');
+  if (err instanceof CommentSendRefused && err.code === 'comments_unavailable') return t('pageViewer:comments.notSentUnavailable');
+  return saidWhy(err) ?? keptLine(t, queued);
+}
+
+/**
+ * A refused send as a notice says it to someone no longer looking at the
+ * comment's card: not sent, why, and where the words still are. A comment
+ * that is gone has nowhere to be kept.
+ */
+export function refusalNotice(t: TFunction, err: unknown, queued: boolean): string {
+  const why = saidWhy(err)?.trim();
+  if (!why) return t('pageViewer:comments.notSent', { reason: refusalReason(t, err, queued) });
+  const stopped = /[.!?。！？]$/.test(why) ? why : `${why}.`;
+  return t('pageViewer:comments.notSentBecause', { reason: stopped, kept: keptLine(t, queued) });
 }
 
 /**
@@ -81,11 +99,11 @@ export async function sendBatches(
     try {
       const { threadId } = await sender.send(batch.comments, to);
       if (marks) sends.taken(batch.comments);
-      return { batch, threadId, reason: null };
+      return { batch, threadId, reason: null, error: null };
     } catch (err) {
       const reason = reasonOf(err, batch);
       if (marks) sends.refused(batch.comments.map((c) => c.comment_id), reason);
-      return { batch, threadId: null, reason };
+      return { batch, threadId: null, reason, error: err };
     }
   };
   const byDestination = new Map<string, SendBatch[]>();

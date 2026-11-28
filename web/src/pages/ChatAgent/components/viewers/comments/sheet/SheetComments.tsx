@@ -54,6 +54,7 @@ export function SheetComments({ grid, view, tabOf = noTab, reveal = noReveal, ta
         strategy={strategy}
         target={target}
         modeHint={t('pageViewer:comments.modeHintCells')}
+        touchHint={t('pageViewer:comments.modeHintCellsTouch')}
       />
     </>
   );

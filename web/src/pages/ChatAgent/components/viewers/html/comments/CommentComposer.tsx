@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -8,13 +8,13 @@ import { Disclosure } from '@/components/ui/Disclosure';
 import { usePreferences } from '@/hooks/usePreferences';
 import { readCommentEnter } from '@/lib/artifactPreferences';
 import { clientOs } from '@/lib/clientOs';
-import { isImeComposing } from '@/lib/ime';
 import { cn } from '@/lib/utils';
-import { INTENT_LABEL, footerLayout, routeForKey } from './composerFooter';
+import { CommentField, FieldFrame } from './CommentField';
+import { FieldFocus } from './fieldFocus';
+import { useSubmitting } from './useSubmitting';
+import { INTENT_LABEL, enterFor, footerLayout } from './composerFooter';
+import { useCommentSurface } from './commentSurface';
 import type { CommentIntent } from '../../../artifactComments/destinations';
-
-/** How tall the field grows with what is written before it scrolls, in px. */
-const FIELD_MAX = 160;
 
 /** What a new comment's composer is handed by the layer, which holds the words so they move from box to box. */
 interface NewComment {
@@ -32,6 +32,8 @@ interface NewComment {
   onDiscard: () => void;
   /** The box's ×: an empty draft goes at once, words ask first (`confirmDiscard`). */
   onClose: () => void;
+  /** False for a draft taken up again from where it was kept (`InHand`): the keyboard stays where it is. */
+  takesFocus: boolean;
 }
 
 /**
@@ -88,20 +90,19 @@ export function CommentComposer({
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
-  const [busy, setBusy] = useState<CommentIntent | null>(null);
-  const [failed, setFailed] = useState(false);
+  const { busy, failed, run } = useSubmitting();
   const [ownTick, setOwnTick] = useState(true);
   const drafting = mode.kind === 'reply' ? null : mode;
   const over = mode.kind === 'over' ? mode : null;
   // A field under a card, or in the list's draft card, rather than the box itself.
   const embedded = mode.kind !== 'over';
-  const autoFocus = drafting !== null;
+  const autoFocus = drafting?.takesFocus ?? false;
   const confirmDiscard = drafting?.confirmDiscard ?? false;
   const forAgent = drafting ? drafting.forAgent : ownTick;
   const setForAgent = drafting ? drafting.onForAgentChange : setOwnTick;
   const head = over?.head;
   const empty = !value.trim();
-  const enter = readCommentEnter(usePreferences().preferences);
+  const enter = enterFor(useCommentSurface(), readCommentEnter(usePreferences().preferences));
   // A queue does not take the filled button's place while the pointer is on
   // the buttons. In a new chat the filled button is Send now; the first send
   // makes the thread, after which the same place says Add to queue, and a
@@ -152,52 +153,17 @@ export function CommentComposer({
     }
   }, [confirmDiscard]);
 
-  // The field grows with the words, up to a few lines, so the box never
-  // hides what is being written behind a scrollbar it does not need yet.
-  useLayoutEffect(() => {
-    const field = fieldRef.current;
-    if (!field) return;
-    field.style.height = 'auto';
-    field.style.height = `${Math.min(field.scrollHeight, FIELD_MAX)}px`;
-  }, [value]);
-
   // Held, not hidden, while the destination is read: it comes in a moment.
-  const held = (route: CommentIntent) => empty || busy !== null || (route !== 'note' && !canSend);
-  const submit = async (route: CommentIntent) => {
-    if (held(route)) return;
-    setBusy(route);
-    setFailed(false);
-    try {
-      await onSubmit(route);
-    } catch {
-      setFailed(true);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isImeComposing(e)) return;
-    const route = routeForKey(e, layout);
-    if (!route) return;
-    e.preventDefault();
-    void submit(route);
+  const held = (route: CommentIntent) => empty || busy || (route !== 'note' && !canSend);
+  const submit = (route: CommentIntent) => {
+    if (!held(route)) void run(() => onSubmit(route));
   };
 
   const quiet = layout.quiet;
   const buttonSize = embedded ? 'h-6 rounded-md' : 'h-7 rounded-lg';
 
   return (
-    <div
-      ref={rootRef}
-      className={cn(
-        'flex min-w-0 flex-col',
-        embedded
-          ? 'gap-0.5 rounded-lg border pt-[7px] pr-2 pb-[5px] pl-2.5'
-          : 'gap-1.5 px-3 pt-2.5 pb-2',
-      )}
-      style={embedded ? { backgroundColor: 'var(--color-bg-input)', borderColor: 'var(--color-border-input)' } : undefined}
-    >
+    <FieldFrame ref={rootRef} data-comment-composer="" inline={embedded}>
       {over && (
         <div className="flex min-w-0 items-center gap-2">
           <div className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--color-text-tertiary)' }} title={over.head}>
@@ -229,31 +195,23 @@ export function CommentComposer({
           {t('pageViewer:comments.addPart')}
         </button>
       )}
-      <textarea
+      <CommentField
         ref={fieldRef}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        // Words written while the send is out would go with the box it closes.
-        readOnly={busy !== null}
-        onKeyDown={onKeyDown}
+        onChange={onChange}
+        onEnter={(enter) => submit(enter === 'mod' ? layout.modEnter : layout.primary)}
+        held={busy}
+        inline={embedded}
         placeholder={placeholder}
         aria-label={head ?? placeholder}
-        rows={embedded ? 1 : 2}
-        maxLength={8000}
         autoFocus={autoFocus}
         data-page-draft={autoFocus || undefined}
-        className={cn(
-          // The box is the field's edge: the field draws no border, halo or
-          // ring of its own. A ring would also light on a box opened by a
-          // drag in the page, which the app never hears as a pointer.
-          'owns-its-edge block w-full resize-none border-0 bg-transparent p-0 py-0.5 leading-[1.45] outline-hidden',
-          'text-(--color-text-primary) placeholder:text-(--color-text-quaternary)',
-          embedded ? 'min-h-[22px] text-[13px]' : 'min-h-[42px] text-sm',
-        )}
       />
       {drafting && (
         <Disclosure open={forAgent && !confirmDiscard}>
-          <div className="pt-0.5">{drafting.destination}</div>
+          <FieldFocus value={() => fieldRef.current?.focus({ preventScroll: true })}>
+            <div className="pt-0.5">{drafting.destination}</div>
+          </FieldFocus>
         </Disclosure>
       )}
       {failed && (
@@ -267,24 +225,27 @@ export function CommentComposer({
       <SwapCell as="div" sizeToIncoming swapKey={confirmDiscard ? 'discard' : 'routes'} layerClassName="flex min-h-7 flex-wrap items-center gap-1">
         {drafting?.confirmDiscard ? (
           <>
-            <span role="alert" className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+            {/* Held whole: past the line's room, the buttons wrap under it instead. */}
+            <span role="alert" className="max-w-full shrink-0 grow truncate text-xs" style={{ color: 'var(--color-text-secondary)' }}>
               {t('pageViewer:comments.discardConfirm')}
             </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className={cn(buttonSize, 'px-2 text-xs')}
-              onClick={() => {
-                drafting.onKeepWriting();
-                fieldRef.current?.focus();
-              }}
-            >
-              {t('pageViewer:comments.keepWriting')}
-            </Button>
-            <Button type="button" size="sm" variant="destructive" className={cn(buttonSize, 'px-2.5 text-xs')} onClick={drafting.onDiscard}>
-              {t('pageViewer:comments.discard')}
-            </Button>
+            <span className="ml-auto flex shrink-0 items-center gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn(buttonSize, 'px-2 text-xs')}
+                onClick={() => {
+                  drafting.onKeepWriting();
+                  fieldRef.current?.focus();
+                }}
+              >
+                {t('pageViewer:comments.keepWriting')}
+              </Button>
+              <Button type="button" size="sm" variant="destructive" className={cn(buttonSize, 'px-2.5 text-xs')} onClick={drafting.onDiscard}>
+                {t('pageViewer:comments.discard')}
+              </Button>
+            </span>
           </>
         ) : (
           <>
@@ -319,7 +280,7 @@ export function CommentComposer({
                   title={t(quiet.route === 'send' ? 'pageViewer:comments.sendNowTitle' : 'pageViewer:comments.addToQueueTitle', {
                     keys: clientOs() === 'mac' ? '⌘↵' : 'Ctrl+↵',
                   })}
-                  onClick={() => void submit(quiet.route)}
+                  onClick={() => submit(quiet.route)}
                 >
                   {t(INTENT_LABEL[quiet.route])}
                 </Button>
@@ -330,7 +291,7 @@ export function CommentComposer({
                 className={cn(buttonSize, 'shrink-0 gap-1 px-2 text-xs')}
                 disabled={held(layout.primary)}
                 aria-keyshortcuts="Enter"
-                onClick={() => void submit(layout.primary)}
+                onClick={() => submit(layout.primary)}
               >
                 <InPlaceSwap
                   swapped={layout.primary !== tickedPrimary}
@@ -344,7 +305,7 @@ export function CommentComposer({
           </>
         )}
       </SwapCell>
-    </div>
+    </FieldFrame>
   );
 }
 

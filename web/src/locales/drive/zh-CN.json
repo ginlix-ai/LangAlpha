@@ -110,7 +110,9 @@
       "why": "为什么？",
       "badTickers": "不是有效的代码：{{tickers}}",
       "tooManyTickers": "一个备忘录最多 {{max}} 个代码。"
-    }
+    },
+    "revisedShort": "有修改",
+    "revisedSinceFinal": "定稿 v{{seq}} 之后有修改"
   },
   "versions": {
     "viewing": "版本 {{seq}}，{{who}}于{{when}}修改",
@@ -311,5 +313,13 @@
     "noRoom": "{{name}} 放不下：{{max}} 的空间只剩 {{left}}。先删掉一些文件腾出空间。",
     "changed": "你上次查看后 {{name}} 又有了改动。请重新看一下再试。",
     "notMemo": "{{name}} 已不再是备忘录。"
+  },
+  "comments": {
+    "open_other": "{{count}} 条未解决的评论",
+    "unread_other": "{{count}} 条有未读回复",
+    "openAndUnread": "{{open}}，{{unread}}",
+    "onVersion": "v{{seq}} 上",
+    "onVersionTitle": "在版本 {{seq}} 上留下的评论，仅供查看",
+    "seeOnVersion": "在 v{{seq}} 上查看"
   }
 }

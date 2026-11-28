@@ -17,7 +17,9 @@ import { memoState } from '../memoMarks';
 import { whoLabel } from '../who';
 import { DriveViews } from './DriveViews';
 import { EntryGlyph } from './EntryGlyph';
+import { CommentMarker } from './CommentMarker';
 import { EntryName } from './EntryName';
+import { RowOpener } from './RowOpener';
 import { RowsSkeleton } from './RowsSkeleton';
 import { MemoStatus, TickerChips } from './MemoBadges';
 import { PaneFrame } from './PaneFrame';
@@ -49,10 +51,13 @@ function MemoRow({ memo, compact, active, onTicker }: {
     <div role="row" className={cn('drive-memos-row', compact && 'is-compact', active && 'is-active')}>
       {/* The table role sits on a wrapper so the opener is still announced as a button. */}
       <span role="cell" className="drive-memos-slot">
-        <button type="button" className="drive-memos-open" onClick={() => open(entry)} aria-current={active ? 'true' : undefined}>
+        <RowOpener className="drive-memos-open" onOpen={() => open(entry)} active={active}>
           <EntryGlyph name={entry.name} className="drive-row-icon" />
           <span className="drive-row-text">
-            <EntryName name={entry.name} className="drive-row-name" />
+            <span className="drive-row-title">
+              <EntryName name={entry.name} className="drive-row-name" />
+              <CommentMarker entry={entry} />
+            </span>
             <span className="drive-row-sub">
               <span className="drive-row-facts">
                 {compact
@@ -61,7 +66,7 @@ function MemoRow({ memo, compact, active, onTicker }: {
               </span>
             </span>
           </span>
-        </button>
+        </RowOpener>
       </span>
       {compact ? (
         <span role="cell" className="drive-memos-compact">

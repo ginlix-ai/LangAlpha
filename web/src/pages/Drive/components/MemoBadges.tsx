@@ -26,9 +26,10 @@ export function TickerChips({ tickers, onPick }: { tickers: readonly string[]; o
 
 /**
  * A memo's status as words: Draft, or Final with the version it pinned, and
- * the amber dot once the memo was revised past that version. `full` (the
- * memo's own header) adds the pin's date and says "revised since" in words;
- * a list row says it to a screen reader only.
+ * that the memo was revised past that version. `full` (the memo's own
+ * header) adds the pin's date and says "revised since" beside the amber dot.
+ * A list row says it as a word, "Final v4 · revised", since a dot beside a
+ * name there is a comment's unread answer; the whole sentence is its title.
  *
  * Whether final pins a version is not yet ruled on by the owner. This is the
  * one place that shows the pin: drawn as a plain "Final", nothing else on the
@@ -44,14 +45,21 @@ export function MemoStatus({ mark, head, full = false }: { mark: DriveMemoMark; 
   const label = full && mark.final_at
     ? t('drive:memo.finalAtOn', { seq: pinned, date: shortMonthDay(new Date(mark.final_at), locale) })
     : t('drive:memo.finalAt', { seq: pinned });
+  const revised = revisedSince(mark, head) !== null;
   return (
     <span className="drive-memo-status">
       <span>{label}</span>
-      {revisedSince(mark, head) !== null && (
-        <span className="drive-memo-revised" title={full ? undefined : t('drive:memo.revisedSince')}>
+      {revised && full && (
+        <span className="drive-memo-revised">
           {/* The one amber mark on a memo: an annotation that the text moved on past what was signed off. */}
           <span className="drive-memo-dot" aria-hidden="true" />
-          <span className={full ? undefined : 'sr-only'}>{t('drive:memo.revisedSince')}</span>
+          <span>{t('drive:memo.revisedSince')}</span>
+        </span>
+      )}
+      {revised && !full && (
+        <span className="drive-memo-revised" title={t('drive:memo.revisedSinceFinal', { seq: pinned })}>
+          <span aria-hidden="true">{'· '}{t('drive:memo.revisedShort')}</span>
+          <span className="sr-only">{t('drive:memo.revisedSince')}</span>
         </span>
       )}
     </span>

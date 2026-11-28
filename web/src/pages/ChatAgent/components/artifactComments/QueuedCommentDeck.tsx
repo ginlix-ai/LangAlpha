@@ -21,7 +21,8 @@ import { SwapCell } from '@/components/ui/crossfade';
 import { cn } from '@/lib/utils';
 import type { QueuedArtifactComment } from '@/types/api';
 import { commentsByFile, latestOwnerWords } from './artifactCommentSend';
-import type { ArtifactCommentOpeners, ArtifactCommentRef } from './artifactCommentReply';
+import { commentRef, type ArtifactCommentOpeners } from './artifactCommentReply';
+import { useCommentOpener } from './driveCommentOpener';
 import { anchorLabel, areaTitle, outlineOf, spotPhrase } from './anchorKinds';
 import { PinBadge } from './PinBadge';
 import type { QueuedCommentDeck as Deck } from './useQueuedCommentDeck';
@@ -76,13 +77,14 @@ function DeckFold({ shown, children }: { shown: boolean; children: React.ReactNo
   );
 }
 
-function Row({ comment, onOpen, onKeep }: {
+function Row({ comment, openers, onKeep }: {
   comment: QueuedArtifactComment;
-  onOpen?: (comment: ArtifactCommentRef) => void;
+  openers: ArtifactCommentOpeners | undefined;
   /** `from` is the row's keep button, which goes with the row. */
   onKeep: (from: HTMLElement) => void;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const onOpen = useCommentOpener(openers, comment.kind);
   // An area's parts would starve in this slot; its size says what it is.
   // Boxes and marks on a chart have no place: their heading ("On a box on
   // page 3", "Sep 2 to Oct 14") is the label.
@@ -121,13 +123,7 @@ function Row({ comment, onOpen, onKeep }: {
           type="button"
           className={cn(main, 'cursor-pointer outline-hidden focus-visible:ring-2 focus-visible:ring-ring')}
           title={t('chat.artifactComments.deck.showInFile', { context: comment.kind })}
-          onClick={() => onOpen({
-            artifactId: comment.artifact_id,
-            workspaceId: comment.workspace_id,
-            kind: comment.kind,
-            path: comment.path,
-            commentId: comment.comment_id,
-          })}
+          onClick={() => onOpen(commentRef(comment))}
         >
           {body}
         </button>
@@ -254,7 +250,7 @@ function DeckBody({ deck, running, compact, onOpen, onAddToTurn, focusComposer }
               ) : (
                 <Row
                   comment={line.comment}
-                  onOpen={onOpen?.[line.comment.kind]}
+                  openers={onOpen}
                   onKeep={(from) => {
                     focusAfterKeep(from, rootRef.current, focusComposer);
                     keep([line.comment]);

@@ -1,7 +1,9 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { createContext, useContext, useMemo } from 'react';
 import { usePreferences } from '@/hooks/usePreferences';
 import { readArtifactAnswers, readingFor } from '@/lib/artifactPreferences';
-import { postArtifactComments, type CommentTarget } from '../../utils/api/artifacts';
+import type { CommentTarget } from '../../utils/api/artifacts';
+import { postComments } from './commentPosts';
 import type { CommentInWorkspace } from './artifactCommentSend';
 
 /**
@@ -24,7 +26,7 @@ export interface ArtifactCommentSender {
    * put, and the chat marks the comments' send as it goes
    * (`sameTarget`); a send to a new thread in a new chat's workspace
    * starts that chat's thread. Anywhere else it is posted with
-   * {@link postArtifactComments}. Either way it resolves once the server has
+   * {@link postComments}. Either way it resolves once the server has
    * them, with the thread they went to, and rejects with a
    * `CommentSendRefused` saying why they did not go.
    */
@@ -39,10 +41,11 @@ export function useArtifactCommentSender(): ArtifactCommentSender {
   // No chat is on screen, so the person reads the file.
   const reading = readingFor(readArtifactAnswers(usePreferences().preferences), true);
   // Read by every comment card, so one object per reading rather than per render.
+  const queryClient = useQueryClient();
   const posting = useMemo<ArtifactCommentSender>(() => ({
     beside: null,
     running: false,
-    send: (comments, to) => postArtifactComments(comments.map((c) => c.comment_id), to, { reading }),
-  }), [reading]);
+    send: (comments, to) => postComments(comments, to, { reading, queryClient }),
+  }), [reading, queryClient]);
   return beside ?? posting;
 }

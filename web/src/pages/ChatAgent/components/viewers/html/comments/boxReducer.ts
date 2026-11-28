@@ -1,13 +1,14 @@
 import type { ArtifactComment, ArtifactCommentAnchor } from '@/types/api';
 import type { CommentTarget } from '../../../../utils/api/artifacts';
-import type { FrameRect, PageHover, PagePick } from '../pageProtocol';
+import type { PageHover, PagePick, SpotRect } from '../pageProtocol';
 import { filterShowing, showsDraft, type ListFilter } from '../../../artifactComments/commentModel';
 import type { KeptDraft } from './commentDrafts';
+import type { PressAnswer } from './usePageReports';
 
 export interface Draft {
   anchor: ArtifactCommentAnchor;
   /** Where the spot was when picked, until the page reports where it is now. */
-  rect: FrameRect;
+  rect: SpotRect;
   /** The file it is on: the one the frame held when it was picked. */
   path: string;
   /** That file's title when it was picked, null where it has none. */
@@ -20,11 +21,20 @@ export interface Draft {
 }
 
 /**
- * What is open over the page: a new comment being written, or a comment's
- * card. A draft picked again elsewhere is a new box, numbered, so the old one
- * leaves where it was while the words move to the new one.
+ * The comment being written, numbered: a draft picked again elsewhere is a
+ * new box, so the old one leaves where it was while the words move to the
+ * new one. One just picked takes the focus; one taken up again from where it
+ * was kept (a reload, a return to its file) shows without it, so a key meant
+ * for something else never sends it.
  */
-export type Open = { kind: 'draft'; draft: Draft; serial: number } | { kind: 'card'; id: string };
+export interface InHand {
+  draft: Draft;
+  serial: number;
+  takesFocus: boolean;
+}
+
+/** What is open over the page: a new comment being written, or a comment's card. */
+export type Open = ({ kind: 'draft' } & InHand) | { kind: 'card'; id: string };
 
 /** Which box a close is for: the draft by its number, a card by its comment. */
 export type BoxOf = { kind: 'draft'; serial: number } | { kind: 'card'; id: string };
@@ -40,13 +50,15 @@ export interface BoxState {
   doc: string;
   /** Whether the list showed when last told. */
   listOpen: boolean;
+  /** Whether comment mode was on when last told. */
+  mode: boolean;
   /** A card or the draft went to the list while it was shut: the layer opens it, and the list showing settles this. */
   listWanted: boolean;
   open: Open | null;
   /** The last draft's number. */
   serial: number;
   /** A comment being written that waits in the list: the version it was carried onto shows its spot out of view, or not at all. */
-  listed: { draft: Draft; serial: number } | null;
+  listed: InHand | null;
   /** The words being written, in the draft's box or its card in the list. */
   text: string;
   /** "For the agent" on the comment being written, which moves with its words. */
@@ -72,12 +84,21 @@ export interface BoxState {
   filter: ListFilter;
   /** The comment whose card is open in the list. */
   expandedId: string | null;
+  /**
+   * Counts the drafts that went while holding words selected in the page (a
+   * pick in comment mode), each a selection the page should drop. A press on
+   * the page that let a draft go is not counted: the press drops it itself
+   * as it starts its own, and a clear after would land on the new words.
+   */
+  selectionLetGo: number;
 }
 
 export type BoxAction =
   /** The file reloaded with the agent's edit, or a link moved the frame to another. */
   | { type: 'docChanged'; doc: string }
   | { type: 'listShown'; open: boolean; comments: readonly ArtifactComment[] }
+  /** Comment mode turned on or off. */
+  | { type: 'modeShown'; on: boolean }
   | { type: 'hover'; hover: PageHover | null }
   /**
    * A spot picked on the page at `path`, or words: a new draft's box opens on
@@ -129,10 +150,13 @@ export type BoxAction =
    */
   | { type: 'restore'; kept: KeptDraft | null; replace: boolean; behind?: boolean };
 
-export function initialBox({ doc, listOpen }: { doc: string; listOpen: boolean }): BoxState {
+export type BoxStart = { doc: string; listOpen: boolean; mode?: boolean };
+
+export function initialBox({ doc, listOpen, mode = false }: BoxStart): BoxState {
   return {
     doc,
     listOpen,
+    mode,
     listWanted: false,
     open: null,
     serial: 0,
@@ -148,12 +172,31 @@ export function initialBox({ doc, listOpen }: { doc: string; listOpen: boolean }
     carried: null,
     filter: 'open',
     expandedId: null,
+    selectionLetGo: 0,
   };
 }
 
-/** Whether a press on the page closes or asks something, which then swallows the pick its click reports. */
-export function pressCloses(state: BoxState): boolean {
-  return state.open !== null;
+/** The comment being written, over the page or waiting in the list. */
+export function inHand(state: BoxState): InHand | null {
+  return state.open?.kind === 'draft' ? state.open : state.listed;
+}
+
+/** The open draft, as the list keeps it. */
+function listing({ draft, serial, takesFocus }: InHand): InHand {
+  return { draft, serial, takesFocus };
+}
+
+/** The draft holding words selected in the page, by its number. */
+function holdingSelection(state: BoxState): number | null {
+  const draft = inHand(state);
+  return draft?.draft.selected ? draft.serial : null;
+}
+
+/** What a press on the page does to the box over it (`PressAnswer`): an empty draft gives way, anything else open closes or asks. */
+export function pressAnswer(state: BoxState): PressAnswer {
+  const open = state.open;
+  if (!open) return null;
+  return open.kind === 'draft' && !state.text.trim() ? { gaveWay: open.draft.anchor } : 'closed';
 }
 
 /** A new box, or none, with nothing left of how the last one came or went. */
@@ -204,7 +247,7 @@ function setDraftAside(state: BoxState): BoxState {
   if (open?.kind !== 'draft' || !state.text.trim()) return state;
   return {
     ...state,
-    listed: { draft: open.draft, serial: open.serial },
+    listed: listing(open),
     filter: showsDraft(state.filter) ? state.filter : 'open',
   };
 }
@@ -219,6 +262,12 @@ function expand(state: BoxState, comment: ArtifactComment, kept: boolean): BoxSt
 }
 
 export function boxReducer(state: BoxState, action: BoxAction): BoxState {
+  const next = reduce(state, action);
+  const letGo = holdingSelection(state) !== null && holdingSelection(next) === null && action.type !== 'pressAway';
+  return letGo ? { ...next, selectionLetGo: next.selectionLetGo + 1 } : next;
+}
+
+function reduce(state: BoxState, action: BoxAction): BoxState {
   switch (action.type) {
     case 'docChanged':
       // A comment being written outlives the document: the agent can edit the
@@ -245,6 +294,12 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       if (!action.open && state.listed && !state.text.trim()) return { ...next, listed: null };
       return next;
     }
+    case 'modeShown': {
+      // Leaving the mode lets an empty draft over the page go with it; one
+      // with words stays open, its words the writer's to send or let go.
+      const next = { ...state, mode: action.on };
+      return !action.on && state.open?.kind === 'draft' && !state.text.trim() ? endDraft(next, false) : next;
+    }
     case 'hover':
       return { ...state, hover: action.hover };
     case 'pick': {
@@ -261,7 +316,7 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       if (action.selected) draft.selected = true;
       const serial = state.serial + 1;
       return {
-        ...show(state, { kind: 'draft', draft, serial }),
+        ...show(state, { kind: 'draft', draft, serial, takesFocus: true }),
         serial,
         listed: null,
         forAgent: fresh ? true : state.forAgent,
@@ -282,17 +337,17 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       return closeBox(state, action.of, action.keepHover);
     case 'endDraft':
       return endDraft(state, action.keepHover);
-    case 'pressAway':
+    case 'pressAway': {
       // The spot under the pointer stays outlined, so the outline glides there
       // from the picked one: the page reported it while the box was open, and
       // reports each spot once. A draft waiting in the list is not over the page.
-      if (state.open?.kind === 'draft') {
-        // As a press outside the box on this side asks: a second press does
-        // not answer for the reader.
-        return state.text.trim() ? { ...state, confirmDiscard: true } : endDraft(state, true);
-      }
-      if (state.open?.kind === 'card') return closeBox(state, state.open, true);
-      return state;
+      const answer = pressAnswer(state);
+      if (answer === null) return state;
+      if (answer !== 'closed') return endDraft(state, true);
+      // Words written ask, as a press outside the box on this side does: a
+      // second press does not answer for the reader.
+      return state.open?.kind === 'card' ? closeBox(state, state.open, true) : { ...state, confirmDiscard: true };
+    }
     case 'leave':
       // Words already written go only by the question's own Discard: a second
       // close does not answer it for the writer.
@@ -316,15 +371,14 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       return {
         ...show(state, null),
         listWanted: !state.listOpen,
-        listed: { draft: open.draft, serial: open.serial },
+        listed: listing(open),
         filter: showsDraft(state.filter) ? state.filter : 'open',
       };
     }
     case 'placed':
       return { ...state, carried: null };
     case 'saved': {
-      const inHand = state.open?.kind === 'draft' ? state.open.serial : state.listed?.serial;
-      if (inHand !== action.serial) return state;
+      if (inHand(state)?.serial !== action.serial) return state;
       return { ...endDraft(state, false), madeId: action.id };
     }
     case 'expand':
@@ -341,10 +395,11 @@ export function boxReducer(state: BoxState, action: BoxAction): BoxState {
       const { draft, text, forAgent, to } = action.kept;
       const serial = base.serial + 1;
       const words = { serial, text, forAgent, to, confirmDiscard: false };
-      if (action.behind || base.open?.kind === 'card' || base.landing) return { ...base, ...words, listed: { draft, serial } };
+      const held: InHand = { draft, serial, takesFocus: false };
+      if (action.behind || base.open?.kind === 'card' || base.landing) return { ...base, ...words, listed: held };
       // Placed as a box carried onto a new version is: at its pin once the
       // page says where that is, or in the list where it cannot show.
-      return { ...show(base, { kind: 'draft', draft, serial }), ...words, listed: null, carried: base.doc };
+      return { ...show(base, { kind: 'draft', ...held }), ...words, listed: null, carried: base.doc };
     }
     default:
       return state;

@@ -82,11 +82,9 @@
 
 /* One focus ring: drawn inside a control that fills its row, outside one set in text. */
 .drive-tab:focus-visible,
-.drive-memos-open:focus-visible,
 .drive-record-main:focus-visible,
 .drive-record-toggle:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
-.drive-tab:focus-visible,
-.drive-memos-open:focus-visible { outline-offset: -2px; }
+.drive-tab:focus-visible { outline-offset: -2px; }
 
 /* Record */
 .drive-record { max-width: 760px; margin: 0 auto; padding: 12px 16px 24px; }
@@ -281,10 +279,12 @@
 .drive-memos-row.is-active,
 .drive-memos-row.is-active:hover { background-color: var(--color-bg-surface); }
 .drive-memos-row.is-active .drive-row-name { font-weight: 500; }
-/* The grid item around a cell's or a heading's button, which fills it. */
-.drive-memos-slot { display: flex; min-width: 0; border-radius: inherit; }
+/* The grid item around a cell's or a heading's button, which fills it; a
+   row's opener lies under its content (`RowOpener`). */
+.drive-memos-slot { position: relative; display: flex; min-width: 0; border-radius: inherit; }
 .drive-memos-slot > button { flex: 1; min-width: 0; }
 .drive-memos-open {
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 8px;

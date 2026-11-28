@@ -11,7 +11,8 @@ import { TextShimmer } from '@/components/ui/text-shimmer';
 import { cn } from '@/lib/utils';
 import type { ArtifactCommentsShown, ShownArtifactComment } from '@/types/api';
 import { commentsByFile } from './artifactCommentSend';
-import type { ArtifactCommentRef } from './artifactCommentReply';
+import { commentRef, type ArtifactCommentOpeners } from './artifactCommentReply';
+import { useCommentOpener } from './driveCommentOpener';
 import { PinBadge } from './PinBadge';
 import { useMessageActions } from '../messageList/MessageActionsContext';
 
@@ -25,12 +26,13 @@ function anchorLine(t: TFunction, label: string | null | undefined, quote: strin
   return '';
 }
 
-function CommentLine({ comment, refused, onOpen }: {
+function CommentLine({ comment, refused, openers }: {
   comment: ShownArtifactComment;
   refused: boolean;
-  onOpen?: (comment: ArtifactCommentRef) => void;
+  openers: ArtifactCommentOpeners | undefined;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const onOpen = useCommentOpener(openers, comment.kind);
   const on = anchorLine(t, comment.label, comment.quote);
   const body = (
     <>
@@ -54,13 +56,7 @@ function CommentLine({ comment, refused, onOpen }: {
       className={cn(row, 'cursor-pointer outline-hidden focus-visible:ring-2 focus-visible:ring-ring')}
       title={t('chat.artifactComments.message.open', { context: comment.kind })}
       aria-label={t('chat.artifactComments.message.openLabel', { number: comment.number, context: comment.kind })}
-      onClick={() => onOpen({
-        artifactId: comment.artifact_id,
-        workspaceId: comment.workspace_id,
-        kind: comment.kind,
-        path: comment.path,
-        commentId: comment.comment_id,
-      })}
+      onClick={() => onOpen(commentRef(comment))}
     >
       {body}
     </button>
@@ -111,7 +107,7 @@ export function ArtifactCommentList({ shown, pending = false, leads = false, ref
               key={comment.comment_id}
               comment={comment}
               refused={refused}
-              onOpen={onOpenArtifactComment?.[comment.kind]}
+              openers={onOpenArtifactComment}
             />
           ))}
         </div>

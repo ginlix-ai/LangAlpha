@@ -94,12 +94,8 @@ export function useQueuedCommentDeck({ threadId, running, sends }: {
       // 409 is a comment a send took first: nothing is left to hold back.
       const failed = results.some((r) => r.status === 'rejected' && apiErrorStatus(r.reason) !== 409);
       if (failed) setKeepError({ threadId, message: t('chat.artifactComments.deck.keepFailed') });
-      const files = new Map(targets.map((c) => [c.artifact_id, c.workspace_id]));
-      refreshArtifactComments(
-        queryClient,
-        [...files].map(([artifactId, workspaceId]) => ({ artifactId, workspaceId })),
-        threadId,
-      );
+      const files = new Map(targets.map((c) => [c.artifact_id, { artifactId: c.artifact_id, workspaceId: c.workspace_id, kind: c.kind }]));
+      refreshArtifactComments(queryClient, [...files.values()], threadId);
     });
   };
 

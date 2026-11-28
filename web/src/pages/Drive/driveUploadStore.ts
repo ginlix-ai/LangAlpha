@@ -12,7 +12,7 @@ import { cancelDriveUpload, DriveUploadFailed, getDriveUpload } from '@/api/driv
 import { apiErrorStatus } from '@/api/errors';
 import { authSessionCheck, registerAuthReset } from '@/lib/authResets';
 import { keepHandle, loadHandle, readHandle } from '@/lib/fileHandles';
-import { holdReload } from '@/lib/reloadHolds';
+import { holdPageLeave } from '@/lib/reloadHolds';
 import type { DriveUsage } from '@/types/drive';
 import { continuable, FileNeeded, sendToDrive } from './driveUpload';
 import {
@@ -108,18 +108,12 @@ function emit(): void {
   const moving = items.some((i) => MOVING.has(i.status));
   // The reload a stale build takes, and the browser's own leave question, both wait on bytes moving.
   if (moving && !releaseHold) {
-    releaseHold = holdReload();
-    window.addEventListener('beforeunload', askBeforeLeaving);
+    releaseHold = holdPageLeave();
   } else if (!moving && releaseHold) {
     releaseHold();
     releaseHold = null;
-    window.removeEventListener('beforeunload', askBeforeLeaving);
   }
   for (const listener of listeners) listener();
-}
-
-function askBeforeLeaving(e: BeforeUnloadEvent): void {
-  e.preventDefault();
 }
 
 const itemOf = (id: number) => items.find((i) => i.id === id);

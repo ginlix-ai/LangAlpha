@@ -1,18 +1,12 @@
-import React, { useEffect, useEffectEvent, useRef, useState } from 'react';
+import React, { useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import { HeldChildren } from '@/components/ui/Disclosure';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
+import { animate } from '@/lib/framer';
 import { isImeComposing } from '@/lib/ime';
-import { DURATION } from '@/lib/motion';
+import { TWEEN } from '@/lib/motion';
+import { prefersReducedMotion } from '@/lib/reducedMotion';
 import { PIN_SIZE } from './pinPlaces';
 import { useKeptWhileFading } from './useKeptWhileFading';
-
-/**
- * A box that stopped being the current one is dropped once its exit has
- * played. Radix unmounts the content itself at the exit's end, so this only
- * has to come after that; it is twice the beat so a busy frame cannot cut the
- * exit short.
- */
-const LEAVE_MS = DURATION.exit * 2000;
 
 type Point = { x: number; y: number };
 type OutsideEvent = Parameters<NonNullable<React.ComponentProps<typeof PopoverContent>['onInteractOutside']>>[0];
@@ -31,8 +25,13 @@ function onVersionPicker(e: OutsideEvent): boolean {
   return e.target instanceof Element && !!e.target.closest('[data-artifact-version-picker]');
 }
 
-function samePoint(a: Point, b: Point): boolean {
-  return a.x === b.x && a.y === b.y;
+type Band = { top: number; bottom: number };
+/** Where the box stands: its pin's tail, and the band it keeps clear. */
+type Place = { at: Point; clear: Band | null };
+
+function samePlace(a: Place, b: Place): boolean {
+  const band = a.clear === b.clear || (!!a.clear && !!b.clear && a.clear.top === b.clear.top && a.clear.bottom === b.clear.bottom);
+  return a.at.x === b.at.x && a.at.y === b.at.y && band;
 }
 
 // Radix's collisionPadding and sideOffset below.
@@ -56,6 +55,8 @@ function fitsBeside(at: Point, width: number, boundary: HTMLElement | null): boo
 const CLEAR_MIN = 180;
 
 export interface CommentPopoverProps {
+  /** Given the box's element while it is the current one, for what gives way to it. */
+  boxRef?: React.RefObject<HTMLDivElement | null>;
   /** The current box. False while it leaves, holding what it showed and where. */
   open: boolean;
   /** Where its pin's tail is, or null while the page has not said; the box stays where it last was. */
@@ -71,8 +72,12 @@ export interface CommentPopoverProps {
   boundary: HTMLElement | null;
   width: number;
   label: string;
-  /** A card takes focus on its own box rather than on its first button, which a stray Enter would press. */
-  focusSelf: boolean;
+  /**
+   * Where the focus goes as the box opens: a card's onto the box itself, not
+   * its first button, which a stray Enter would press; a draft's onto its
+   * field; none for a draft taken up again from where it was kept.
+   */
+  focus: 'self' | 'field' | 'none';
   /** Plays the one-shot ring that says "here it is", for a card the chat brought forward. */
   arrival: boolean;
   /** Another box took this one's place, so focus is not handed back when it goes. */
@@ -104,32 +109,50 @@ export interface CommentPopoverProps {
  * the corner Radix places beside the anchor.
  */
 export function CommentPopover({
-  open, point, narrow, clear, boundary, width, label, focusSelf, arrival, replaced, draft, seeThrough, onDismiss, onEscape, onGone, children,
+  open, point, narrow, clear, boundary, width, label, boxRef, focus, arrival, replaced, draft, seeThrough, onDismiss, onEscape, onGone, children,
 }: CommentPopoverProps): React.ReactElement | null {
-  const at = useKeptWhileFading(open ? point : null, samePoint);
+  // The pin and the band are kept together: the layer drops both once the
+  // box stops being current, and a box that went back beside its pin for its
+  // exit would leap there from under or over the band before it faded.
+  const place = useKeptWhileFading(open && point ? { at: point, clear: clear ?? null } : null, samePlace);
+  const at = place?.at ?? null;
   // The box has no trigger to hand the focus back to: it goes back to where
   // it was when the box opened, unless a press or focus elsewhere moved it on.
   const [returnTo] = useState(() => (typeof document === 'undefined' ? null : document.activeElement));
   const leftFor = useRef(false);
 
+  // The box fades where it stands on framer's clock, the one its pin, outline
+  // and marked words leave on, and is let go once the fade has played. Held
+  // mounted for it (`forceMount`), so no CSS exit plays: one starts a frame
+  // later than a framer one begun in the same commit, so the pin went first,
+  // and the pop's shrink drew it toward the corner Radix placed it by.
+  const content = useRef<HTMLDivElement>(null);
   const gone = useEffectEvent(onGone);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const el = content.current;
     if (open) return;
-    const timer = setTimeout(() => gone(), LEAVE_MS);
-    return () => clearTimeout(timer);
+    if (!el || prefersReducedMotion()) {
+      gone();
+      return;
+    }
+    const from = Number(getComputedStyle(el).opacity) || 1;
+    const fade = animate(from, 0, { ...TWEEN.exit, onUpdate: (v) => { el.style.opacity = String(v); } });
+    void fade.then(() => gone());
+    return () => fade.stop();
   }, [open]);
 
   if (!at) return null;
   // Off a band kept clear, the box is placed against the band, ending at the
   // pin's far side, rather than against the pin: Radix still flips it and
   // keeps it inside.
-  const room = clear && boundary
-    ? { bottom: boundary.clientHeight - clear.bottom - GAP - EDGE, top: clear.top - GAP - EDGE }
+  const band = place?.clear ?? null;
+  const room = band && boundary
+    ? { bottom: boundary.clientHeight - band.bottom - GAP - EDGE, top: band.top - GAP - EDGE }
     : null;
-  const off: 'bottom' | 'top' | null = !room || !clear || Math.max(room.bottom, room.top) < CLEAR_MIN ? null
+  const off: 'bottom' | 'top' | null = !room || !band || Math.max(room.bottom, room.top) < CLEAR_MIN ? null
     : room.bottom >= room.top ? 'bottom' : 'top';
-  const anchor = off && clear
-    ? { left: at.x, width: PIN_SIZE, top: clear.top, height: clear.bottom - clear.top }
+  const anchor = off && band
+    ? { left: at.x, width: PIN_SIZE, top: band.top, height: band.bottom - band.top }
     : { left: at.x, top: at.y - PIN_SIZE };
   return (
     <Popover open={open} onOpenChange={(next) => { if (!next && open) onDismiss(); }}>
@@ -138,6 +161,11 @@ export function CommentPopover({
         <div className="page-comments-anchor" style={anchor} />
       </PopoverAnchor>
       <PopoverContent
+        ref={(el) => {
+          content.current = el;
+          if (boxRef) boxRef.current = el;
+        }}
+        forceMount
         side={off ?? (narrow || !fitsBeside(at, width, boundary) ? 'bottom' : 'right')}
         align={off ? 'end' : 'start'}
         sideOffset={GAP}
@@ -156,10 +184,10 @@ export function CommentPopover({
           borderColor: 'var(--color-border-default)',
           transformOrigin: 'var(--radix-popover-content-transform-origin)',
         }}
-        onOpenAutoFocus={focusSelf ? (e) => {
+        onOpenAutoFocus={focus === 'field' ? undefined : (e) => {
           e.preventDefault();
-          if (e.target instanceof HTMLElement) e.target.focus({ preventScroll: true });
-        } : undefined}
+          if (focus === 'self' && e.target instanceof HTMLElement) e.target.focus({ preventScroll: true });
+        }}
         onCloseAutoFocus={(e) => {
           e.preventDefault();
           if (replaced || leftFor.current) return;
@@ -168,7 +196,9 @@ export function CommentPopover({
         onEscapeKeyDown={(e) => {
           // Taken either way and closed here rather than by Radix, so one Esc
           // steps back one layer through `onEscape`. Esc ending an input
-          // method's composition is the writer's, not a close.
+          // method's composition is the writer's, not a close. A box on its
+          // way out has stepped back already.
+          if (!open) return;
           e.preventDefault();
           if (!isImeComposing(e)) onEscape();
         }}

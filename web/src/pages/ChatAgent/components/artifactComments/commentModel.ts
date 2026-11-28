@@ -79,8 +79,32 @@ export function newestUnread(comment: Pick<ArtifactComment, 'messages' | 'read_t
   return newest;
 }
 
+/** Whether a person's message is the viewer's own: one naming no writer, as
+ *  all are in a personal workspace, or naming them in a shared one. */
+export function wroteIt(message: Pick<ArtifactCommentMessage, 'written_by'> | undefined, me: string | null): boolean {
+  return !message?.written_by || message.written_by === me;
+}
+
+/**
+ * The words a card may still change: the newest a person wrote that no send
+ * has taken, on a note or a queued comment, where the viewer wrote them (the
+ * server changes a message for its writer alone). A sent comment's the agent
+ * has read.
+ */
+export function editableMessage(
+  comment: Pick<ArtifactComment, 'delivery' | 'messages'>,
+  me: string | null,
+): ArtifactCommentMessage | null {
+  if (comment.delivery === 'sent') return null;
+  for (let i = comment.messages.length - 1; i >= 0; i--) {
+    const m = comment.messages[i];
+    if (m.author === 'user') return m.sent_at == null && m.request_key == null && wroteIt(m, me) ? m : null;
+  }
+  return null;
+}
+
 /** What a card's ⋯ menu offers. */
-export type CardAction = 'keepNote' | 'sendNow' | 'addToQueue' | 'reopen' | 'delete';
+export type CardAction = 'edit' | 'keepNote' | 'sendNow' | 'addToQueue' | 'reopen' | 'delete';
 
 /**
  * The moves that fit where a comment is. Only words the agent has not had can
@@ -90,14 +114,18 @@ export type CardAction = 'keepNote' | 'sendNow' | 'addToQueue' | 'reopen' | 'del
  * thread to wait for. A queued card has Send now on its face, so the menu
  * leaves it out.
  */
-export function cardActions(state: PinState, { canSend, canQueue }: { canSend: boolean; canQueue: boolean }): CardAction[] {
+export function cardActions(
+  state: PinState,
+  { canSend, canQueue, canEdit }: { canSend: boolean; canQueue: boolean; canEdit: boolean },
+): CardAction[] {
+  const edit: CardAction[] = canEdit ? ['edit'] : [];
   switch (state) {
     case 'resolved':
       return ['reopen', 'delete'];
     case 'queued':
-      return ['keepNote', 'delete'];
+      return [...edit, 'keepNote', 'delete'];
     case 'note': {
-      const moves: CardAction[] = [];
+      const moves: CardAction[] = [...edit];
       if (canSend) moves.push('sendNow');
       if (canQueue) moves.push('addToQueue');
       return [...moves, 'delete'];
@@ -123,6 +151,12 @@ export interface CommentLook {
   canReply: boolean;
   pending: boolean;
   refusal: string | null;
+  /**
+   * The thread it went to ended its last run in an error and waits for a
+   * Retry there, with the agent's answer still owed: the card says so and
+   * the pin asks for attention.
+   */
+  needsRetry: boolean;
 }
 
 /**
@@ -135,6 +169,8 @@ export function describeComment(
   comment: Pick<ArtifactComment, 'status' | 'delivery' | 'messages'>,
   send: SendLook,
   running: boolean,
+  /** The last run on the thread it went to failed. */
+  failed: boolean,
 ): CommentLook {
   const seen = send.sending ? { ...comment, delivery: 'sent' as const } : comment;
   return {
@@ -144,6 +180,41 @@ export function describeComment(
     canReply: seen.delivery === 'sent',
     pending: send.pending,
     refusal: send.refusal,
+    // Owed an answer as a running turn would be, by a run that stopped; a
+    // send of it on its way is a new run, which the failure is not about.
+    needsRetry: !running && !send.sending && isWorking(seen, failed),
+  };
+}
+
+/** The pin and the card's badge ask for attention: an answer unread, or one owed by a run that stopped. */
+export function asksAttention(comment: Pick<ArtifactComment, 'unread'>, look: Pick<CommentLook, 'needsRetry'>): boolean {
+  return comment.unread > 0 || look.needsRetry;
+}
+
+/** What a card offers to do with its comment, decided once from how it reads. */
+export interface CardMoves {
+  /** The ✓ and the ⋯ menu's moves; null where the card only reads, which offers neither. */
+  menu: CardAction[] | null;
+  /** Send now on a queued card's face: ready, held while where it goes is not known, or not offered. */
+  sendNow: 'ready' | 'waiting' | null;
+  /** A reply box under the open card. */
+  reply: boolean;
+}
+
+/**
+ * The moves a card offers: none where it only reads (an earlier version's
+ * comments), else the menu's (`cardActions`), Send now and a reply. Words a
+ * send is taking are not offered to edit.
+ */
+export function cardMoves(
+  look: Pick<CommentLook, 'state' | 'pending' | 'canReply'>,
+  { writes, canSend, canQueue, canEdit }: { writes: boolean; canSend: boolean; canQueue: boolean; canEdit: boolean },
+): CardMoves {
+  if (!writes) return { menu: null, sendNow: null, reply: false };
+  return {
+    menu: cardActions(look.state, { canSend, canQueue, canEdit: canEdit && !look.pending }),
+    sendNow: canSend ? 'ready' : 'waiting',
+    reply: look.canReply,
   };
 }
 

@@ -15,7 +15,6 @@ import { useCallback, useEffect, useMemo } from 'react';
 import { partialMatchKey, useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { ALL, refreshArtifactComments, refreshArtifactRecord } from '@/lib/artifactCache';
-import { ensuredQueryKey, targetQueryKey } from '@/lib/artifactTarget';
 import { artifactUnread, readAll, readThrough, unreadComments, type ArtifactUnread } from '@/lib/artifactCommentReads';
 import { GRANT_RENEW_MARGIN_MS, MIN_RENEW_INTERVAL_MS, msUntilRenewal } from '@/lib/expiry';
 import { NO_PAGE_LOADS, usePageLoads } from '@/lib/pageLoads';
@@ -30,6 +29,8 @@ import {
   getArtifactDestinations,
   getArtifactStatus,
   listArtifactComments,
+  findDestinationThread,
+  listDestinationThreads,
   listArtifactVersions,
   listQueuedArtifactComments,
   listSymbolCharts,
@@ -50,6 +51,7 @@ import type {
   ArtifactStatus,
   ArtifactTarget,
   ArtifactVersion,
+  DestinationThread,
   PublishArtifactRequest,
   QueuedArtifactComment,
   ShareAudience,
@@ -92,7 +94,7 @@ function patchRead(read: PathRead | undefined, artifactId: string, patch: (a: Ar
 
 export function putArtifact(qc: QueryClient, artifact: Artifact): void {
   qc.setQueryData(queryKeys.artifacts.detail(artifact.artifact_id), artifact);
-  qc.setQueryData(targetQueryKey(artifact.workspace_id, artifact), artifact);
+  qc.setQueryData(queryKeys.artifacts.byTarget(artifact.workspace_id, artifact), artifact);
   qc.setQueriesData<PathRead>(
     { queryKey: queryKeys.artifacts.pathsIn(artifact.workspace_id) },
     (cached) => patchRead(cached, artifact.artifact_id, () => artifact),
@@ -124,7 +126,7 @@ function cachedArtifact(qc: QueryClient, artifactId: string): Artifact | undefin
 /** The read a tab makes of a target's record. */
 function artifactTargetQuery(workspaceId: string, target: ArtifactTarget) {
   return {
-    queryKey: targetQueryKey(workspaceId, target),
+    queryKey: queryKeys.artifacts.byTarget(workspaceId, target),
     queryFn: () => findArtifact(workspaceId, target),
     staleTime: 30_000,
     retry: retryUnlessClientError,
@@ -193,11 +195,11 @@ export function useArtifact(artifactId: string | null | undefined): UseQueryResu
  */
 function ensureQuery(qc: QueryClient, workspaceId: string, target: ArtifactTarget) {
   return {
-    queryKey: ensuredQueryKey(workspaceId, target),
+    queryKey: queryKeys.artifacts.ensuredTarget(workspaceId, target),
     queryFn: async (): Promise<Artifact> => {
       const artifact = await ensureArtifact(workspaceId, target);
-      const asked = targetQueryKey(workspaceId, target);
-      const canonical = targetQueryKey(workspaceId, artifact);
+      const asked = queryKeys.artifacts.byTarget(workspaceId, target);
+      const canonical = queryKeys.artifacts.byTarget(workspaceId, artifact);
       await Promise.all([
         qc.cancelQueries({ queryKey: asked, exact: true }),
         qc.cancelQueries({ queryKey: canonical, exact: true }),
@@ -311,7 +313,7 @@ export function useCommentRecord(
 export function useEnsureArtifact(): (workspaceId: string, target: ArtifactTarget) => Promise<Artifact> {
   const qc = useQueryClient();
   return useCallback(async (workspaceId: string, target: ArtifactTarget) => {
-    const known = qc.getQueryData<Artifact | null>(targetQueryKey(workspaceId, target));
+    const known = qc.getQueryData<Artifact | null>(queryKeys.artifacts.byTarget(workspaceId, target));
     return known ?? qc.fetchQuery(ensureQuery(qc, workspaceId, target));
   }, [qc]);
 }
@@ -330,6 +332,44 @@ export function useArtifactDestinations(
     queryKey: queryKeys.artifacts.destinations(artifactId ?? '', besideThreadId),
     queryFn: () => getArtifactDestinations(artifactId!, besideThreadId),
     enabled: !!artifactId,
+    staleTime: 30_000,
+    retry: retryUnlessClientError,
+  });
+}
+
+/**
+ * The chats a comment on the record could go to, matching `q`: the "Another
+ * chat…" list. The text is the caller's to settle (`useDebouncedValue`), so a
+ * read goes out per pause, not per key; the last answer stays up meanwhile.
+ */
+export function useDestinationThreads(
+  artifactId: string | null | undefined,
+  q: string,
+  { enabled = true }: { enabled?: boolean } = {},
+): UseQueryResult<DestinationThread[], Error> {
+  return useQuery<DestinationThread[], Error>({
+    queryKey: queryKeys.artifacts.destinationThreads(artifactId ?? '', q),
+    queryFn: () => listDestinationThreads(artifactId!, q),
+    enabled: enabled && !!artifactId,
+    staleTime: 30_000,
+    placeholderData: (previous) => previous,
+    retry: retryUnlessClientError,
+  });
+}
+
+/**
+ * One chat a kept draft named, if comments on the record may still go there
+ * (`findDestinationThread`); null where they may not. Read with the "Another
+ * chat…" list, so what makes that stale makes this stale too.
+ */
+export function useDestinationThread(
+  artifactId: string | null | undefined,
+  threadId: string | null,
+): UseQueryResult<DestinationThread | null, Error> {
+  return useQuery<DestinationThread | null, Error>({
+    queryKey: queryKeys.artifacts.destinationThread(artifactId ?? '', threadId ?? ''),
+    queryFn: () => findDestinationThread(artifactId!, threadId!),
+    enabled: !!artifactId && !!threadId,
     staleTime: 30_000,
     retry: retryUnlessClientError,
   });

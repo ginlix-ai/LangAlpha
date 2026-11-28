@@ -55,6 +55,8 @@ type WordsWire = Extract<PageToViewerWire, { type: 'page:selection'; anchor: unk
 /** Events a press in comment mode is kept from: it is the reader's pick, not the viewer's. */
 const GUARDED = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'dblclick', 'auxclick', 'contextmenu'] as const;
 const SCROLL_IDLE_MS = 120;
+/** How long the page waits to settle on a part in view still being drawn (a PDF page's words). */
+const SETTLE_WAIT_MS = 3000;
 /** How long a scroll to a parked comment goes on to its spot once that is drawn; later, the reader has moved on. */
 const FOLLOW_MS = 3000;
 
@@ -71,6 +73,9 @@ export class ViewerPage {
   private readonly key: AddingKey;
   private readonly tracker: PressTracker;
   private settlePending = true;
+  /** When the page settles at the latest, though a part in view is still being drawn. */
+  private settleBy = Date.now() + SETTLE_WAIT_MS;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
   /** Lets the selection go after the release that made it. */
   private unselectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -110,7 +115,7 @@ export class ViewerPage {
         if (phase === 'words') this.showCursor('text');
       },
       area: (area) => this.reportArea(area),
-      words: (press, release) => this.composeText(press, release),
+      words: (press) => this.composeText(press),
       send: (wire) => this.send(wire),
     });
   }
@@ -150,6 +155,14 @@ export class ViewerPage {
       this.request();
     });
     if (unwatch) signal.addEventListener('abort', unwatch);
+    // A font that loads late lays the text out again without a mutation, and
+    // often without a resize: kept pins are placed afresh.
+    if (document.fonts?.addEventListener) {
+      document.fonts.addEventListener('loadingdone', () => {
+        this.anchors.relaid();
+        this.request();
+      }, { signal });
+    }
     if (typeof MutationObserver !== 'undefined') {
       // The file read again (the agent's edit) renders new blocks, and a
       // viewer showing another part of it in the same cells (a sheet) says so
@@ -168,6 +181,7 @@ export class ViewerPage {
     this.request();
     return () => {
       listening.abort();
+      if (this.settleTimer) clearTimeout(this.settleTimer);
       this.tracker.dispose();
       this.cancelFrame?.();
       this.cancelFrame = null;
@@ -196,6 +210,7 @@ export class ViewerPage {
         // Settled again after the answer: a layer that asks after the first
         // report has to hear it to know a spot it does not see is gone.
         this.settlePending = true;
+        this.settleBy = Date.now() + SETTLE_WAIT_MS;
         this.request();
         return;
       case 'page:scroll-to':
@@ -254,9 +269,17 @@ export class ViewerPage {
     const f = this.following;
     if (f && Date.now() > f.until) this.following = null;
     else if (f && this.anchors.parkedIn(f.id)?.parked !== f.at) this.scrollToId(f.id, f.until);
-    if (this.settlePending) {
+    // Not while a part in view is still being drawn: a spot parked there is
+    // found in a moment, and the layer takes a spot still missing once the
+    // page settles as one this page does not show.
+    if (this.settlePending && (Date.now() >= this.settleBy || !this.anchors.drawingInView())) {
       this.settlePending = false;
       this.send({ type: 'page:settled' });
+    } else if (this.settlePending && !this.settleTimer) {
+      this.settleTimer = setTimeout(() => {
+        this.settleTimer = null;
+        this.request();
+      }, Math.max(0, this.settleBy - Date.now()));
     }
     if (this.hover.showing()) this.hover.report();
   }
@@ -450,8 +473,8 @@ export class ViewerPage {
    * than left selected where the browser can mark them, since a selection
    * greys out once the box takes the focus.
    */
-  private composeText(press: number, release: PointerEvent): void {
-    const found = selectedWords(this.selectedRange(), release, this.strategy, this.scroller);
+  private composeText(press: number): void {
+    const found = selectedWords(this.selectedRange(), this.strategy, this.scroller);
     if (!found) return;
     this.parts.keep(null, null);
     // Marked first: a layer that lets the words go answers at once, and its clear must stand.
@@ -480,7 +503,7 @@ export class ViewerPage {
 
   wordsPick(live: Range): PageSelection | null {
     if (!this.within(live.commonAncestorContainer)) return null;
-    const found = selectedWords(live, null, this.strategy, this.scroller);
+    const found = selectedWords(live, this.strategy, this.scroller);
     if (!found) return null;
     const message = parsePageMessage(this.withTitle<WordsWire>({ type: 'page:selection', anchor: found.anchor, rect: found.rect }));
     if (message?.type !== 'page:selection' || !message.selection) return null;

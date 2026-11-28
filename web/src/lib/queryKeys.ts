@@ -1,6 +1,8 @@
 import type { QueryMeta } from '@tanstack/react-query';
 import type { SearchKind } from '@/api/search';
 import type { DriveMemoQuery } from '@/types/drive';
+import type { ArtifactKind } from '@/types/artifacts';
+import { targetKeyPart } from '@/lib/artifactKind';
 
 /**
  * Hierarchical query key factory for React Query, plus the query `meta`
@@ -112,17 +114,17 @@ export const queryKeys = {
     // Every path read in a workspace: an event's path is canonical, while a
     // tab may have asked by another spelling of it.
     pathsIn:     (wsId: string) => [...queryKeys.artifacts.allByPath, wsId],
-    byPath:      (wsId: string, path: string) => [...queryKeys.artifacts.pathsIn(wsId), path],
-    // A chart's record, among its workspace's reads so its events reach it. An
-    // object, so no file's path can spell the same key.
-    byChart:     (wsId: string, chart: string) => [...queryKeys.artifacts.pathsIn(wsId), { chart }],
+    // A target's record, among its workspace's reads so its events reach it:
+    // a file by its path, any other kind by an object (`targetKeyPart`).
+    byTarget:    (wsId: string, target: { kind: ArtifactKind; path: string }) =>
+      [...queryKeys.artifacts.pathsIn(wsId), targetKeyPart(target)],
     // Every timeframe's record of one ticker, among the same reads, so a
     // comment written or read on any of them reads the counts again.
     chartsOf:    (wsId: string, symbol: string) => [...queryKeys.artifacts.pathsIn(wsId), { symbol }],
-    // The owner's get-or-create of a file's record. Beside the reads by path,
-    // not under them, so an event that reads those again never makes one.
-    ensured:     (wsId: string, path: string) => [...queryKeys.artifacts.all, 'ensured', wsId, path],
-    ensuredChart: (wsId: string, chart: string) => [...queryKeys.artifacts.all, 'ensured', wsId, { chart }],
+    // The owner's get-or-create of a target's record. Beside the reads by
+    // path, not under them, so an event that reads those again never makes one.
+    ensuredTarget: (wsId: string, target: { kind: ArtifactKind; path: string }) =>
+      [...queryKeys.artifacts.all, 'ensured', wsId, targetKeyPart(target)],
     allDetails:  ['artifacts', 'detail'],
     detail:      (artifactId: string) => [...queryKeys.artifacts.allDetails, artifactId],
     versions:    (artifactId: string) => [...queryKeys.artifacts.all, 'versions', artifactId],
@@ -140,6 +142,12 @@ export const queryKeys = {
     destinationsOf: (artifactId: string) => [...queryKeys.artifacts.allDestinations, artifactId],
     destinations: (artifactId: string, besideThreadId: string | null) =>
       [...queryKeys.artifacts.destinationsOf(artifactId), besideThreadId ?? ''],
+    // The "Another chat…" search, beside the default's answer so a bind or an
+    // archive that changes what is usable reads it again too.
+    destinationThreads: (artifactId: string, q: string) =>
+      [...queryKeys.artifacts.destinationsOf(artifactId), 'threads', q],
+    destinationThread: (artifactId: string, threadId: string) =>
+      [...queryKeys.artifacts.destinationsOf(artifactId), 'thread', threadId],
     grant:       (artifactId: string) => [...queryKeys.artifacts.all, 'grant', artifactId],
     allComments: ['artifacts', 'comments'],
     comments:    (artifactId: string) => [...queryKeys.artifacts.allComments, artifactId],
@@ -432,6 +440,15 @@ export const queryKeys = {
     attribution: (space: string, entryId: string, seq: number, sha: string) => [...queryKeys.drive.attributionOf(space, entryId), seq, sha],
     /** Apart from the space's own keys, so reading the space again does not ask the feed again. */
     changes:  (space: string) => [...queryKeys.drive.all, 'changes', space],
+    // Open comments and unread answers per file, for the list markers. Apart
+    // from the space too: a comment event names the owner's Home, not a space,
+    // so it reads every space's again by `commentCountsAll`.
+    commentCountsAll: ['drive', 'comment-counts'],
+    commentCounts: (space: string) => [...queryKeys.drive.commentCountsAll, space],
+    // An HTML file's text with a page bridge in its head, fixed by its bytes'
+    // hash and the bridge asked for (`comments` or `view`).
+    page:     (space: string, entryId: string, sha: string, inject: string, seq: number | null) =>
+      [...queryKeys.drive.all, 'page', space, entryId, sha, inject, seq ?? 0],
   },
   sharedWorkspaces: {
     all:     ['sharedWorkspaces'],

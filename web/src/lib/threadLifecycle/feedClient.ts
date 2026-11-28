@@ -467,7 +467,7 @@ function onFeedEvent(raw: Record<string, unknown>): void {
       const qc = getLifecycleQueryClient();
       const event = readArtifactEvent(raw);
       if (!qc || !event) return;
-      const ref = { artifactId: event.artifact_id, workspaceId: event.workspace_id || null };
+      const ref = { artifactId: event.artifact_id, workspaceId: event.workspace_id || null, kind: event.kind };
       // A file's comments changed: a send took them, an answer arrived, or
       // another tab edited or read one. Its comment layer, its counts and the
       // destination thread's deck read them again, or every deck when the

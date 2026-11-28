@@ -127,6 +127,21 @@
   background: var(--color-bg-canvas);
 }
 
+/* While a press selects a page's words, only words select. A drag that
+   leaves them for the gutter, the scrollbar, the gap between pages or past
+   the window's edge otherwise lands on something else, where Chrome places
+   the selection's end at the start of the page and the selection leaps back
+   to its top. Unselectable there, the end stays on the last word the pointer
+   passed (`pdf/textLayerSelection.ts` marks the press). */
+:root[data-pdf-selecting] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+:root[data-pdf-selecting] .textLayer {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* Safari before 18.2 has no scrollbar-gutter. A scrollbar that is always
    there holds the same lane, so fit width cannot flip it on and off. */
 @supports not (scrollbar-gutter: stable) {

@@ -6,7 +6,7 @@
  * blocks that read the same: an edit above it moves its lines, not its words.
  */
 import {
-  MAX_LABEL, MAX_SELECTION, clip, laidOutBox, linesAnchor, linesText, nearestByQuote, normal, overlaps, parseLines, quoteFinder,
+  MAX_LABEL, MAX_SELECTION, clip, laidOutBox, linesAnchor, linesText, nearestByQuote, normal, overlaps, parseLines, findQuote, nearLines, textSource,
   squash, wordsAround,
 } from '../spotKit';
 import type { Edges, Found, SpotStrategy } from '../spotStrategy';
@@ -99,7 +99,7 @@ export function markdownSpots(root: Element): SpotStrategy {
   // The blocks and their words, read once a pass of lookups (`fresh`), as an area looks for each of its parts.
   let read: Element[] | null = null;
   const words = new Map<Element, string>();
-  const quotes = quoteFinder(root, UNSEEN);
+  const quotes = textSource(root, { skip: UNSEEN });
   const findBlock = (stored: { lines?: string; quote?: string }): Element | null => {
     const all = (read ??= blocks());
     if (!stored.quote) return all.find((el) => el.getAttribute(SOURCE_LINES_ATTR) === stored.lines) ?? null;
@@ -172,7 +172,7 @@ export function markdownSpots(root: Element): SpotStrategy {
         return parts.some(Boolean) ? { parts } : null;
       }
       if (anchor.kind === 'text') {
-        const range = quotes.find(anchor, (node) => startOf(blockOf(node)));
+        const range = findQuote(quotes, anchor, nearLines(anchor, (node) => startOf(blockOf(node))));
         return range ? { range } : null;
       }
       return null;

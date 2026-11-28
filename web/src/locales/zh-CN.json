@@ -954,7 +954,9 @@
         "open": "在文件中查看",
         "openLabel": "在文件中查看评论 {{number}}",
         "open_chart": "在图表上查看",
-        "openLabel_chart": "在图表上查看评论 {{number}}"
+        "openLabel_chart": "在图表上查看评论 {{number}}",
+        "open_drive": "在 Drive 中查看",
+        "openLabel_drive": "在 Drive 中查看评论 {{number}}"
       },
       "reply": {
         "replied_other": "已回复 {{title}} 上的评论 <nums/>",
@@ -982,8 +984,13 @@
         "showLess": "收起",
         "placeholder_other": "为这 {{count}} 条评论添加备注，或直接发送",
         "placeholderRunning": "添加备注；按 Enter 加入本轮",
-        "keepFailed": "部分评论未能保留为笔记，仍在待发送中。"
-      }
+        "keepFailed": "部分评论未能保留为笔记，仍在待发送中。",
+        "showInFile_drive": "在 Drive 中查看"
+      },
+      "driveInTrash": "该文件在 Drive 的回收站中。恢复后即可打开这条评论。",
+      "driveGone": "该文件已不在 Drive 中。",
+      "driveOpenFailed": "无法打开该文件，请重试。",
+      "driveFile": "一个 Drive 文件"
     },
     "backToWorkflow": "返回工作流",
     "backToMain": "返回主对话",

@@ -6,7 +6,7 @@ import { TWEEN } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import type { ArtifactComment } from '@/types/api';
 import { useCommentLook } from './commentLayerContext';
-import { firstWords, oneLine } from '../../../artifactComments/commentModel';
+import { asksAttention, firstWords, oneLine } from '../../../artifactComments/commentModel';
 import { PinFace } from '../../../artifactComments/PinBadge';
 import { PIN_SIZE, type PlacedPin } from './pinPlaces';
 import '../../../artifactComments/PinBadge.css';
@@ -123,7 +123,8 @@ function CommentPin({
   comment, x, y, open, pulse, made, offView, pointerIn, onPreview, onClick,
 }: CommentPinProps): React.ReactElement {
   const { t } = useTranslation();
-  const { state, working } = useCommentLook(comment);
+  const look = useCommentLook(comment);
+  const { state, working, needsRetry } = look;
   const unread = comment.unread > 0;
   const preview = oneLine(firstWords(comment), 80);
   const [previewing, setPreviewing] = useState(false);
@@ -158,9 +159,12 @@ function CommentPin({
             data-comment-pin=""
             data-pin-state={state}
             data-working={working || undefined}
-            data-unread={unread || undefined}
+            data-unread={asksAttention(comment, look) || undefined}
             data-pulse={pulse || undefined}
-            aria-label={t(unread ? 'pageViewer:comments.pinLabelUnread' : 'pageViewer:comments.pinLabel', { number: comment.number })}
+            aria-label={t(
+              unread ? 'pageViewer:comments.pinLabelUnread' : needsRetry ? 'pageViewer:comments.pinLabelRetry' : 'pageViewer:comments.pinLabel',
+              { number: comment.number },
+            )}
             aria-expanded={open}
             tabIndex={offView ? -1 : undefined}
             onClick={onClick}

@@ -41,6 +41,15 @@ export interface DriveEntry {
 
 export type DriveMemoStatus = 'draft' | 'final';
 
+/** One file's comments as its row's marker counts them: those still open, and those with an answer not yet read. */
+export interface DriveCommentCount {
+  open: number;
+  unread: number;
+}
+
+/** `GET /drive/{space}/comment-counts`, by entry id: only files with one of the two above zero. */
+export type DriveCommentCounts = Record<string, DriveCommentCount>;
+
 export interface DriveMemoMark {
   marked: boolean;
   status: DriveMemoStatus | null;
@@ -237,6 +246,8 @@ export interface DriveAttribution {
 /** The `type` of the error body every Drive route answers with. */
 export const DRIVE_ERROR_TYPES = [
   'not_found',
+  // An entry asked for by id that is in the trash.
+  'in_trash',
   'exists',
   'changed',
   'is_folder',

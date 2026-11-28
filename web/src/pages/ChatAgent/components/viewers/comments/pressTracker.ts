@@ -61,7 +61,7 @@ export interface PressHost {
   /** The press became a drag: the hover outline steps aside until the release. */
   dragging(phase: 'area' | 'words'): void;
   area(area: ReleasedArea): void;
-  words(press: number, release: PointerEvent): void;
+  words(press: number): void;
   send(wire: PageToViewerWire): void;
 }
 
@@ -202,7 +202,7 @@ export class PressTracker {
     } else if (d.phase === 'words' || d.phase === 'dropped') {
       this.swallowed = d.press;
       this.end();
-      if (d.phase === 'words') this.host.words(d.press, e);
+      if (d.phase === 'words') this.host.words(d.press);
       else window.getSelection()?.removeAllRanges();
     } else {
       // A press that moved a little is still a click: what the browser selected on the way is not the reader's.

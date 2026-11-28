@@ -2,34 +2,56 @@ import { kindOf } from '@/lib/artifactTarget';
 import type { ArtifactKind } from '@/types/api';
 
 /**
+ * A comment on a file, a chart or a Drive file, as far as opening it on the
+ * comment needs. Read once off whatever names it, so nothing downstream has
+ * to tell a Drive path from an entry id.
+ */
+export type ArtifactCommentRef = {
+  artifactId: string;
+  workspaceId: string;
+  commentId: string;
+} & (
+  /** A file by its workspace-relative path; a chart by its id. */
+  | { kind: 'file' | 'chart'; path: string }
+  /**
+   * A Drive file by its entry id, which finds it wherever it has moved, and
+   * the path it had where the payload names one. A payload with no entry id
+   * leaves only that path to open.
+   */
+  | { kind: 'drive'; entryId: string | null; path: string | null }
+);
+
+/**
  * What `reply_to_comment` leaves on its result (its `artifact_comment` tool
  * artifact, the snake-case fields of the same names): the comment answered,
  * whether it ended resolved, and the start of the answer, clipped to 1000
  * characters at a word. One reader for the transcript line and the click, so
  * the two cannot disagree.
  */
-export interface ArtifactCommentReply {
-  artifactId: string;
-  workspaceId: string;
-  kind: ArtifactKind;
-  /** The file, workspace-relative; a chart's id for a chart. */
-  path: string;
-  commentId: string;
+export type ArtifactCommentReply = ArtifactCommentRef & {
   number: number;
   resolved: boolean;
   /** The answer, clipped at a word; the whole of it is under the comment. */
   text: string;
   clipped: boolean;
+};
+
+/** A comment row as the wire names it: on a Drive file, `path` is where it is now and `entry_id` the file. */
+export interface WireCommentPlace {
+  artifact_id: string;
+  workspace_id: string;
+  comment_id: string;
+  kind: ArtifactKind;
+  path: string;
+  entry_id?: string | null;
 }
 
-/** A comment on a file or a chart, as far as opening it on the comment needs. */
-export interface ArtifactCommentRef {
-  artifactId: string;
-  workspaceId: string;
-  kind: ArtifactKind;
-  /** Workspace-relative; a chart's id for a chart. */
-  path: string;
-  commentId: string;
+/** A listed comment (a send's chip, a queued row) as a ref. */
+export function commentRef(c: WireCommentPlace): ArtifactCommentRef {
+  const on = { artifactId: c.artifact_id, workspaceId: c.workspace_id, commentId: c.comment_id };
+  return c.kind === 'drive'
+    ? { ...on, kind: 'drive', entryId: c.entry_id || null, path: c.path || null }
+    : { ...on, kind: c.kind, path: c.path };
 }
 
 /** How a view opens a comment, one opener per kind; a kind it has no place to open is left out. */
@@ -43,12 +65,15 @@ export function readArtifactCommentReply(artifact: unknown): ArtifactCommentRepl
   const { artifact_id: artifactId, comment_id: commentId, number } = a;
   if (typeof artifactId !== 'string' || !artifactId || typeof commentId !== 'string' || !commentId) return null;
   if (typeof number !== 'number' || !Number.isInteger(number)) return null;
+  const on = { artifactId, workspaceId: typeof a.workspace_id === 'string' ? a.workspace_id : '', commentId };
+  const named = typeof a.path === 'string' ? a.path : '';
+  const kind = kindOf(a);
+  // A reply names a Drive file by its record's key, its entry id, and no path.
+  const place: ArtifactCommentRef = kind === 'drive'
+    ? { ...on, kind, entryId: named || null, path: null }
+    : { ...on, kind, path: named };
   return {
-    artifactId,
-    workspaceId: typeof a.workspace_id === 'string' ? a.workspace_id : '',
-    kind: kindOf(a),
-    path: typeof a.path === 'string' ? a.path : '',
-    commentId,
+    ...place,
     number,
     resolved: a.resolved === true,
     text: typeof a.text === 'string' ? a.text : '',

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowUp, Check, CircleAlert, MessageSquare, MessageSquarePlus } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { TFunction } from 'i18next';
@@ -24,13 +24,18 @@ import { SendingGlyph } from './SendingGlyph';
 import { sameTarget, targetKey, threadOf } from '../../../artifactComments/destinations';
 import { useCommentDestinations } from '../../../artifactComments/useCommentDestinations';
 import { useOtherTimeframeRecords } from '../../../artifactComments/useOtherTimeframes';
+import { useCommentSurface } from './commentSurface';
 import type { CommentUi } from './useCommentUi';
 import './CommentTools.css';
 
 interface CommentToolsProps {
   tabId: string;
   workspaceId: string;
-  /** What the comments are on, as the tab holds it: an HTML file, or a chart. */
+  /**
+   * What the comments are on, as the tab holds it: an HTML file, or a chart.
+   * How they read is the surface's, as for the layer (`CommentSurface`): read
+   * only offers no mode and no Send all, and only the comments it shows count.
+   */
   target: ArtifactTarget;
   ui: CommentUi;
   /**
@@ -266,7 +271,7 @@ function SendAll({ comments, artifactId, workspaceId, doc, sends, bar, besideHol
     void sendBatches(batches, { sender, sends, reasonOf: (err) => refusalReason(t, err, true) }).then((outcomes) => {
       setBusy(false);
       setOutcome(summarize(t, locale, outcomes, sender));
-      refreshArtifactComments(queryClient, [{ artifactId, workspaceId }], ALL);
+      refreshArtifactComments(queryClient, [{ artifactId, workspaceId, kind: doc.kind }], ALL);
     });
   };
 
@@ -346,16 +351,19 @@ function SendAll({ comments, artifactId, workspaceId, doc, sends, bar, besideHol
  * layer over it shows: the one the tab opened, or another a link led to.
  */
 export function CommentTools({
-  tabId, workspaceId, target, ui, variant = 'crumb', modeDisabled = false, modeTitle,
+  tabId, workspaceId, target, ui, variant = 'crumb', modeDisabled: modeOff = false, modeTitle,
 }: CommentToolsProps): React.ReactElement {
   const { t } = useTranslation();
+  const { readOnly, shows } = useCommentSurface();
+  const modeDisabled = modeOff || readOnly;
   const rootDir = useWorkspaceFolders()?.rootDir;
   const opened = targetFor(target.kind, target.path, rootDir);
   const doc: ArtifactTarget = { kind: opened.kind, path: ui.docOf(tabId, opened.path) };
   const recordQuery = useArtifactRecord(workspaceId, doc);
   const artifact = recordQuery.data;
   const commentsQuery = useArtifactComments(artifact?.artifact_id);
-  const comments = artifact === null ? NONE : commentsQuery.data;
+  const recorded = artifact === null ? NONE : commentsQuery.data;
+  const comments = useMemo(() => (recorded && shows ? recorded.filter(shows) : recorded), [recorded, shows]);
   // A chart counts every timeframe of its ticker, each kept on a record of
   // its own: its pins show only on their own, so the count says what the
   // others hold. This timeframe's comes from its comments, which move first.
@@ -373,7 +381,7 @@ export function CommentTools({
       : openLabel;
   // Drawn once there is something to say: the counts, or that they could not be read.
   const counts = (comments || failed) && <Counts open={open} unread={unread} bar={variant === 'bar'} failed={failed} />;
-  const sendAll = comments && artifact && (
+  const sendAll = !readOnly && comments && artifact && (
     <SendAll
       comments={comments}
       artifactId={artifact.artifact_id}

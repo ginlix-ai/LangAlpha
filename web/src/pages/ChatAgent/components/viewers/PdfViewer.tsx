@@ -10,6 +10,7 @@ import PdfRail, { type RailTab } from './pdf/PdfRail';
 import { type PageSize, sizeOf, withMeasured } from './pdf/pageSize';
 import { rangeTransport } from './pdf/rangeTransport';
 import { useReleasePages } from './pdf/useReleasePages';
+import { useTextLayerSelection } from './pdf/textLayerSelection';
 import { CountedRail } from './comments/pdf/CountedRail';
 import { PdfComments } from './comments/pdf/PdfComments';
 import type { ViewerCommentsTarget } from './comments/ViewerComments';
@@ -395,6 +396,7 @@ export default function PdfViewer({ data, onFileChanged, focusPage = null, focus
   }, [ready, numPages, shownDoc]);
 
   useReleasePages(shownDoc, mounted);
+  useTextLayerSelection(pagesColumn);
 
   // A layout effect, so the frame that shows the new sizes is already scrolled.
   useLayoutEffect(() => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useEffectEvent } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
+import { refreshDriveComments } from '@/lib/artifactCache';
 import { ApiError } from '@/api/client';
 import {
   clearHistory,
@@ -318,17 +319,26 @@ export function useDriveMutations(space: string | null) {
     mutationFn: ({ from, to }: { from: string; to: string }) => moveEntry(space!, from, to),
     onSettled: (_moved, err, { from }) => settleGone(from, !!err),
   });
+  // A file going to the trash, coming back or purged takes its comments out
+  // of every chat's queue and the list markers, or puts them back.
+  const settleTrash = () => {
+    settle();
+    refreshDriveComments(queryClient);
+  };
   const trash = useMutation({
     mutationFn: (path: string) => trashEntry(space!, path),
-    onSettled: (_id, err, path) => settleGone(path, !!err),
+    onSettled: (_id, err, path) => {
+      settleGone(path, !!err);
+      refreshDriveComments(queryClient);
+    },
   });
   const restore = useMutation({
     mutationFn: (trashId: string) => restoreTrash(space!, trashId),
-    onSettled: settle,
+    onSettled: settleTrash,
   });
   const purge = useMutation({
     mutationFn: (trashId?: string) => purgeTrash(space!, trashId),
-    onSettled: settle,
+    onSettled: settleTrash,
   });
   const restoreTo = useMutation({
     mutationFn: ({ entryId, seq }: { entryId: string; seq: number }) => restoreVersion(space!, entryId, seq),
@@ -419,9 +429,10 @@ interface ChangeBatch {
  * with the current one and nothing to apply. Each batch that changed
  * anything reads the space again and hands the changed entries to
  * `onChanged`; a cursor that moved with no entries (the trash emptied in
- * another tab) only reads the space again. A feed that lost its place (`resync`: too many changes, or a
- * purge past the cursor) hands over no entries, since they are not the whole
- * story: the refetch of the listing, the open file and the trash is.
+ * another tab) reads the space and the comments of its files again. A feed
+ * that lost its place (`resync`: too many changes, or a purge past the
+ * cursor) hands over no entries, since they are not the whole story: the
+ * refetch of the listing, the open file and the trash is.
  */
 export function useDriveChanges(
   space: string | null,
@@ -457,10 +468,17 @@ export function useDriveChanges(
   useEffect(() => {
     if (!space || !data) return;
     if (!data.resync && data.entries.length === 0) {
-      if (data.moved) invalidateDriveSpace(queryClient, space);
+      if (data.moved) {
+        invalidateDriveSpace(queryClient, space);
+        // A purge names no entry and takes its file's comments with it.
+        refreshDriveComments(queryClient);
+      }
       return;
     }
     invalidateDriveSpace(queryClient, space);
+    // A file saved, trashed or restored elsewhere (an agent, another tab)
+    // moves its comments' queues, markers and default chat.
+    refreshDriveComments(queryClient);
     // Who wrote a memo's lines is kept by its head, which a clear of its
     // earlier versions from elsewhere leaves as it was.
     if (data.resync) {

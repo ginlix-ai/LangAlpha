@@ -8,7 +8,7 @@
  */
 import { api } from '@/api/client';
 import i18n from '@/i18n';
-import { kindOf } from '@/lib/artifactTarget';
+import { ARTIFACT_KINDS, kindOf, type TargetParamName } from '@/lib/artifactKind';
 import { deviceTimezone } from '@/lib/deviceTimezone';
 import type { PageLoads } from '@/lib/pageLoads';
 import { randomUUID } from '@/lib/randomUUID';
@@ -24,6 +24,7 @@ import type {
   ArtifactTarget,
   ArtifactVersion,
   CreateArtifactCommentRequest,
+  DestinationThread,
   PublishArtifactRequest,
   PublishArtifactResponse,
   QueuedArtifactComment,
@@ -31,6 +32,7 @@ import type {
   ShareAudience,
 } from '@/types/api';
 import { sendChatMessageStream } from './messages';
+import type { StreamRequestError } from './transport';
 
 const artifactPath = (artifactId: string) => `/api/v1/artifacts/${encodeURIComponent(artifactId)}`;
 const workspaceArtifactsPath = (workspaceId: string) =>
@@ -49,9 +51,9 @@ const asComment = (data: Wire<ArtifactComment>) => kinded<ArtifactComment>(data)
 
 // --- Records ---
 
-/** A target as the records route names it: a file by `path`, a chart by `chart`, never both. */
-function targetParam(target: ArtifactTarget): { path: string } | { chart: string } {
-  return target.kind === 'chart' ? { chart: target.path } : { path: target.path };
+/** A target as the records route names it: by its kind's parameter (`ARTIFACT_KINDS`), only one. */
+export function targetParam(target: ArtifactTarget): Partial<Record<TargetParamName, string>> {
+  return { [ARTIFACT_KINDS[target.kind].param]: target.path };
 }
 
 /** The target's record if it has one; never makes it, so a tab can ask for any HTML file. */
@@ -127,6 +129,36 @@ export async function getArtifactDestinations(
     params: besideThreadId ? { beside: besideThreadId } : undefined,
   });
   return data;
+}
+
+/** How many chats the "Another chat…" search lists at most. */
+export const DESTINATION_THREADS_LIMIT = 20;
+
+/**
+ * The chats a comment on the record could go to, most recently active first,
+ * `q` matching anywhere in a title whatever its case: what "Another chat…"
+ * lists.
+ */
+export async function listDestinationThreads(
+  artifactId: string,
+  q: string,
+  limit = DESTINATION_THREADS_LIMIT,
+): Promise<DestinationThread[]> {
+  const params: Record<string, string | number> = { limit };
+  if (q) params.q = q;
+  const { data } = await api.get<{ threads: DestinationThread[] }>(`${artifactPath(artifactId)}/destination-threads`, { params });
+  return data.threads;
+}
+
+/**
+ * The thread, if comments on the record may still go there: a chat picked
+ * through "Another chat…" for a draft kept since. Null where it may not.
+ */
+export async function findDestinationThread(artifactId: string, threadId: string): Promise<DestinationThread | null> {
+  const { data } = await api.get<{ threads: DestinationThread[] }>(`${artifactPath(artifactId)}/destination-threads`, {
+    params: { thread: threadId, limit: 1 },
+  });
+  return data.threads.find((th) => th.thread_id === threadId) ?? null;
 }
 
 // --- Publish and versions ---
@@ -212,6 +244,20 @@ export async function addArtifactCommentMessage(
 }
 
 /**
+ * Rewrite the owner's words no send has taken yet, in a note or a queued
+ * comment; the anchor stays. 409 `comment_sent` once a send has them.
+ */
+export async function editArtifactCommentMessage(
+  artifactId: string,
+  commentId: string,
+  messageId: string,
+  body: string,
+): Promise<ArtifactComment> {
+  const { data } = await api.patch<Wire<ArtifactComment>>(`${commentPath(artifactId, commentId)}/messages/${messageId}`, { body });
+  return asComment(data);
+}
+
+/**
  * Queue a comment (for a thread), hold it back as a note, move it to another
  * thread's queue, resolve or reopen it. 409 `comment_sent`, `comment_resolved`,
  * `destination_required`, `destination_unavailable`.
@@ -261,16 +307,22 @@ export async function listQueuedArtifactComments(threadId: string): Promise<Queu
 /** A thread the comments go to, or the workspace a new thread for them is made in. */
 export type CommentTarget = { threadId: string } | { newThreadIn: string };
 
-/** A send the server refused, with the `code` its answer named (`comments_unavailable`, a busy state, ...). */
+/**
+ * A send that did not go, with the `code` its answer named
+ * (`comments_unavailable`, a busy state, ...) and its `reason` when the words
+ * were written for the reader (the server's, or the chat's own); null when
+ * all that is known is that it failed.
+ */
 export class CommentSendRefused extends Error {
   readonly code: string | null;
-  readonly status: number | null;
+  readonly reason: string | null;
 
-  constructor(message: string, code: string | null, status: number | null) {
-    super(message);
+  constructor(reason: string | null, code: string | null = null) {
+    const said = reason?.trim() ? reason : null;
+    super(said ?? 'The comments were not sent.');
     this.name = 'CommentSendRefused';
     this.code = code;
-    this.status = status;
+    this.reason = said;
   }
 }
 
@@ -283,6 +335,8 @@ export class CommentSendRefused extends Error {
  * acceptance, or the run's first frame, from which the run goes on detached
  * from this connection. Leaving before then would cancel the send while the
  * computer starts, so a stopped computer keeps this pending until it is up.
+ * Posts go through `postComments` (`artifactComments/commentPosts.ts`), which
+ * keeps the page from leaving meanwhile.
  */
 export async function postArtifactComments(
   commentIds: readonly string[],
@@ -330,18 +384,16 @@ export async function postArtifactComments(
       const copyThread = typeof info.thread_id === 'string' ? info.thread_id : threadId;
       if (copyThread) return { threadId: copyThread };
     }
-    const status = (err as { status?: unknown }).status;
-    throw new CommentSendRefused(
-      err instanceof Error ? err.message : String(err),
-      typeof info?.code === 'string' ? info.code : null,
-      typeof status === 'number' ? status : null,
-    );
+    const { reason } = err as StreamRequestError;
+    throw new CommentSendRefused(reason ?? null, typeof info?.code === 'string' ? info.code : null);
   }
   const refused = refusal as Record<string, unknown> | null;
   if (refused) {
-    const message = typeof refused.error === 'string' ? refused.error : 'The comments were not sent.';
-    throw new CommentSendRefused(message, typeof refused.code === 'string' ? refused.code : null, 409);
+    throw new CommentSendRefused(
+      typeof refused.error === 'string' ? refused.error : null,
+      typeof refused.code === 'string' ? refused.code : null,
+    );
   }
-  if (!taken || !threadId) throw new CommentSendRefused('The comments were not sent.', null, null);
+  if (!taken || !threadId) throw new CommentSendRefused(null);
   return { threadId };
 }

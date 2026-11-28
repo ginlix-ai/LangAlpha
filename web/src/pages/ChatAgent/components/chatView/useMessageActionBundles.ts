@@ -28,8 +28,9 @@ export interface MessageActionSources {
   onOpenSources?: Action<'onOpenSources'>;
   onToolCallDetailClick: Action<'onToolCallDetailClick'>;
   onOpenChart?: Action<'onOpenChart'>;
-  /** One opener for both kinds, a file's in the panel and a chart's in its
-   *  tab, or openers by kind that are already identity-stable. */
+  /** One opener for every kind, a file's in the panel, a chart's in its tab
+   *  and a Drive file's in the Drive tab, or openers by kind that are already
+   *  identity-stable. */
   onOpenArtifactComment: ((comment: ArtifactCommentRef) => void) | ArtifactCommentOpeners | undefined;
   onOpenSubagentTask: Action<'onOpenSubagentTask'>;
   onOpenDispatcher?: Action<'onOpenDispatcher'>;
@@ -97,7 +98,7 @@ export function useMessageActionBundles(src: MessageActionSources): {
   const task = useStableActions({ onSendNow: onSendTaskMessageNow });
   const openComment = stable.onOpenArtifactComment;
   const openArtifactComment = useMemo(
-    () => (openComment ? { file: openComment, chart: openComment } : undefined),
+    () => (openComment ? { file: openComment, chart: openComment, drive: openComment } : undefined),
     [openComment],
   );
   const commentOpeners = typeof onOpenArtifactComment === 'function' ? openArtifactComment : onOpenArtifactComment;

@@ -10,13 +10,17 @@
 import { registerAuthReset } from './authResets';
 
 const holds = new Set<symbol>();
+const leaveHolds = new Set<symbol>();
 const requests = new Map<symbol, number>();
 
 // The last account's work no longer holds this tab: a transfer that stalls
-// past sign-out would otherwise block the next account's reloads for good.
-// Its late release then finds nothing to remove.
+// past sign-out would otherwise block the next account's reloads, and ask
+// before it leaves the page, for good. Its late release then finds nothing
+// to remove.
 registerAuthReset(() => {
   holds.clear();
+  leaveHolds.clear();
+  window.removeEventListener('beforeunload', askBeforeLeaving);
   requests.clear();
 });
 
@@ -26,6 +30,31 @@ export function holdReload(): () => void {
   holds.add(hold);
   return () => {
     holds.delete(hold);
+  };
+}
+
+function askBeforeLeaving(e: BeforeUnloadEvent): void {
+  e.preventDefault();
+  // Older browsers ask only when a value is set; its text is never shown.
+  e.returnValue = '';
+}
+
+/**
+ * Hold the reload and the page until the returned release is called; a second
+ * call does nothing. For work a reload or a closed tab would lose: the
+ * stale-build reload waits, and the browser asks before the page goes, while
+ * any hold is out. In-app navigation keeps the work, so it is not asked about.
+ */
+export function holdPageLeave(): () => void {
+  const releaseReload = holdReload();
+  const hold = Symbol('leave-hold');
+  leaveHolds.add(hold);
+  window.addEventListener('beforeunload', askBeforeLeaving);
+  return () => {
+    releaseReload();
+    if (leaveHolds.delete(hold) && leaveHolds.size === 0) {
+      window.removeEventListener('beforeunload', askBeforeLeaving);
+    }
   };
 }
 

@@ -1,10 +1,11 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import type { ArtifactCommentAnchor } from '@/types/api';
 import type { FrameView } from '../BridgedFrame';
-import type { FrameRect, PageAnchorItem, PageHover, PagePick, PageSelection, PageToViewer } from '../pageProtocol';
+import type { FrameRect, SpotRect, PageAnchorItem, PageHover, PagePick, PageSelection, PageToViewer } from '../pageProtocol';
 import type { PageBridge } from '../usePageBridge';
 import { DRAFT_ID } from './pinPlaces';
 
-const NO_POSITIONS: ReadonlyMap<string, FrameRect | null> = new Map();
+const NO_POSITIONS: ReadonlyMap<string, SpotRect | null> = new Map();
 const NO_PARTS: ReadonlyMap<string, FrameRect[]> = new Map();
 const NOT_ADDING: PageAdding = { held: false, next: false };
 
@@ -24,12 +25,35 @@ export interface PickHow {
   extend: boolean;
 }
 
+/**
+ * What a press on the page did to the box over it. A press that closed a
+ * card or asked about words written (`closed`) swallows the pick its own
+ * click reports, so one press steps one layer. An empty box loses nothing by
+ * going, so it gives way: the press closes it and its pick opens a box on
+ * what it picked, unless that is the box's own spot, which it only closes.
+ * Null: nothing was open, so its pick opens a box.
+ */
+export type PressAnswer = 'closed' | { gaveWay: ArtifactCommentAnchor } | null;
+
+/** A report without the draft's entry, when it was reported for an earlier draft. */
+function withoutDraft<T>(map: ReadonlyMap<string, T>, stale: boolean): ReadonlyMap<string, T> {
+  if (!stale || !map.has(DRAFT_ID)) return map;
+  const rest = new Map(map);
+  rest.delete(DRAFT_ID);
+  return rest;
+}
+
+/** The same spot, wherever on it it was pressed (`point`). */
+function sameSpot(a: ArtifactCommentAnchor, b: ArtifactCommentAnchor): boolean {
+  return JSON.stringify({ ...a, point: undefined }) === JSON.stringify({ ...b, point: undefined });
+}
+
 /** What the owner does on the page that opens or closes something over it, which the layer decides. */
 export interface PageActs {
   /** The pointer moved onto something else in comment mode; null over nothing, and always outside the mode. */
   onHover: (hover: PageHover | null) => void;
-  /** A press on the page: whether it closed or asked anything, which swallows the pick its own click reports. */
-  onPress: () => boolean;
+  /** A press on the page: what it did to the box over it, which decides what its own click picks. */
+  onPress: () => PressAnswer;
   /** An element, an area or words picked in comment mode. */
   onPick: (pick: PagePick, how: PickHow) => void;
   /** C or Esc pressed inside the frame, taken as they are outside it. */
@@ -54,7 +78,7 @@ export interface PageReports {
    * drawn, faded out, until the next one has its own: pins then ride a
    * version change rather than blinking out.
    */
-  positions: ReadonlyMap<string, FrameRect | null>;
+  positions: ReadonlyMap<string, SpotRect | null>;
   /** Where each part shows, for the draft and the `outlined` comment when they are areas that list every part. */
   parts: ReadonlyMap<string, FrameRect[]>;
   /** `positions` is the answer of the document on screen. */
@@ -119,26 +143,16 @@ export function usePageReports(
   const [reported, setReported] = useState<{
     doc: string;
     serial: number;
-    map: ReadonlyMap<string, FrameRect | null>;
+    map: ReadonlyMap<string, SpotRect | null>;
     parts: ReadonlyMap<string, FrameRect[]>;
   }>(() => ({ doc, serial: draftSerial, map: NO_POSITIONS, parts: NO_PARTS }));
   const [settledDoc, setSettledDoc] = useState<string | null>(null);
   const [pointerIn, setPointerIn] = useState(0);
   // A draft picked since the last report has its spot looked for afresh.
-  const positions = useMemo(() => {
-    if (reported.serial === draftSerial || !reported.map.has(DRAFT_ID)) return reported.map;
-    const map = new Map(reported.map);
-    map.delete(DRAFT_ID);
-    return map;
-  }, [reported, draftSerial]);
+  const stale = reported.serial !== draftSerial;
+  const positions = useMemo(() => withoutDraft(reported.map, stale), [reported, stale]);
   const fresh = reported.doc === doc;
-  const parts = useMemo(() => {
-    if (!fresh) return NO_PARTS;
-    if (reported.serial === draftSerial || !reported.parts.has(DRAFT_ID)) return reported.parts;
-    const map = new Map(reported.parts);
-    map.delete(DRAFT_ID);
-    return map;
-  }, [fresh, reported, draftSerial]);
+  const parts = useMemo(() => (fresh ? withoutDraft(reported.parts, stale) : NO_PARTS), [fresh, reported, stale]);
 
   const asked = useMemo(() => new Set(anchors.map((item) => item.id)), [anchors]);
   const anchorsKey = useMemo(() => JSON.stringify(anchors), [anchors]);
@@ -155,25 +169,36 @@ export function usePageReports(
     if (bridge.ready) bridge.post({ type: 'page:comment-mode', on: mode });
   }, [bridge, mode]);
 
-  // The number of the last press that closed or asked something. The pick
-  // its own click reports carries that number and is swallowed rather than
-  // opening a box, so the next click picks. Any other pick, a key's (which
-  // has no press) or one after a drag or a press outside the mode, picks.
-  const closingPress = useRef<number | null>(null);
-  const opens = (press: number | null) => mode && (press === null || press !== closingPress.current);
+  // The last press and what it did to the box over the page. The pick its
+  // own click reports carries its number: swallowed after a press that
+  // closed or asked something, so the next click picks; after one an empty
+  // box gave way to, it opens a box, except on that box's own spot, which the
+  // press only closed. Any other pick, a key's (which has no press) or one
+  // after a drag or a press outside the mode, picks. A ref, not state: the
+  // pick arrives as the page's next message, before any render.
+  const lastPress = useRef<{ press: number; answer: PressAnswer } | null>(null);
+  const opens = (press: number | null, anchor?: ArtifactCommentAnchor) => {
+    if (!mode || press === null) return mode;
+    const last = lastPress.current;
+    if (last?.press !== press || last.answer === null) return true;
+    if (last.answer === 'closed') return false;
+    return !(anchor && sameSpot(anchor, last.answer.gaveWay));
+  };
 
   const onMessage = useEffectEvent((message: PageToViewer) => {
     switch (message.type) {
       case 'page:hover':
         acts.onHover(mode ? message.hover : null);
         return;
-      case 'page:press':
-        closingPress.current = acts.onPress() ? message.press : null;
-        if (closingPress.current !== null) bridge.post({ type: 'page:declined', press: message.press });
+      case 'page:press': {
+        const answer = acts.onPress();
+        lastPress.current = { press: message.press, answer };
+        if (answer === 'closed') bridge.post({ type: 'page:declined', press: message.press });
         return;
+      }
       case 'page:pick':
         // Only while the owner asked clicks to pick: a page cannot open the box itself.
-        if (opens(message.press)) acts.onPick(message, { selected: false, extend: message.extend });
+        if (opens(message.press, message.anchor)) acts.onPick(message, { selected: false, extend: message.extend });
         return;
       case 'page:area-drag': {
         // A drag whose press closed a box opens nothing, so it draws nothing.
@@ -184,7 +209,7 @@ export function usePageReports(
       }
       case 'page:area':
         // A pick of several elements at once, paired with its press as a click's is.
-        if (opens(message.press)) acts.onPick(message, { selected: false, extend: message.extend });
+        if (opens(message.press, message.anchor)) acts.onPick(message, { selected: false, extend: message.extend });
         return;
       case 'page:selection': {
         const next = message.selection;
@@ -194,14 +219,14 @@ export function usePageReports(
           // once, with no chip, paired with their press as a pick is. Words
           // that open nothing are let go, so the page keeps no selection
           // that no box is on.
-          if (opens(next.press)) acts.onPick(next, { selected: true, extend: false });
+          if (opens(next.press, next.anchor)) acts.onPick(next, { selected: true, extend: false });
           else bridge.post({ type: 'page:clear-selection' });
         } else update({ selection: next });
         return;
       }
       case 'page:positions': {
         // Only the spots this view asked about count.
-        const next = new Map<string, FrameRect | null>();
+        const next = new Map<string, SpotRect | null>();
         const partsNow = new Map<string, FrameRect[]>();
         for (const item of message.items) {
           if (!asked.has(item.id)) continue;

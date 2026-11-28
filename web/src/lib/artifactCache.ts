@@ -3,7 +3,8 @@
  * a chat send, a file view's own writes and a turn's end. The grant is never
  * among it: a new grant reloads every frame open on the file.
  */
-import type { QueryClient } from '@tanstack/react-query';
+import type { QueryClient, QueryKey } from '@tanstack/react-query';
+import type { ArtifactKind } from '@/types/artifacts';
 import { queryKeys } from '@/lib/queryKeys';
 
 export interface ArtifactRef {
@@ -13,10 +14,17 @@ export interface ArtifactRef {
    * read by path is read again, since any of them may hold it.
    */
   workspaceId?: string | null;
+  /** The record's kind. Unknown, it may be a Drive file's, whose own reads go too. */
+  kind?: ArtifactKind;
 }
 
 /** Every file, or every thread's queue: what changed is not known more narrowly. */
 export const ALL = 'all';
+
+/** Every Drive file's comments, which no comment event names: a file trashed, restored, purged or saved. */
+const EVERY_DRIVE_FILE = 'drive';
+
+const mayBeDrive = (ref: ArtifactRef): boolean => ref.kind === undefined || ref.kind === 'drive';
 
 /**
  * Comments changed: a send took them or gave them back, an answer arrived, a
@@ -26,28 +34,42 @@ export const ALL = 'all';
  * wait in or left, or every queue when a comment can have moved between
  * threads. `listed`: the lists already hold the server's answer, so only
  * what it moved elsewhere is read.
+ *
+ * A Drive file's comments are read by two more: the Drive's list markers,
+ * which count every Drive file's in one read, and its default destination,
+ * the chat its last comment went to (`worked`). Those go only for a Drive
+ * file, or one whose kind is not known; every file's destinations go too
+ * when which files changed is not known, since a thread they offer may have
+ * gone. Only a view showing them reads them again.
  */
 export function refreshArtifactComments(
   qc: QueryClient,
-  files: readonly ArtifactRef[] | typeof ALL,
+  files: readonly ArtifactRef[] | typeof ALL | typeof EVERY_DRIVE_FILE,
   queue?: string | null,
   { listed = false }: { listed?: boolean } = {},
 ): void {
+  const stale: QueryKey[] = [];
   if (files === ALL) {
-    void qc.invalidateQueries({ queryKey: queryKeys.artifacts.allComments });
-    void qc.invalidateQueries({ queryKey: queryKeys.artifacts.allDetails });
-    void qc.invalidateQueries({ queryKey: queryKeys.artifacts.allByPath });
-  } else {
+    stale.push(queryKeys.artifacts.allComments, queryKeys.artifacts.allDetails, queryKeys.artifacts.allByPath);
+  } else if (files !== EVERY_DRIVE_FILE) {
     for (const { artifactId, workspaceId } of files) {
-      if (!listed) void qc.invalidateQueries({ queryKey: queryKeys.artifacts.comments(artifactId) });
-      void qc.invalidateQueries({ queryKey: queryKeys.artifacts.detail(artifactId) });
-      void qc.invalidateQueries({
-        queryKey: workspaceId ? queryKeys.artifacts.pathsIn(workspaceId) : queryKeys.artifacts.allByPath,
-      });
+      if (!listed) stale.push(queryKeys.artifacts.comments(artifactId));
+      stale.push(
+        queryKeys.artifacts.detail(artifactId),
+        workspaceId ? queryKeys.artifacts.pathsIn(workspaceId) : queryKeys.artifacts.allByPath,
+      );
     }
   }
-  if (queue === ALL) void qc.invalidateQueries({ queryKey: queryKeys.artifacts.allQueued });
-  else if (queue && queue !== '__default__') void qc.invalidateQueries({ queryKey: queryKeys.artifacts.queued(queue) });
+  if (typeof files === 'string') {
+    stale.push(queryKeys.drive.commentCountsAll, queryKeys.artifacts.allDestinations);
+  } else {
+    const drive = files.filter(mayBeDrive);
+    if (drive.length > 0) stale.push(queryKeys.drive.commentCountsAll);
+    for (const { artifactId } of drive) stale.push(queryKeys.artifacts.destinationsOf(artifactId));
+  }
+  if (queue === ALL) stale.push(queryKeys.artifacts.allQueued);
+  else if (queue && queue !== '__default__') stale.push(queryKeys.artifacts.queued(queue));
+  for (const queryKey of stale) void qc.invalidateQueries({ queryKey });
 }
 
 /**
@@ -73,7 +95,16 @@ export function refreshArtifactRecord(qc: QueryClient, { artifactId, workspaceId
  */
 export function refreshArtifactThreads(qc: QueryClient): void {
   refreshArtifactComments(qc, ALL, ALL);
-  void qc.invalidateQueries({ queryKey: queryKeys.artifacts.allDestinations });
+}
+
+/**
+ * A Drive file was trashed, restored, purged or saved, which no comment
+ * event says: a file in the trash leaves every chat's queue and the list
+ * markers, one brought back returns to them, and an agent's save can make
+ * its chat the file's default destination.
+ */
+export function refreshDriveComments(qc: QueryClient): void {
+  refreshArtifactComments(qc, EVERY_DRIVE_FILE, ALL);
 }
 
 /**
