@@ -37,6 +37,10 @@ Rules:
   A list of records, or a dict of lists for multi-section payloads (e.g. all three
   financial statements); `count` is then the total across sections.
 - **Time-ordered lists are ascending (oldest → newest)**, stated in the docstring.
+  A list that is not a time series states its own order instead: a ranked list
+  (13F holders by shares, a portfolio by value) names its ranking, and a list of
+  filings read a page at a time (Form 144 notices) runs newest filed first, so
+  its first page holds the latest.
 - **Timestamps** are exchange-local strings `"YYYY-MM-DD"` or `"YYYY-MM-DD HH:MM:SS"`,
   self-described by the envelope `timezone`.
 - **Prices are major units** of `currency` (pence/GBX converted to pounds, etc.).
@@ -61,6 +65,10 @@ Rules:
   always falls on the other, and drop a row identical to one already read. A
   vendor refusal part-way through such a walk fails the read: `truncated` means
   only a size cap.
+- **A paged read carries `offset` and `next_offset` (null on the last page) in
+  place of `truncated`**: the caller sized the page, so the read is not cut
+  short. `_envelope.page_error` refuses a `limit` over the tool's cap with
+  `invalid_argument`, and `_envelope.page` cuts a ranked list into pages.
 - **Bars missing inside the window say so**: `incomplete: true` beside `data`
   (`make_response(incomplete=...)`) when the source reports sessions missing
   within the window it was asked for (a CN refetch that failed), absent
@@ -80,9 +88,14 @@ Rules:
 ```
 
 `error` is one of: `invalid_argument | unsupported_interval | not_found |
-auth_failed | rate_limited | upstream_error | client_unavailable`. Raw exception
+auth_failed | rate_limited | upstream_error | client_unavailable | rebuilt`
+(`rebuilt`: a page asked of a build its source has since replaced; page again
+from offset 0). Raw exception
 text never lands in `error`; a sanitized summary may go in `detail`. Context keys
-(`symbol`, `supported`, `retry_after_seconds`, ...) are welcome.
+(`symbol`, `supported`, `retry_after_seconds`, ...) are welcome. A LangAlpha Data
+route's own `detail` reaches `detail` word for word, a not-ready 503's included
+(`_ownership.route_error`): the route writes it for the agent, saying when a
+retry can work or which period to pass instead.
 
 Use the shared helpers in `_envelope.py` (`make_response`, `make_error`,
 `normalize_interval`) rather than hand-rolling either shape.

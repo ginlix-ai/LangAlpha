@@ -39,6 +39,16 @@ _SERVERS = {
 
 # Target is ~800 chars (AGENT_CONTRACT.md); the hard cap leaves slight headroom.
 _MAX_DOCSTRING_CHARS = 920
+# The ownership tools' docstrings carry the full row shape (and a paged read's paging contract beside it), each
+# held to its own cap.
+_LONG_DOCSTRINGS = {
+    "fundamentals:get_institutional_holders": 1600,
+    "fundamentals:get_manager_holdings": 1750,
+    "fundamentals:get_mutual_fund_holders": 1200,
+    "fundamentals:get_insider_roster": 1050,
+    "fundamentals:get_ownership_breakdown": 1000,
+    "fundamentals:get_proposed_insider_sales": 1450,
+}
 
 # Section headers that terminate the codegen Returns: capture and tend to rot.
 _FORBIDDEN_SECTIONS = re.compile(r"^\s*(Examples?:|Note:)", re.MULTILINE)
@@ -101,9 +111,8 @@ def test_docstring_contract(server, name, description, schema):
     )
 
     # Moderate length: docstrings ship in prompts across ~60 tools.
-    assert len(description) <= _MAX_DOCSTRING_CHARS, (
-        f"{server}:{name} docstring is {len(description)} chars (cap {_MAX_DOCSTRING_CHARS})"
-    )
+    cap = _LONG_DOCSTRINGS.get(f"{server}:{name}", _MAX_DOCSTRING_CHARS)
+    assert len(description) <= cap, f"{server}:{name} docstring is {len(description)} chars (cap {cap})"
 
 
 # ── Content pin: the tuned wording itself ────────────────────────────────────

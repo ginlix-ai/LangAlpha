@@ -39,6 +39,9 @@ _MCP_SHARED_RUNTIME_FILES: tuple[str, ...] = (
     "_dates.py",
     "_envelope.py",
     "_extract.py",
+    "_ownership.py",
+    "_ownership_direct.py",
+    "_ownership_tools.py",
     "_schemas.py",
     "_yf_common.py",
 )
@@ -58,6 +61,9 @@ _SANDBOX_INTERNAL_PACKAGES: dict[str, str] = {
     # ships with it; a checkout that never built it gets snapshots that say
     # they are unavailable.
     "chartkit": "chartkit",
+    # The EDGAR engine the fundamentals server's ownership tools read through
+    # when no LangAlpha Data is configured (13F portfolios, Form 144 notices).
+    "edgar_engine": "edgar_engine",
 }
 
 

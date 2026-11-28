@@ -7,8 +7,12 @@ shape; every other listing, and any CN miss, comes from FMP. A CN read that
 failed, rather than came back empty, still falls back to FMP, but the answer
 then says so (`fallback_from`), and an FMP miss after it is an error.
 Historical valuation, insider trades and technical indicators come from FMP
-alone. `source` names the vendor that answered, and the envelope around
-`data` is the standard market-data contract (AGENT_CONTRACT.md).
+alone. The ownership tools read LangAlpha Data's SEC store when it is configured;
+without it, 13F holders come from FMP, a manager's portfolio and Form 144
+notices from EDGAR through edgar_engine (set EDGAR_IDENTITY to a name and an
+email), and the mutual fund holders, insider roster and ownership breakdown
+are unavailable. `source` names the vendor that answered, and the envelope
+around `data` is the standard market-data contract (AGENT_CONTRACT.md).
 
 Tools:
 - get_financial_statements: Raw income/balance/cash flow (multi-year)
@@ -19,6 +23,12 @@ Tools:
 - get_analyst_estimates: Consensus estimates by fiscal period
 - get_earnings_surprises: Reported EPS and revenue against consensus
 - get_insider_trades: Insider trading transactions and aggregate stats
+- get_institutional_holders: 13F managers holding a US stock, a page at a time
+- get_manager_holdings: One 13F manager's portfolio and its changes, a page at a time
+- get_mutual_fund_holders: N-PORT funds holding a US-listed security, a page at a time
+- get_insider_roster: Insiders of a US company and the shares each last reported
+- get_ownership_breakdown: Insider and 13F institution shares as fractions of shares outstanding
+- get_proposed_insider_sales: Form 144 notices of proposed insider sales, a page at a time
 - get_dividends_and_splits: Dividend history and stock split history
 - get_shares_float: Shares float, outstanding shares, and float percentage
 - get_key_executives: Key executives with title and compensation
@@ -64,6 +74,7 @@ from data_client.normalize import (
 from data_client.ginlix_data import close_ginlix_mcp_client, get_ginlix_mcp_client
 from data_client.ginlix_data.cn_financial import GinlixDataCnFinancialSource
 from mcp_servers._envelope import error_from_exception, make_error, make_response
+from mcp_servers._ownership_tools import register as register_ownership_tools
 from mcp_servers._schemas import (
     ANY,
     BAR_LABELS,
@@ -782,6 +793,9 @@ async def get_insider_trades(
 
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+
+
+register_ownership_tools(mcp)
 
 
 _OUT_GET_DIVIDENDS_AND_SPLITS = output_model(

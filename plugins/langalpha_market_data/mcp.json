@@ -24,7 +24,8 @@
       ],
       "env": {
         "FMP_API_KEY": "${FMP_API_KEY}",
-        "LANGALPHA_DATA_URL": "${LANGALPHA_DATA_URL}"
+        "LANGALPHA_DATA_URL": "${LANGALPHA_DATA_URL}",
+        "EDGAR_IDENTITY": "${EDGAR_IDENTITY}"
       }
     },
     "macro": {
