@@ -21,8 +21,9 @@ import { isFilePath, isImagePath, normalizeFilePath, parseFolderHref, parseWsPat
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import { useLinkActions } from '../contexts/LinkActionsContext';
 import { isWebAddress, WebLinkMenu } from './WebLinkMenu';
+import { DriveLinkMenu } from './DriveLinkMenu';
 import { classifyAgentPath, onOtherComputer, parseAgentHref, parseAgentPath } from '../utils/agentPaths';
-import { drivePathHref } from '../utils/agentArtifactRouting';
+import { drivePathHref, driveRouteLocation } from '../utils/agentArtifactRouting';
 import { prepareMarkdownSource } from '../utils/markdownSource';
 import { splitFileLocation, type OpenFileHandler } from '../utils/fileLocation';
 import { splitMarkdownBlocks, scanStreamingBlock } from '../utils/markdownBlocks';
@@ -380,19 +381,24 @@ const chatBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
 // leave guard; anything else opens in a new tab so the conversation survives
 // the detour, unless the chat around it takes the click (an app or file link
 // it opens as a panel tab). A modified click is always the new tab. Where the
-// chat has a computer's browser, a web link's right-click menu offers it too.
+// chat has a computer's browser, a web link's right-click menu offers it too,
+// and a Drive link's menu offers the Drive page the plain click goes past.
 function MarkdownLink({ href, ...props }: MarkdownComponentProps) {
   const route = useInRouterContext() ? appRoutePath(href) : null;
-  const { openShareLink, openAppRoute, openInBrowser } = useLinkActions();
+  const { openShareLink, openAppRoute, openInBrowser, drive } = useLinkActions();
   if (isFootnoteLink(props)) return <FootnoteLink href={href} {...props} />;
   if (route !== null) {
+    const driveRoute = driveRouteLocation(route) !== null;
+    // The link's own styling stays with the link: text here reads as text.
+    if (driveRoute && !drive) return <span>{props.children}</span>;
     const onAppClick = openAppRoute
       ? (e: React.MouseEvent) => {
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
           if (openAppRoute(route)) e.preventDefault();
         }
       : undefined;
-    return <GuardedLink to={route} onClick={onAppClick} {...props} />;
+    const link = <GuardedLink to={route} onClick={onAppClick} {...props} />;
+    return driveRoute ? <DriveLinkMenu href={route}>{link}</DriveLinkMenu> : link;
   }
   const onClick = openShareLink && href
     ? (e: React.MouseEvent) => {
@@ -707,9 +713,10 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
   const config = VARIANTS[variant];
   const folders = useWorkspaceFolders();
   // Where the chat opens a Drive link beside it, the link also names the
-  // Drive page, for a modified click. Elsewhere (a share)
+  // Drive page, for a modified click and the link's menu. Elsewhere (a share)
   // the Drive is someone else's, and its page would be the reader's own.
-  const drivePages = !!useLinkActions().openAppRoute;
+  const { openAppRoute, drive: driveOn } = useLinkActions();
+  const drivePages = !!openAppRoute;
   const rootDir = folders?.rootDir;
   const otherRoots = folders?.otherRoots;
   const prepared = useMemo(() => prepareMarkdownSource(content, rootDir, otherRoots), [content, rootDir, otherRoots]);
@@ -830,8 +837,9 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
           // A Drive file opens beside the chat; a modified click opens it on
           // the Drive page in a new tab, as any other page of the app does.
           const drive = classifyAgentPath(opened, folders?.rootDir);
+          if (drive.kind === 'drive' && !driveOn) return <span {...props}>{children}</span>;
           const pageHref = drivePages && drive.kind === 'drive' ? drivePathHref(drive) : undefined;
-          return (
+          const link = (
             <a
               className="underline hover:opacity-80 transition-opacity cursor-pointer"
               style={{ color: 'var(--color-accent-primary)' }}
@@ -844,6 +852,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
               {...props}
             >{children}</a>
           );
+          return pageHref ? <DriveLinkMenu href={pageHref}>{link}</DriveLinkMenu> : link;
         }
         // No onOpenFile handler -- render as non-clickable text
         return <span {...props}>{children}</span>;
@@ -853,7 +862,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
       return <DefaultA node={_node} href={href} {...props}>{children}</DefaultA>;
     };
     return { ...result, a: fileAwareA };
-  }, [onOpenFile, onAnchorLink, variant, config.components, codeTheme, folders, embeddedImages, drivePages]);
+  }, [onOpenFile, onAnchorLink, variant, config.components, codeTheme, folders, embeddedImages, drivePages, driveOn]);
 
   // Rendered markdown is always long-form reading content — every call site
   // (transcript, detail panels, memos) gets the content face here.

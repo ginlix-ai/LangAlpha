@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
+import { MemoryRouter } from 'react-router';
 import '@/i18n';
 
 vi.mock('@/contexts/ThemeContext', () => ({
@@ -51,5 +52,33 @@ describe('a web link in a reply', () => {
     show('[write](mailto:a@example.com)', vi.fn());
     fireEvent.contextMenu(screen.getByRole('link', { name: 'write' }));
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+});
+
+describe('a Drive link where the reader has no Drive', () => {
+  const drive = (on: boolean) => ({ openShareLink: null, openAppRoute: () => true, openInBrowser: null, drive: on });
+
+  it('is text, whether it names a Drive path or the Drive page', () => {
+    render(
+      <MemoryRouter>
+        <LinkActionsContext value={drive(false)}>
+          <Markdown variant="chat" content="[the memo](.agents/drive/personal/m.md) and [the folder](/drive?dir=research)" onOpenFile={() => {}} />
+        </LinkActionsContext>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.getByText('the memo')).toBeInTheDocument();
+    expect(screen.getByText('the folder')).not.toHaveClass('underline');
+  });
+
+  it('is a link where the reader has one', () => {
+    render(
+      <MemoryRouter>
+        <LinkActionsContext value={drive(true)}>
+          <Markdown variant="chat" content="[the memo](.agents/drive/personal/m.md) and [the folder](/drive?dir=research)" onOpenFile={() => {}} />
+        </LinkActionsContext>
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByRole('link')).toHaveLength(2);
   });
 });
