@@ -409,10 +409,14 @@ export function TabStrip({
     // The tab to the right slides in under the pointer, its X where this one's
     // was, so closing a run of tabs is one click after another. Past the last
     // one the new tab button would slide in there too, so the row keeps its
-    // width until the pointer leaves the strip. Only where the X sits on the
-    // glyph (TabStrip.css): a finger's X sits at the tab's end, which no run
-    // of closes lines up, and a touch leaves the strip before its click lands.
-    if (!keyboard && listRef.current && window.matchMedia(X_ON_GLYPH).matches) {
+    // width until the pointer leaves the strip. Closing the last tab on its
+    // own has nothing to its right to line up, so the row shrinks at once,
+    // as in Chrome and Firefox; a run of closes that reaches it keeps the
+    // width it already holds. Only where the X sits on the glyph
+    // (TabStrip.css): a finger's X sits at the tab's end, which no run of
+    // closes lines up, and a touch leaves the strip before its click lands.
+    const last = index === tabs.length - 1;
+    if (!keyboard && !(last && heldWidth == null) && listRef.current && window.matchMedia(X_ON_GLYPH).matches) {
       setHeldWidth(listRef.current.getBoundingClientRect().width);
     }
     onClose([id]);
@@ -422,7 +426,7 @@ export function TabStrip({
       if (!remaining?.length) return;
       remaining[Math.min(index, remaining.length - 1)].focus();
     });
-  }, [tabs, onClose]);
+  }, [tabs, onClose, heldWidth]);
 
   /**
    * A menu opened from the keyboard hands focus back to its tab, which a
