@@ -115,7 +115,8 @@ async def test_a_claude_code_pin_runs_the_threads_model_where_the_workspace_has_
     config, _ = await _resolve(monkeypatch, {}, [_custom("desk", CODE)], placed=None)
     assert config.claude_code_pins is None
     assert config.subagents.resolved.definitions["desk"].model is None
-    assert "subagent:desk" not in config.subsidiary_llm_clients and "desk" not in config.subagent_models
+    assert "subagent:desk" not in config.subsidiary_llm_clients
+    assert config.subagent_models["desk"] == config.runs_on and config.runs_on["id"] != CODE
 
 
 @pytest.mark.asyncio

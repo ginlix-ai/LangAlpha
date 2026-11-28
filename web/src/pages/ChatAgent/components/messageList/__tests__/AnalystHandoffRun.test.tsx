@@ -302,6 +302,23 @@ describe('AnalystHandoffRun', () => {
         expect(row.querySelector('.lucide-check')).toBeNull();
       });
 
+      it('names the model and effort its run went out on', async () => {
+        mockLiveness.mockResolvedValue([thread('th-a', 'completed'), thread('th-b', 'completed')]);
+        const a = member('a', 'approved', 'th-a');
+        const runsOn = { id: 'claude-opus-5-5', provider: 'anthropic', effort: 'max' };
+        renderRun([{ ...a, proposal: { ...a.proposal, runs_on: runsOn } }]);
+        await waitFor(() => expect(rowOf('finished')).not.toBeNull());
+        expect(screen.getByTestId('run-model')).toHaveTextContent('Max');
+        expect(screen.getByRole('button', { name: 'Brief a' })).toHaveAccessibleDescription(/, Max effort/);
+      });
+
+      it('says nothing of a model it was not told, as for a steer', async () => {
+        mockLiveness.mockResolvedValue([thread('th-a', 'completed')]);
+        renderRun([member('a', 'approved', 'th-a')]);
+        await waitFor(() => expect(rowOf('finished')).not.toBeNull());
+        expect(screen.queryByTestId('run-model')).toBeNull();
+      });
+
       it('keeps a working run\'s glyph beside its words, not in the avatar\'s place', async () => {
         mockLiveness.mockResolvedValue([thread('th-a', 'running')]);
         renderRun([member('a', 'approved', 'th-a')]);

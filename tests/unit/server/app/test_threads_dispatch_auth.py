@@ -30,6 +30,9 @@ _BODY = {
 }
 
 
+RUNS_ON = {"id": "claude-sonnet-placeholder", "provider": "anthropic", "effort": "high"}
+
+
 def _make_config():
     """Stub ``AgentConfig`` returned by ``resolve_llm_config`` (platform key)."""
     cfg = MagicMock()
@@ -37,6 +40,7 @@ def _make_config():
     cfg.llm_client = None
     cfg.llm = MagicMock()
     cfg.llm.name = "claude-sonnet-placeholder"
+    cfg.runs_on = RUNS_ON
     return cfg
 
 
@@ -210,6 +214,8 @@ async def test_oss_matching_token_dispatches(monkeypatch):
         )
     assert resp.status_code == 200
     assert resp.json()["status"] == "dispatched"
+    # The model and level the turn runs on, as a run's card names them.
+    assert resp.json()["runs_on"] == RUNS_ON
 
 
 @pytest.mark.asyncio

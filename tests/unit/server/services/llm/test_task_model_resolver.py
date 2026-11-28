@@ -317,10 +317,16 @@ async def test_a_resolved_model_is_stamped_and_named_for_its_card(world):
 
 
 @pytest.mark.asyncio
-async def test_the_turns_own_model_by_another_name_shows_no_model_on_its_card(world):
+async def test_a_card_names_the_turns_own_model_and_the_level_its_client_sends(world):
+    """Named on the turn's own model too, and at the level that goes out,
+    which the ladder may have stepped down from the one asked."""
+    world.client = lambda name: _Client(
+        metadata={"manifest_model": name, "reasoning_effort": "medium"}, model=name,
+    )
+
     resolved = await _resolve(world, "turn-twin", "desk")
 
-    assert resolved.model is None
+    assert resolved.model == {"id": "turn-twin", "provider": "acme-plan", "effort": "medium"}
 
 
 @pytest.mark.asyncio

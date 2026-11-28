@@ -7,7 +7,8 @@ import {
   type SubagentHistoryLike,
   type SubagentTelemetry,
 } from '../resolveSubagentTelemetry';
-import { parseSubagentModel, type TaskRun } from '../taskRuns';
+import type { TaskRun } from '../taskRuns';
+import { parseRunModel } from '../../../utils/runModel';
 import { ZERO_USAGE } from '../../../utils/tokenUsage';
 
 const msgWith = (tools: number) => ({
@@ -201,6 +202,50 @@ describe('resolveSubagentTelemetry: the run a row draws', () => {
     expect(result).not.toHaveProperty('finishedAtMs');
   });
 
+  it('counts the calls running at once, naming the newest', () => {
+    const card: SubagentDataLike = {
+      status: 'active',
+      messages: [message([
+        call(0),
+        call(1, { isInProgress: true, isComplete: false }),
+        call(2, { isInProgress: true, isComplete: false }),
+      ])],
+    };
+    const runs = [run({ launchToolCallId: 'launch-1', startedAtMs: 1_000 })];
+    const result = resolveSubagentTelemetry(card, undefined, runs, 'launch-1');
+    expect(result).toMatchObject({ runningCalls: 2, currentToolCall: { args: { command: 'step 2' } } });
+    expect(result).not.toHaveProperty('between');
+  });
+
+  it('says what a live run does between calls: reasoning, or writing its answer', () => {
+    const runs = [run({ launchToolCallId: 'launch-1', startedAtMs: 1_000 })];
+    const between = (segments: unknown[]) => resolveSubagentTelemetry(
+      { status: 'active', messages: [message([call(0)], segments)] }, undefined, runs, 'launch-1',
+    )?.between;
+    expect(between([{ type: 'tool_call' }, { type: 'reasoning' }])).toBe('thinking');
+    expect(between([{ type: 'tool_call' }])).toBe('thinking');
+    expect(between([{ type: 'tool_call' }, { type: 'text', content: 'Margins' }])).toBe('writing');
+  });
+
+  it('says nothing of a resumed run before its first output, rather than the last run\'s answer', () => {
+    const answered = message([call(0)], [
+      { type: 'tool_call', toolCallId: 'call-0', order: 0 },
+      { type: 'text', content: 'Revenue grew 12%.', order: 1 },
+    ], { openedAtMs: 1_050 });
+    const runs = [
+      run({ launchToolCallId: 'launch-1', startedAtMs: 1_000, finishedAtMs: 3_000 }),
+      run({ launchToolCallId: 'launch-2', startedAtMs: 5_000 }),
+    ];
+    const waiting = resolveSubagentTelemetry({ status: 'active', messages: [answered] }, undefined, runs, 'launch-2');
+    expect(waiting).toMatchObject({ running: true });
+    expect(waiting).not.toHaveProperty('between');
+
+    const reasoning = message([], [{ type: 'reasoning' }], { openedAtMs: 5_050 });
+    expect(resolveSubagentTelemetry(
+      { status: 'active', messages: [answered, reasoning] }, undefined, runs, 'launch-2',
+    )?.between).toBe('thinking');
+  });
+
   it('draws a settled launch from its run, with the prose it closed on', () => {
     const history: SubagentHistoryLike = {
       messages: [
@@ -368,16 +413,26 @@ describe('resolveSubagentTelemetry: the run a row draws', () => {
   });
 });
 
-describe('parseSubagentModel', () => {
-  it('reads a model the wire names in full, and nothing else', () => {
-    expect(parseSubagentModel({ id: 'glm-5.3-cn', provider: 'z-ai-cn', extra: 1 })).toEqual({
+describe('parseRunModel', () => {
+  it('reads a model the wire names in full, with its effort, and nothing else', () => {
+    expect(parseRunModel({ id: 'glm-5.3-cn', provider: 'z-ai-cn', extra: 1 })).toEqual({
       id: 'glm-5.3-cn',
       provider: 'z-ai-cn',
     });
-    expect(parseSubagentModel({ id: 'glm-5.3-cn' })).toBeUndefined();
-    expect(parseSubagentModel({ id: '', provider: 'z-ai-cn' })).toBeUndefined();
-    expect(parseSubagentModel(null)).toBeUndefined();
-    expect(parseSubagentModel('glm-5.3-cn')).toBeUndefined();
+    expect(parseRunModel({ id: 'glm-5.3-cn', provider: 'z-ai-cn', effort: 'high' })).toEqual({
+      id: 'glm-5.3-cn',
+      provider: 'z-ai-cn',
+      effort: 'high',
+    });
+    // An effort that is not a level drops the effort, not the model.
+    expect(parseRunModel({ id: 'glm-5.3-cn', provider: 'z-ai-cn', effort: 3 })).toEqual({
+      id: 'glm-5.3-cn',
+      provider: 'z-ai-cn',
+    });
+    expect(parseRunModel({ id: 'glm-5.3-cn' })).toBeUndefined();
+    expect(parseRunModel({ id: '', provider: 'z-ai-cn' })).toBeUndefined();
+    expect(parseRunModel(null)).toBeUndefined();
+    expect(parseRunModel('glm-5.3-cn')).toBeUndefined();
   });
 });
 

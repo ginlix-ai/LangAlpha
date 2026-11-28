@@ -18,7 +18,7 @@ const tel = (over: Partial<SubagentTelemetry> = {}): SubagentTelemetry => ({
 });
 const LIVE_KINDS = new Set(['starting', 'working', 'pausing']);
 const view = (over: Partial<SubagentRowView>): SubagentRowView => ({
-  id: 'a', type: 'research', kind: 'done', rawStatus: 'completed', title: '', fullTitle: '', detail: '',
+  id: 'a', type: 'research', kind: 'done', rawStatus: 'completed', title: '', fullTitle: '', detail: { text: '' },
   live: LIVE_KINDS.has(over.kind ?? 'done'), ...over,
 });
 const t = (key: string) => key;
