@@ -1315,6 +1315,9 @@
       "titleFallback": "Subagent Task"
     },
     "subagentRun": {
+      "stepWithMore": "{{step}}, and {{count}} more running",
+      "thinking": "Thinking",
+      "writing": "Writing",
       "starting": "Starting up",
       "couldntStart": "Couldn't start",
       "subagentsOff": "Subagents are off for this chat",
@@ -1330,8 +1333,10 @@
         "resumed": "{{count}} resumed"
       },
       "finishedIn": "Finished in {{duration}}",
-      "finished": "Finished",
-      "model": "Model: {{model}}"
+      "finished": "Finished"
+    },
+    "runModel": {
+      "withEffort": "{{model}}, {{effort}} effort"
     },
     "subagentBar": {
       "completedWithTools_one": "Completed ({{count}} tool call)",

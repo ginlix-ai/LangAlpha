@@ -46,6 +46,7 @@ export function HandoffSlip({ view, grouped = false }: { view: HandoffView; grou
           status={<HandoffStatus phase={phase} startedAt={view.startedAt} finishedAt={view.finishedAt} glyph={!grouped} />}
           workspaceName={view.workspaceName}
           steered={view.steered}
+          runsOn={view.runsOn}
           namesAnalyst={!grouped}
         />
       </span>

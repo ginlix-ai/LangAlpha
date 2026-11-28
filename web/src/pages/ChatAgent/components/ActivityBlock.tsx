@@ -19,7 +19,7 @@ import { PreparingToolCallRow, ToolCallLiveRow } from './messageList/InlineActiv
 import { LiveRow } from './messageList/LiveRow';
 import { SettlingLabel } from './messageList/SettlingLabel';
 import { SwapCell } from '@/components/ui/crossfade';
-import { RunningGlyphContext } from './messageList/runningGlyph';
+import { MoreInFlightContext, RunningGlyphContext } from './messageList/runningGlyph';
 import { CountToggleContext, useCountToggle } from './messageList/countToggle';
 import { useActivityRowKeys } from './messageList/useActivityRowKeys';
 import { isFreshArrival } from './messageList/transcriptMotion';
@@ -84,7 +84,7 @@ const ActivityBlock = memo(function ActivityBlock({
   const [fresh] = useState(() => isStreaming
     && isFreshArrival([...timeline.map(arrivedAt), ...calls.map((call) => call.firstSeenAt)]));
 
-  const { line, inFlight } = useStatusLineStep(timeline, calls, keys, liveReasoningOpen, status);
+  const { line, inFlight, othersInFlight } = useStatusLineStep(timeline, calls, keys, liveReasoningOpen, status);
   const { slot, rows } = status
     ? layoutStatusLine({ timeline, calls, keys, expanded, liveReasoningOpen, line, up: inFlight || holdsLine })
     : layoutRows({ timeline, calls, keys, expanded, inline });
@@ -94,6 +94,10 @@ const ActivityBlock = memo(function ActivityBlock({
   // The step on the line, which the line draws while the count is closed and
   // a row of its own draws once it is opened.
   const lineStep = status && line && (inFlight || holdsLine) ? line.key : null;
+  // The line's "+N". The step the block opened on, running in the slot above
+  // the line, is on screen already, so the line does not count it.
+  const leadApart = slot?.kind === 'lead' && !slot.isLine ? slot.key : null;
+  const more = othersInFlight.filter((key) => key !== leadApart).length;
   const { toggle, noteToggle } = useCountToggle(lineStep);
 
   const stepRow = (step: Step): React.ReactNode => {
@@ -108,11 +112,15 @@ const ActivityBlock = memo(function ActivityBlock({
     return <ToolCallRow item={item} running={isRunning(item)} onClick={() => onToolCallClick?.(item)} />;
   };
 
-  const lineNode = (key: string, step: Step): React.ReactNode => (
+  // `others` is the "+N" the line draws, none on a lead step the line does not
+  // name. It is not in the swap's key, so it changes in place.
+  const lineNode = (key: string, step: Step, others: number): React.ReactNode => (
     <RunningGlyphContext value>
-      {/* A call that lands under its preparing row's key crossfades from
-          the one form to the other; a new step rises in in its place. */}
-      <SwapCell swapKey={`${key}:${step.kind}`} riseKey={key}>{stepRow(step)}</SwapCell>
+      <MoreInFlightContext value={others}>
+        {/* A call that lands under its preparing row's key crossfades from
+            the one form to the other; a new step rises in in its place. */}
+        <SwapCell swapKey={`${key}:${step.kind}`} riseKey={key}>{stepRow(step)}</SwapCell>
+      </MoreInFlightContext>
     </RunningGlyphContext>
   );
 
@@ -133,7 +141,7 @@ const ActivityBlock = memo(function ActivityBlock({
     return <ToolCallRow item={item} running={isRunning(item)} onClick={() => onToolCallClick?.(item)} />;
   };
   const rowNode = (row: Row): React.ReactNode => {
-    if (row.kind === 'line') return lineNode(row.line.key, row.line.step);
+    if (row.kind === 'line') return lineNode(row.line.key, row.line.step, more);
     // The step on the line is marked the way the line marks it in a row of
     // its own too, so opening the count changes nothing about it. Every row
     // sits under the provider, or the mark coming and going would remount it.
@@ -174,7 +182,7 @@ const ActivityBlock = memo(function ActivityBlock({
           {slot.kind === 'lead'
             ? <div className="activity-lead" data-status-line={slot.isLine ? '' : undefined}
               data-activity-state={!slot.isLine ? undefined : slot.step.kind === 'call' || isRunning(slot.step.item) ? 'live' : 'settled'}>
-              {lineNode(slot.key, slot.step)}
+              {lineNode(slot.key, slot.step, slot.isLine ? more : 0)}
             </div>
             : <button id={summaryId} type="button" aria-expanded={expanded} aria-controls={panelId}
               onClick={(e) => {

@@ -7,7 +7,7 @@ import { categorizeTool, getToolIcon, getCompletedRowTitle, getCompletedSummary,
 import { AGENT_PATH_TRAITS } from '../../utils/agentPathTraits';
 import { classifyAgentPath, ranElsewhere } from '../../utils/agentPaths';
 import { RunningLine } from './ToolCallRow';
-import { RowIcon, FailedIconBadge } from './ActivityRowParts';
+import { RowIcon, FailedIconBadge, MoreInFlight } from './ActivityRowParts';
 import { FoldPanel } from './FoldPanel';
 import { SwapCell } from '@/components/ui/crossfade';
 import { announceAnchoredToggle } from '../../utils/anchoredToggle';
@@ -92,12 +92,13 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
           and closes with them instead of landing whole on the first frame. */}
       <div className="titem-body" style={{ gap: 0 }}>
         <SwapCell swapKey={runningSingle ? 'running' : 'settled'} layerClassName="titem-line flex-wrap gap-y-[4px]">
-          {runningSingle ? <RunningLine item={item} onOpenPill={openSingle} /> : <>
+          {runningSingle ? <><RunningLine item={item} onOpenPill={openSingle} /><MoreInFlight /></> : <>
             {pills.length > 0 ? <span className="titem-title">{title}</span>
                 : <button type="button" onClick={openSingle} className="titem-title titem-title-button" title={openLabel}>{title}</button>}
             {pills.map(({ path, label }) => <span key={path} className="titem-pill-wrap">
               <button type="button" onClick={() => openPath(path)} className="obj" title={openLabel}>{label}</button>
             </span>)}
+            <MoreInFlight />
             {repeat && <span style={{ opacity: 0.55, fontSize: '0.8125rem' }}>{repeat}</span>}
             {hasDiff && !isStreaming && (
               <button

@@ -12,7 +12,7 @@ import { formatThoughtFor } from '@/lib/elapsed';
 import { useNow } from '@/hooks/useNow';
 import { SPRING_FOLD } from '@/lib/motion';
 import { FoldPanel } from './FoldPanel';
-import { RowIcon } from './ActivityRowParts';
+import { MoreInFlight, RowIcon } from './ActivityRowParts';
 import { SwapCell } from '@/components/ui/crossfade';
 import type { ReasoningActivityItem } from './activityTypes';
 
@@ -147,6 +147,7 @@ export const ReasoningRow = memo(function ReasoningRow({ item, defaultExpanded =
           style={{ color: 'inherit' }}
         >
           {titleNode}
+          <MoreInFlight />
           {hasContent && (
             <motion.div
               animate={{ rotate: expanded ? 90 : 0 }}

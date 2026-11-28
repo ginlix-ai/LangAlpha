@@ -1,12 +1,13 @@
 import React, { useContext } from 'react';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { X as XIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { TextShimmer } from '@/components/ui/text-shimmer';
 import { Loader } from '@/components/ui/loader';
 import { DURATION, TWEEN } from '@/lib/motion';
 import { useMotionSafe } from '@/lib/reducedMotion';
 import { SwapCell } from '@/components/ui/crossfade';
-import { RunningGlyphContext } from './runningGlyph';
+import { MoreInFlightContext, RunningGlyphContext } from './runningGlyph';
 
 export function RunningTitle({ label }: { label: string }): React.ReactElement {
   return (
@@ -54,6 +55,21 @@ export function RowIcon({ running, pulse = true, children }: { running: boolean;
         ? <span aria-hidden className="inline-flex"><Loader size={14} className="text-(--color-accent-primary)" /></span>
         : children}
     </SwapCell>
+  );
+}
+
+/** The status line's count of the other steps in flight, after its label. It
+ *  has no motion of its own: the number changes in place, and the row it sits
+ *  in carries it through the line's swaps. */
+export function MoreInFlight(): React.ReactElement | null {
+  const count = useContext(MoreInFlightContext);
+  const { t } = useTranslation();
+  if (count < 1) return null;
+  return (
+    <span className="titem-more">
+      <span aria-hidden>{t('toolArtifact:moreRunningShort', { count })}</span>
+      <span className="sr-only">{t('toolArtifact:moreRunning', { count })}</span>
+    </span>
   );
 }
 

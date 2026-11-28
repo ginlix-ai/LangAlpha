@@ -456,6 +456,15 @@ export interface QuestionProposalState {
   interruptId?: string;
 }
 
+/** The model a run went out on, as the server reports it: the manifest key,
+ *  the provider that served it (the keys of `llmProviderArt`), and the effort
+ *  level it ran at, absent for a model with no levels. */
+export interface RunModel {
+  id: string;
+  provider: string;
+  effort?: string;
+}
+
 /** A `delegate_to_analyst` hand-off, as the approval request carried it or,
  *  made without asking, as its result did (`utils/preapprovedCards.ts`). */
 export interface PTCAgentProposalState {
@@ -487,6 +496,10 @@ export interface PTCAgentProposalState {
    *  run that took it in, since `run_id` can end before reading it. Absent on
    *  older proposals and on a hand-off that started its own run. */
   steer_id?: string;
+  /** The model and effort the hand-off's own run went out on, from the
+   *  result's artifact. Absent on a steered hand-off, a lost reply and older
+   *  proposals. */
+  runs_on?: RunModel;
 }
 
 export interface SecretaryActionProposalState {

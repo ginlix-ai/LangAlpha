@@ -108,16 +108,13 @@ export const RUN_HEAD_SUMMARY =
 /**
  * Who does the work, as a glyph in a hairline ring, unfilled so it sits on
  * whatever the row is drawn on. Decorative: the row says the same in words.
- * `badge` sits on its lower right.
  */
 export function RunAvatar({
   children,
-  badge,
   quiet = false,
   className,
 }: {
   children: React.ReactNode;
-  badge?: React.ReactNode;
   /** For a run that never happened. */
   quiet?: boolean;
   className?: string;
@@ -132,7 +129,6 @@ export function RunAvatar({
       )}
     >
       {children}
-      {badge}
     </span>
   );
 }

@@ -22,7 +22,8 @@
 import { openThreadMuxStream } from '../../utils/api';
 import { RECONNECT_BACKLOG_CAP_MS } from './lifecycle';
 import { taskIdFromAgentId } from '../../utils/agentId';
-import { parseSubagentModel, type TaskRunFacts } from '../subagents/taskRuns';
+import type { TaskRunFacts } from '../subagents/taskRuns';
+import { parseRunModel } from '../../utils/runModel';
 
 type SSEEventObj = Record<string, unknown>;
 
@@ -363,7 +364,7 @@ export class ThreadStreamMux {
       // The run's first frame, so its model is filed before any content.
       const open = frame.payload as { launch_tool_call_id?: unknown; model?: unknown } | null;
       const launch = typeof open?.launch_tool_call_id === 'string' ? open.launch_tool_call_id : undefined;
-      const model = parseSubagentModel(open?.model);
+      const model = parseRunModel(open?.model);
       if (launch || model) {
         this.reportRun(chan, { ...(launch ? { launchToolCallId: launch } : {}), ...(model ? { model } : {}) });
       }

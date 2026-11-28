@@ -16,7 +16,8 @@
 import { countToolCalls } from './subagentMetrics';
 import { isTerminalStatus, normalizeWireStatus } from './subagentStatus';
 import { ZERO_USAGE, type SubagentTokenUsage } from '../../utils/tokenUsage';
-import { latestRun, type SubagentModel, type TaskRun } from './taskRuns';
+import type { RunModel } from '@/types/chat';
+import { latestRun, type TaskRun } from './taskRuns';
 
 export interface SubagentTelemetry {
   toolCalls: number;
@@ -33,11 +34,18 @@ export interface SubagentTelemetry {
   finishedAtMs?: number;
   /** The call running now, for a step label. Live only. */
   currentToolCall?: { toolName: string; args?: Record<string, unknown> };
+  /** How many of the run's calls are running at once, when more than one
+   *  (a batch from one model call). Live only. */
+  runningCalls?: number;
+  /** What the run is doing between calls: reasoning, or writing text. Live
+   *  only, and only while no call runs. A model call that has sent nothing
+   *  yet cannot be told from reasoning, and reads as it. */
+  between?: 'thinking' | 'writing';
   /** The task's closing prose, for a settled row's result line. */
   lastText?: string;
-  /** The model the run used, present only when it was not the model of the
-   *  agent that launched it: that is the one time the model is news. */
-  model?: SubagentModel;
+  /** The model the run used and its effort; absent on a run from before the
+   *  server sent it. */
+  model?: RunModel;
   /** Present while the run this launch draws is the task's live one, once
    *  the ledger has said it started. */
   running?: true;
@@ -128,22 +136,45 @@ function lastAssistant(messages: MessageLike[] | undefined): MessageLike | undef
 
 // Keyed by the process map, not its message: the live handlers write a
 // message's fields in place, but every tool frame swaps in a new map.
-const currentCallByProcesses = new WeakMap<object, SubagentTelemetry['currentToolCall'] | null>();
+interface OpenCalls { call?: SubagentTelemetry['currentToolCall']; count: number }
+const openCallsByProcesses = new WeakMap<object, OpenCalls>();
 
-/** The call the run is in now: the newest unanswered call of the run's own
- *  message (each run opens one). */
-function currentToolCallOf(messages: MessageLike[] | undefined): SubagentTelemetry['currentToolCall'] {
+/** The live run's own message, the last one unless the stream stamped it as
+ *  opened before the run started: a resumed run opens its message only with
+ *  its first output, and until then the last one is an earlier run's. */
+function liveMessageOf(messages: MessageLike[] | undefined, owned: RunWindow): MessageLike | undefined {
   const message = lastAssistant(messages);
+  const at = message && messageAtMs(message);
+  return at !== undefined && at < owned.from ? undefined : message;
+}
+
+/** The calls the run is in now: the newest unanswered call of the run's own
+ *  message (each run opens one), and how many are unanswered. */
+function openCallsOf(message: MessageLike | undefined): OpenCalls {
   const procs = message?.toolCallProcesses;
-  if (!message || !procs || typeof procs !== 'object') return undefined;
-  const cached = currentCallByProcesses.get(procs);
-  if (cached !== undefined) return cached ?? undefined;
-  const open = processesOf(message).filter((p) => p.isInProgress && !p.isComplete).at(-1);
-  const call = open?.toolName
-    ? { toolName: open.toolName, ...(open.toolCall?.args ? { args: open.toolCall.args } : {}) }
-    : null;
-  currentCallByProcesses.set(procs, call);
-  return call ?? undefined;
+  if (!message || !procs || typeof procs !== 'object') return { count: 0 };
+  const cached = openCallsByProcesses.get(procs);
+  if (cached !== undefined) return cached;
+  const open = processesOf(message).filter((p) => p.isInProgress && !p.isComplete);
+  const newest = open.at(-1);
+  const result: OpenCalls = {
+    ...(newest?.toolName
+      ? { call: { toolName: newest.toolName, ...(newest.toolCall?.args ? { args: newest.toolCall.args } : {}) } }
+      : {}),
+    count: open.length,
+  };
+  openCallsByProcesses.set(procs, result);
+  return result;
+}
+
+/** Between calls, whether the run is writing text (its message's last part)
+ *  or anything else, which is the model at work on what it has. Undefined
+ *  with no live message to read it from. */
+function betweenOf(message: MessageLike | undefined): SubagentTelemetry['between'] {
+  if (!message) return undefined;
+  const segments = message.contentSegments;
+  const last = Array.isArray(segments) ? (segments.at(-1) as { type?: unknown } | null) : null;
+  return last?.type === 'text' ? 'writing' : 'thinking';
 }
 
 /** The text after a message's last tool call, as written. */
@@ -227,7 +258,10 @@ export function resolveSubagentTelemetry(
     owned.to === Infinity
     && run?.finishedAtMs === undefined
     && !isTerminalStatus(normalizeWireStatus(subagentData ? subagentData.status : history?.status));
-  const currentToolCall = live ? currentToolCallOf(sdMessages) : undefined;
+  const liveMessage = live ? liveMessageOf(sdMessages, owned) : undefined;
+  const open = live ? openCallsOf(liveMessage) : undefined;
+  const currentToolCall = open?.call;
+  const between = open && open.count === 0 ? betweenOf(liveMessage) : undefined;
   // No closing prose while the run is live: it would change with every chunk
   // and say nothing the row's status does not.
   const runFields = (messages: MessageLike[] | undefined): Partial<SubagentTelemetry> => {
@@ -237,6 +271,8 @@ export function resolveSubagentTelemetry(
       ...(run?.finishedAtMs !== undefined ? { finishedAtMs: run.finishedAtMs } : {}),
       ...(run?.model ? { model: run.model } : {}),
       ...(currentToolCall ? { currentToolCall } : {}),
+      ...(open && open.count > 1 ? { runningCalls: open.count } : {}),
+      ...(between ? { between } : {}),
       ...(lastText !== undefined ? { lastText } : {}),
       ...(live && run?.startedAtMs !== undefined ? { running: true as const } : {}),
     };
