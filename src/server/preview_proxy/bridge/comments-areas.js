@@ -245,15 +245,6 @@ function overlap(r, area) {
   return w > 0 && h > 0 ? w * h : 0;
 }
 
-/** @param {BridgeEdges | null} a @param {BridgeEdges} r */
-function union(a, r) {
-  if (!a) return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-  return {
-    left: Math.min(a.left, r.left), top: Math.min(a.top, r.top),
-    right: Math.max(a.right, r.right), bottom: Math.max(a.bottom, r.bottom),
-  };
-}
-
 /** @param {BridgeEdges} u */
 function sized(u) {
   return { left: u.left, top: u.top, width: u.right - u.left, height: u.bottom - u.top };
@@ -406,11 +397,6 @@ function clipWords(text, limit) {
   return text.length <= limit ? text : cutAtWord(text, limit);
 }
 
-/** @param {number} n */
-function fine(n) {
-  return Math.round(Math.min(1, Math.max(0, n)) * 10000) / 10000;
-}
-
 // An area's anchor: each element as an element anchor names it, and a
 // label naming the parts. Only the elements a later version could find
 // again count: by a path, or by their words. Null when fewer than two can.
@@ -473,10 +459,10 @@ function areaAnchor(els, release) {
   var width = Math.max(1, doc.scrollWidth);
   var height = Math.max(1, doc.scrollHeight);
   anchor.rect = {
-    x: fine((r.left + window.scrollX) / width),
-    y: fine((r.top + window.scrollY) / height),
-    w: fine(r.width / width),
-    h: fine(r.height / height),
+    x: placeFraction((r.left + window.scrollX) / width),
+    y: placeFraction((r.top + window.scrollY) / height),
+    w: placeFraction(r.width / width),
+    h: placeFraction(r.height / height),
   };
   return { anchor: anchor, rect: box(r), els: kept };
 }

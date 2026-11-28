@@ -65,6 +65,14 @@ export function parseThreadIdFromContentLocation(
   }
 }
 
+/**
+ * A refused stream request. `reason` is set only where its words were written
+ * for the reader (the server's message, or this client's own sentence for a
+ * refusal it words itself), so a surface can show it without guessing from
+ * the message whether it is a transport line.
+ */
+export type StreamRequestError = Error & { status?: number; errorInfo?: Record<string, unknown>; reason?: string };
+
 export interface StreamResult {
   disconnected: boolean;
   aborted: boolean;
@@ -119,24 +127,27 @@ export async function streamFetch(
     if (res.status === 429) {
       let detail: Record<string, unknown> = {};
       try { detail = await res.json(); } catch { /* ignore */ }
-      const err: Error & { status?: number; rateLimitInfo?: Record<string, unknown>; retryAfter?: number | null } =
+      const err: StreamRequestError & { rateLimitInfo?: Record<string, unknown>; retryAfter?: number | null } =
         new Error((detail?.detail as Record<string, unknown>)?.message as string || 'Rate limit exceeded');
       err.status = 429;
+      err.reason = err.message;
       err.rateLimitInfo = (detail?.detail as Record<string, unknown>) || {};
       err.retryAfter = parseInt(res.headers.get('Retry-After') as string, 10) || null;
       throw err;
     }
     // Handle 413 (payload too large) with user-friendly message
     if (res.status === 413) {
-      const err: Error & { status?: number } = new Error('Files too large. Try smaller files or fewer attachments.');
+      const err: StreamRequestError = new Error('Files too large. Try smaller files or fewer attachments.');
       err.status = 413;
+      err.reason = err.message;
       throw err;
     }
     const edge = edgeBlockKind(res.status, (name) => res.headers.get(name));
     if (edge) {
       if (sameSession()) noteEdgeBlock(edge, opts.method || 'GET', url, res.headers.get('cf-ray'));
-      const err: Error & { status?: number; edgeBlocked?: EdgeBlockKind } = new Error(edgeBlockMessage(edge));
+      const err: StreamRequestError & { edgeBlocked?: EdgeBlockKind } = new Error(edgeBlockMessage(edge));
       err.status = res.status;
+      err.reason = err.message;
       err.edgeBlocked = edge;
       throw err;
     }
@@ -146,6 +157,9 @@ export async function streamFetch(
     }
     // Read response body for error detail
     let detail = '';
+    // Only a structured message or a plain-text detail is the server talking
+    // to the reader; a detail printed as JSON is not.
+    let reason: string | null = null;
     let errorInfo: Record<string, unknown> | null = null;
     const text = await res.text().catch(() => '');
     try {
@@ -154,16 +168,18 @@ export async function streamFetch(
         // Structured error detail (e.g., { message, type, link })
         errorInfo = body.detail as Record<string, unknown>;
         detail = (errorInfo.message as string) || '';
+        reason = typeof errorInfo.message === 'string' ? errorInfo.message : null;
       } else {
         detail = typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail || body);
+        reason = typeof body?.detail === 'string' ? body.detail : null;
       }
     } catch { /* ignore parse errors */ }
     if (res.status === 403) noteIfSuspended(errorInfo);
     console.error(`[api] ${opts.method || 'GET'} ${url} failed:`, res.status, detail);
-    const err: Error & { status?: number; errorInfo?: Record<string, unknown> } =
-      new Error(detail || `HTTP error! status: ${res.status}`);
+    const err: StreamRequestError = new Error(detail || `HTTP error! status: ${res.status}`);
     err.status = res.status;
     if (errorInfo) err.errorInfo = errorInfo;
+    if (reason?.trim()) err.reason = reason;
     throw err;
   }
 
@@ -321,5 +337,5 @@ function duplicateRequestError(frame: Record<string, unknown>): Error & { status
     errorInfo.thread_id = frame.run_thread_id || frame.thread_id;
     if (frame.steered === true) errorInfo.steered = true;
   }
-  return Object.assign(new Error(message || 'HTTP error! status: 409'), { status: 409, errorInfo });
+  return Object.assign(new Error(message || 'HTTP error! status: 409'), { status: 409, errorInfo, ...(message.trim() ? { reason: message } : {}) });
 }

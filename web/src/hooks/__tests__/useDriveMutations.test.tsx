@@ -1,7 +1,7 @@
 import { act, waitFor } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearHistory, getAttribution, getEntry, moveEntry, trashEntry } from '@/api/drive';
+import { clearHistory, getAttribution, getEntry, moveEntry, restoreTrash, trashEntry } from '@/api/drive';
 import { queryKeys } from '@/lib/queryKeys';
 import { renderHookWithProviders } from '@/test/utils';
 import { useDriveAttribution, useDriveMutations } from '../useDrive';
@@ -11,6 +11,7 @@ vi.mock('@/api/drive', async (importOriginal) => ({
   getEntry: vi.fn(),
   moveEntry: vi.fn(),
   trashEntry: vi.fn(),
+  restoreTrash: vi.fn(),
   clearHistory: vi.fn(),
   getAttribution: vi.fn(),
 }));
@@ -61,5 +62,25 @@ describe("useDriveMutations: a clear and the entry's attribution", () => {
 
   it('keys it by the head seq too, so a restore to earlier bytes is read afresh', () => {
     expect(queryKeys.drive.attribution('personal', 'e1', 6, 'a')).not.toEqual(queryKeys.drive.attribution('personal', 'e1', 5, 'a'));
+  });
+});
+
+describe('useDriveMutations: a file going to the trash or coming back', () => {
+  it("reads the comment markers and every chat's queue again, so its comments leave them or return", async () => {
+    const { result, queryClient } = openOn('a/x.md');
+    await waitFor(() => expect(result.current.entry.isSuccess).toBe(true));
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const read = () => invalidate.mock.calls.map(([f]) => f?.queryKey);
+
+    vi.mocked(trashEntry).mockResolvedValue('t1');
+    await act(() => result.current.m.trash.mutateAsync('a/x.md'));
+    expect(read()).toContainEqual(queryKeys.drive.commentCountsAll);
+    expect(read()).toContainEqual(queryKeys.artifacts.allQueued);
+
+    invalidate.mockClear();
+    vi.mocked(restoreTrash).mockResolvedValue([]);
+    await act(() => result.current.m.restore.mutateAsync('t1'));
+    expect(read()).toContainEqual(queryKeys.drive.commentCountsAll);
+    expect(read()).toContainEqual(queryKeys.artifacts.allQueued);
   });
 });

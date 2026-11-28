@@ -1,33 +1,30 @@
 import type React from 'react';
 import { useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import type { UseQueryResult } from '@tanstack/react-query';
-import { RotateCcw } from 'lucide-react';
 import { apiErrorStatus } from '@/api/errors';
-import { HeaderButton } from '@/components/mcp/McpPrimitives';
 import { useDriveEntry } from '@/hooks/useDrive';
-import { useLocale } from '@/hooks/useLocale';
-import { useNow } from '@/hooks/useNow';
-import { relativeTime } from '@/lib/format';
+import type { DriveCommentAsk } from '@/lib/driveLinks';
 import { cn } from '@/lib/utils';
 import type { FileBody as Body } from '@/pages/ChatAgent/components/filePanel/fileBody';
 import type { FileError } from '@/pages/ChatAgent/components/filePanel/fileErrors';
 import type { OpenFileHandler } from '@/pages/ChatAgent/utils/fileLocation';
+import { CommentSurfaceContext } from '@/pages/ChatAgent/components/viewers/html/comments/commentSurface';
 import type { DriveEntry, DriveVersion, DriveVersions } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
-import { atVersion, driveBodyMode, noneCategory, showsExtract, useDriveBody } from '../driveBody';
+import { bodyTakesComments } from '../bodyComments';
+import { noneCategory, showsExtract } from '../driveBody';
 import { nameOf } from '../drivePaths';
 import { fileAddress, memoState, resolveFileView, type FileView, type MemoView } from '../memoMarks';
 import type { DriveEditor } from '../useDriveEditor';
-import { whoLabel } from '../who';
-import { DriveBar } from './DriveBar';
+import { useShownDocument } from '../useShownDocument';
+import { commentScope, useDriveFileComments } from '../useDriveFileComments';
+import { FileBars } from './FileBars';
 import { FileBody, type BodyView } from './FileBody';
 import { FileHeader } from './FileHeader';
 import { MemoAuthors } from './MemoAuthors';
 import { MemoChanges } from './MemoChanges';
 import { MemoHeader } from './MemoHeader';
 import { MemoRecord } from './MemoRecord';
-import { UndoSave } from './UndoSave';
 
 function bodyError(err: unknown): FileError | null {
   if (!err) return null;
@@ -40,7 +37,9 @@ function bodyError(err: unknown): FileError | null {
  * record, the changes between versions, who wrote what); an ordinary file
  * whose last save can be undone says so under its header.
  */
-export function DriveFilePane({ path, entry, entryError, onRetry, fileView, versions: versionsQuery, mobile, editor, head, imageLoader, onOpenLink }: {
+export function DriveFilePane({
+  path, entry, entryError, onRetry, fileView, versions: versionsQuery, mobile, editor, head, imageLoader, onOpenLink, commentAsk = null, onCommentAsked,
+}: {
   path: string;
   entry: DriveEntry | undefined;
   entryError: 'gone' | 'failed' | null;
@@ -55,32 +54,38 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
   head: UseQueryResult<Body>;
   imageLoader: (path: string) => Promise<string>;
   onOpenLink: OpenFileHandler;
+  /** What of the file's comments the address asks to show, once: one comment, or the list. */
+  commentAsk?: DriveCommentAsk | null;
+  onCommentAsked?: () => void;
 }) {
-  const { t } = useTranslation();
-  const locale = useLocale();
-  const now = useNow();
-  const { space, actions, go, leaveEditor, ask } = useDriveContext();
+  const { space, actions, go, leaveEditor, ask, host } = useDriveContext();
   // The same read the page holds for this file, so a Word text can ask it again.
   const entryQuery = useDriveEntry(space, path);
   const { session } = editor;
   const [htmlSource, setHtmlSource] = useState(false);
   const [comparing, setComparing] = useState<string | null>(null);
+  // The body a viewer failed on (a PDF or workbook it could not parse, a page framed with no bridge), by its bytes.
+  const [failedBody, setFailedBody] = useState<string | null>(null);
 
   const state = memoState(entry);
   const mark = state.kind === 'memo' ? state.mark : null;
   const versions = versionsQuery.data?.versions;
   const kept = versions?.map((v) => v.seq);
   const { view, version, against } = fileView;
-  const docVersion = view === 'document' ? version : null;
-  const viewed: DriveVersion | null = docVersion !== null ? versions?.find((v) => v.seq === docVersion) ?? null : null;
-
-  // A past version opens by its own size and kind of bytes.
-  const shownEntry = entry ? atVersion(entry, viewed) : null;
-  const old = useDriveBody(space, entry && viewed ? shownEntry : null, viewed ? { seq: viewed.seq, sha: viewed.sha256 } : null);
-  const shown = viewed ? old : head;
-  const mode = shownEntry ? driveBodyMode(shownEntry) : 'none';
+  const shownDocument = useShownDocument(space, entry, fileView, versionsQuery.data, head);
+  const { docVersion, viewed, shownEntry, body: shown, mode, bodyKey } = shownDocument;
   const isText = !!shownEntry?.is_text && mode !== 'none';
   const isHtml = mode === 'html';
+
+  const comments = useDriveFileComments({
+    entry,
+    scope: commentScope({ space, entry, view, shown: shownDocument, editing: !!session }),
+    versions,
+    ask: commentAsk,
+    onAsked: () => onCommentAsked?.(),
+    onSeeVersion: (seq, commentId) => go({ file: path, version: seq, ask: { comment: commentId } }),
+    host,
+  });
 
   // A comparison with theirs belongs to the conflict it was opened on.
   const conflictKey = session ? `${session.sitting}:${session.conflict}` : null;
@@ -105,59 +110,6 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
     if (!entry || !viewed) return;
     if (await actions.restoreVersion(entry, viewed.seq)) goTo({ view: 'document', version: null });
   };
-
-  const theirsBy = whoLabel(t, entry?.modified_by);
-  const bars: React.ReactNode[] = [];
-  if (session?.conflict && editor.theirs) {
-    bars.push(
-      <DriveBar
-        key="conflict"
-        role="alert"
-        actions={(
-          <>
-            <HeaderButton variant="ghost" onClick={() => setComparing(compareTheirs ? null : conflictKey)}>
-              {compareTheirs ? t('drive:conflict.hideCompare') : t('drive:conflict.compare')}
-            </HeaderButton>
-            <HeaderButton onClick={editor.takeTheirs}>{t('drive:conflict.takeTheirs')}</HeaderButton>
-            <HeaderButton variant="primary" onClick={editor.keepMine} disabled={session.save !== 'idle'}>{t('drive:conflict.keepMine')}</HeaderButton>
-          </>
-        )}
-      >
-        <strong>{t('drive:conflict.title')}</strong>{' '}{t('drive:conflict.body', { who: theirsBy })}
-      </DriveBar>,
-    );
-  } else if (editor.behind && editor.dirty) {
-    bars.push(
-      <DriveBar key="behind" role="status" actions={<HeaderButton onClick={editor.review}>{t('drive:edit.review')}</HeaderButton>}>
-        {t('drive:edit.changedUnder', { who: theirsBy })}
-      </DriveBar>,
-    );
-  }
-  if (!session && viewed && view === 'document') {
-    bars.push(
-      <DriveBar
-        key="version"
-        actions={(
-          <>
-            <HeaderButton icon={RotateCcw} onClick={() => void restore()} disabled={actions.pending.restoreVersion} title={t('drive:versions.restoreHint')}>
-              {t('drive:actions.restore')}
-            </HeaderButton>
-            <HeaderButton variant="ghost" onClick={() => goTo({ view: 'document', version: null })}>{t('drive:versions.backToCurrent')}</HeaderButton>
-          </>
-        )}
-      >
-        {t('drive:versions.viewing', { seq: viewed.seq, when: relativeTime(viewed.created_at, locale, now), who: whoLabel(t, viewed.actor) })}
-      </DriveBar>,
-    );
-  }
-  if (!session && entry && state.kind !== 'memo' && view === 'document') bars.push(<UndoSave key="undo" entry={entry} />);
-  if (entry && state.kind === 'former' && view === 'record') {
-    bars.push(
-      <DriveBar key="was-memo" role="status" actions={<HeaderButton variant="ghost" onClick={() => goTo({ view: 'document' })}>{t('drive:record.backToFile')}</HeaderButton>}>
-        {t('drive:record.wasMemo')}
-      </DriveBar>,
-    );
-  }
 
   const name = entry?.name ?? nameOf(path);
 
@@ -191,7 +143,17 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
       return { kind: 'extract', entry, seq: viewed?.seq ?? entry.version, sha: shownEntry.sha256, source };
     }
     const content = shown.data?.content;
-    if (isHtml && content != null) return { kind: 'html', name: entry.name, content, source: htmlSource };
+    if (isHtml && content != null) {
+      return {
+        kind: 'html',
+        name: entry.name,
+        content,
+        source: htmlSource,
+        page: shownEntry?.sha256 ? { entryId: entry.id, sha: shownEntry.sha256, seq: viewed?.seq ?? null, at: viewed?.seq ?? entry.version } : null,
+        comments: comments.target,
+        onDocumentFailed: (failed) => setFailedBody(failed ? bodyKey : null),
+      };
+    }
     return {
       kind: 'document',
       entry,
@@ -203,6 +165,8 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
         : bodyError(shown.error),
       onRetry: () => void shown.refetch(),
       seq: viewed?.seq ?? null,
+      comments: comments.target,
+      onDocumentFailed: (failed) => setFailedBody(failed ? bodyKey : null),
     };
   })();
 
@@ -232,36 +196,49 @@ export function DriveFilePane({ path, entry, entryError, onRetry, fileView, vers
         }
       }}
     >
-      <FileHeader
-        path={path}
-        entry={entry}
-        mobile={mobile}
-        editor={editor}
-        edit={!editable ? 'none' : head.data?.version ? 'ready' : 'waiting'}
-        html={view === 'document' && isHtml && docVersion === null ? { source: htmlSource, toggle: () => setHtmlSource((s) => !s) } : null}
-      >
-        {mark && entry && (
-          <MemoHeader
-            mark={mark}
-            head={headSeq}
-            // Who wrote what reads the head's own text, as the server's attribution does.
-            isText={versions?.find((v) => v.seq === headSeq)?.text === 'text'}
-            view={view}
-            onView={(next) => goTo({ view: next, version: next === 'document' || next === 'changes' ? version : null })}
-            onEdit={() => ask.memo(entry, 'edit')}
-            onViewFinal={() => goTo({ view: 'document', version: mark.final_seq })}
-            onMakeFinal={() => void actions.setMemo(entry, { status: 'final', ifMatch: entry.sha256 })}
-            busy={actions.pending.setMemo}
-          />
-        )}
-      </FileHeader>
-      {bars}
-      <div className="drive-file-body">
-        <div className={cn('drive-file-main', fill && 'is-fill')}>
-          {/* A new view fades in over the one it replaces rather than cutting to it. */}
-          <div key={view} className="drive-file-view">{main}</div>
+      {/* One surface for the header's comment tools and the body's layer: they read the same comments. */}
+      <CommentSurfaceContext value={comments.surface}>
+        <FileHeader
+          path={path}
+          entry={entry}
+          mobile={mobile}
+          editor={editor}
+          edit={!editable ? 'none' : head.data?.version && !head.isPlaceholderData ? 'ready' : 'waiting'}
+          html={view === 'document' && isHtml && docVersion === null ? { source: htmlSource, toggle: () => setHtmlSource((s) => !s) } : null}
+          // The tools show only over a body the comment layer draws on.
+          comments={bodyTakesComments(documentView, failedBody !== null && failedBody === bodyKey) ? comments.tools : null}
+        >
+          {mark && entry && (
+            <MemoHeader
+              mark={mark}
+              head={headSeq}
+              // Who wrote what reads the head's own text, as the server's attribution does.
+              isText={versions?.find((v) => v.seq === headSeq)?.text === 'text'}
+              view={view}
+              onView={(next) => goTo({ view: next, version: next === 'document' || next === 'changes' ? version : null })}
+              onEdit={() => ask.memo(entry, 'edit')}
+              onViewFinal={() => goTo({ view: 'document', version: mark.final_seq })}
+              onMakeFinal={() => void actions.setMemo(entry, { status: 'final', ifMatch: entry.sha256 })}
+              busy={actions.pending.setMemo}
+            />
+          )}
+        </FileHeader>
+        <FileBars
+          entry={entry}
+          view={view}
+          viewed={viewed}
+          editor={editor}
+          compare={{ on: compareTheirs, toggle: () => setComparing(compareTheirs ? null : conflictKey) }}
+          onRestore={() => void restore()}
+          onBackToDocument={() => goTo({ view: 'document', version: null })}
+        />
+        <div className="drive-file-body">
+          <div className={cn('drive-file-main', fill && 'is-fill')}>
+            {/* A new view fades in over the one it replaces rather than cutting to it. */}
+            <div key={view} className="drive-file-view">{main}</div>
+          </div>
         </div>
-      </div>
+      </CommentSurfaceContext>
     </section>
   );
 }

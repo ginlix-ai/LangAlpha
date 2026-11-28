@@ -6,6 +6,7 @@ import structlog
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
+from ptc_agent.core.paths import drive_file_path
 from src.tools.turn_tool import turn_tool
 
 logger = structlog.get_logger(__name__)
@@ -93,7 +94,13 @@ def create_reply_to_comment_tool() -> BaseTool:
             thread_id=str(thread_id),
             comment_ids=[comment_id],
         )
-        on = f"the {reply.path} chart" if reply.kind == "chart" else reply.path
+        if reply.kind == "chart":
+            on = f"the {reply.place} chart"
+        elif reply.kind == "drive":
+            # Where the comment named it, the same in every folder.
+            on = drive_file_path(reply.place)
+        else:
+            on = reply.place
         where = f"comment {reply.number} on {on}"
         if reply.kept_open:
             content = (

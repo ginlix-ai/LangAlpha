@@ -48,6 +48,7 @@ export function ImageFile({ src, alt, comments, onOpen }: {
           strategy={strategy}
           target={comments}
           modeHint={t('pageViewer:comments.modeHintImage')}
+          touchHint={t('pageViewer:comments.modeHintImageTouch')}
           pictures={pictures}
           // The box drawn stays in view.
           keepSpotClear

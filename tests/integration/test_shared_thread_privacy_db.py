@@ -510,10 +510,10 @@ async def test_a_colleagues_comment_words_keep_the_thread_shared(
         delivery="queued", thread_id=s["shared"], caller=LEE,
     )
     assert (await thread_reach.set_shared(s["shared"], MAYA, False))[0] == "others_sent"
-    assert await delivery.claim_comments(
+    assert (await delivery.claim_comments(
         user_id=HOLDER, thread_id=s["shared"], comment_ids=[lees.comment_id],
-        request_key=str(uuid.uuid4()), caller=MAYA,
-    )
+        request_key=str(uuid.uuid4()), caller=MAYA, drive_on=True,
+    )).comments
     assert (await thread_reach.set_shared(s["shared"], MAYA, False))[0] == "others_sent"
     async with patched_get_db_connection() as conn:
         assert (await _visibility(conn, s["shared"])).others_sent
@@ -551,10 +551,10 @@ async def test_a_colleagues_send_does_not_carry_a_comment_queued_for_a_private_t
         user_id=HOLDER, artifact_id=artifact, anchor={"kind": "text", "quote": "Orchid"},
         body="for my draft", delivery="queued", thread_id=s["private"], caller=MAYA,
     )
-    assert await delivery.claim_comments(
+    assert (await delivery.claim_comments(
         user_id=HOLDER, thread_id=s["shared"], comment_ids=[mayas.comment_id],
-        request_key=str(uuid.uuid4()), caller=LEE,
-    ) == []
+        request_key=str(uuid.uuid4()), caller=LEE, drive_on=True,
+    )).comments == []
     async with patched_get_db_connection() as conn:
         row = await (
             await conn.execute(
@@ -563,8 +563,8 @@ async def test_a_colleagues_send_does_not_carry_a_comment_queued_for_a_private_t
             )
         ).fetchone()
     assert tuple(row.values() if isinstance(row, dict) else row) == ("queued", s["private"])
-    (claimed,) = await delivery.claim_comments(
+    (claimed,) = (await delivery.claim_comments(
         user_id=HOLDER, thread_id=s["private"], comment_ids=[mayas.comment_id],
-        request_key=str(uuid.uuid4()), caller=MAYA,
-    )
+        request_key=str(uuid.uuid4()), caller=MAYA, drive_on=True,
+    )).comments
     assert claimed.delivered == ["for my draft"]

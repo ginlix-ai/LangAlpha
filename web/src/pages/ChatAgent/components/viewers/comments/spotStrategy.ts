@@ -7,13 +7,9 @@
  */
 import type { AreaAnchor, ArtifactCommentAnchor, BlockAnchor, CellsAnchor, ChartAnchor, PartEntry, RegionAnchor, TextAnchor } from '@/types/artifacts';
 
-/** A box in client coordinates. */
-export interface Edges {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-}
+import type { Edges } from './pinRoom';
+
+export type { Edges };
 
 /**
  * Where a stored anchor is now: each listed part's spots (null where not

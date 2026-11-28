@@ -288,7 +288,7 @@ function revive(t: PersistedTab): FileTab {
 
 function toPersisted({ id: _id, ...body }: PersistableTab): PersistedTab {
   if (body.kind === 'drive') {
-    const { tab: _tab, version: _version, against: _against, ...place } = body.loc;
+    const { tab: _tab, version: _version, against: _against, ask: _ask, ...place } = body.loc;
     return { ...body, loc: place };
   }
   if (body.kind !== 'file') return body;
@@ -407,9 +407,12 @@ function drivePlaceKey(loc: DriveLocation): string {
   return `${loc.space ?? ''}|${where}`;
 }
 
-/** Whether `loc` names a memo's view or a version, which an open moves the tab to. */
+/**
+ * Whether `loc` names a memo's view or a version, which an open moves the
+ * tab to. A comment asked for is on the document, so it names that view.
+ */
 function namesView(loc: DriveLocation): boolean {
-  return loc.tab != null || loc.version != null || loc.against != null;
+  return loc.tab != null || loc.version != null || loc.against != null || loc.ask != null;
 }
 
 /** Remake a tab as something else, with the step it left kept to come back to. */

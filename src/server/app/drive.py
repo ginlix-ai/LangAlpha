@@ -28,11 +28,14 @@ from fastapi.responses import StreamingResponse
 
 from src.config.core import get_infrastructure_config
 from src.server.app.drive_http import byte_range, etag_of, receive
+from src.server.database import artifacts as artifacts_db
 from src.server.database.pool import DATABASE_UNAVAILABLE
 from src.server.dependencies import cli_approval
 from src.server.dependencies.principal import Principal, computer_call, require_scopes
 from src.server.models.drive import (
     ChangesOut,
+    CommentCountOut,
+    CommentCountsOut,
     EntriesOut,
     EntryOut,
     HistoryClearedOut,
@@ -55,9 +58,10 @@ from src.server.models.drive import (
 )
 from src.server.services import drive
 from src.server.services.drive.errors import http_status
-from src.server.services.drive import Actor, Changes, DriveError, Entry, Version
+from src.server.services.drive import Actor, Changes, Content, DriveError, Entry, Version
 from src.server.services.drive import extract, uploads
 from src.server.services.shared_workspaces import access as shared_access
+from src.server.preview_proxy.page_bridge import Bridge, bridge_for, bridged, parse_inject
 from src.server.utils.api import database_unavailable
 from src.server.utils.uploads import read_body
 from src.utils.storage import browser_uploads_enabled
@@ -161,7 +165,7 @@ async def get_entry(
 ) -> EntryOut:
     _one_of(path, id)
     with _Errors("read a Drive entry"):
-        entry = await drive.stat(await drive.open(principal.user_id, space), path, entry_id=id)
+        entry = await drive.look_up(await drive.open(principal.user_id, space), path, entry_id=id)
         return await _entry_out(principal.user_id, entry)
 
 
@@ -211,11 +215,20 @@ async def get_content(
     id: str | None = None,
     seq: int | None = Query(None, ge=1),
     download: bool = False,
+    inject: str | None = Query(None, max_length=16),
 ) -> Response:
+    """A file's bytes. ``inject=comments`` (or ``view``) gives an HTML file's
+    text with the page bridge first in its head, for the app's frame; any
+    other file comes as it is."""
     _one_of(path, id)
+    asked = parse_inject(inject)
     with _Errors("read a Drive file"):
         sp = await drive.open(principal.user_id, space)
         entry, found = await drive.content(sp, path, entry_id=id, seq=seq)
+        if asked is not None and not download and _framed_as_page(entry.name, found):
+            if found.size > _BRIDGED_MAX_BYTES:
+                raise _http(DriveError("too_large", "The page is too large to open here"))
+            return await _bridged(found, bridge_for(asked))
     media = found.content_type
     if found.is_text and media.startswith("text/") and "charset" not in media:
         media += "; charset=utf-8"
@@ -247,6 +260,60 @@ async def get_content(
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{found.size}"
     return StreamingResponse(
         drive.stream(found, start, end), status_code=status, media_type=media, headers=headers
+    )
+
+
+#: The most a bridged page is read whole for, as a published version holds.
+_BRIDGED_MAX_BYTES = 25 * 1024 * 1024
+
+_PAGE_NAMES = (".html", ".htm")
+
+
+def _framed_as_page(name: str, found: Content) -> bool:
+    """Whether the app frames this file as a page. It goes by the name, and
+    frames the text itself, which a browser then parses as HTML whatever type
+    the bytes were stored under (a note renamed to ``.html``, a page uploaded
+    as plain text). So the name decides here too, or such a page would be
+    framed with no bridge."""
+    return found.is_text and name.lower().endswith(_PAGE_NAMES)
+
+
+async def _bridged(found: Content, bridge: Bridge) -> Response:
+    """An HTML file whole, with ``bridge`` in its head. Its ETag names the
+    bridge, so the framed copy and the bytes as they are never stand for
+    each other in a cache. A page in another encoding takes no bridge
+    (``bridged``), and the read says so rather than hand back bytes the app
+    would frame as bridged and wait on."""
+    document = b"".join([chunk async for chunk in drive.stream(found, 0, found.size)])
+    data = await bridged(document, bridge)
+    if data is document:
+        raise _http(DriveError("not_text", "The page is not UTF-8, so it opens as it is"))
+    media = found.content_type
+    if "charset" not in media:
+        media += "; charset=utf-8"
+    return Response(
+        content=data,
+        media_type=media,
+        headers={
+            "ETag": f'"{found.sha256}.{bridge.digest}"',
+            "Cache-Control": "private, no-cache",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/{space}/comment-counts", response_model=CommentCountsOut)
+async def comment_counts(space: str, principal: ReadPrincipal) -> CommentCountsOut:
+    """Each live file with open comments or an unread answer, for the
+    markers in the Files and Memos lists."""
+    with _Errors("count Drive comments"):
+        sp = await drive.open(principal.user_id, space)
+        found = await artifacts_db.drive_comment_counts(
+            user_id=principal.user_id, space_id=sp.space_id
+        )
+    return CommentCountsOut(
+        entries={k: CommentCountOut.model_validate(v) for k, v in found.items()}
     )
 
 

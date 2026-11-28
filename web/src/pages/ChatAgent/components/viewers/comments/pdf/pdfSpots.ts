@@ -6,9 +6,20 @@
  * A drag off the words draws a box on the page instead (`pdfRegions`).
  */
 import type { TextAnchor } from '@/types/artifacts';
-import { MAX_SELECTION, clip, findQuote, squash, wordsAround } from '../spotKit';
+import { MAX_SELECTION, type Nearness, type TextSource, clip, findQuote, squash, textSource, wordsAround } from '../spotKit';
+import { type Reading, placeFraction } from '../pageText';
 import type { Found, SpotStrategy } from '../spotStrategy';
 import { regionSpots, type RegionSurfaces } from '../region/regionSpots';
+import { seenText } from './seenText';
+
+/**
+ * `seenText` as the quote search applies it, a character at a time. A text
+ * the whole of which `seenText` leaves as it is has no character it changes:
+ * each change it makes (a NUL dropped, a radical read as its ideograph, a run
+ * of compatibility forms normalized, which a normalized run can never equal)
+ * changes the whole text too.
+ */
+const SEEN: Reading = Object.assign((text: string) => seenText(text), { same: (text: string) => seenText(text) === text });
 
 const PAGE = '.pdf-page[data-pdf-slot]';
 const LAYER = '.textLayer';
@@ -28,26 +39,56 @@ function drawn(layer: Element | null): layer is Element {
 }
 
 /**
- * The words in a range as a reader reads them. pdf.js ends a line with a
- * `<br>` rather than a space, which `Range.toString` drops, so two lines'
- * words would run together in what the agent reads.
+ * A character of a script written without spaces between its words: Han,
+ * kana, CJK punctuation and full-width forms (CSS Text's East Asian wide
+ * characters, Hangul left out, since Korean spaces its words).
+ */
+const UNSPACED = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3000-\u303f\u30fc\uff00-\uffef]/u;
+
+/**
+ * What a line break between `before` and `after` reads as: nothing between
+ * two characters of a script with no spaces between its words, as CSS
+ * collapses a segment break there, else a space. Each side's own character
+ * decides, so a break between Han and Latin is a space.
+ */
+function lineBreak(before: string, after: string): string {
+  const last = String.fromCodePoint(before.codePointAt(before.length - 1) ?? 32);
+  const tail = before.length > 1 && /[\udc00-\udfff]/.test(last) ? before.slice(-2) : last;
+  const first = String.fromCodePoint(after.codePointAt(0) ?? 32);
+  return UNSPACED.test(tail) && UNSPACED.test(first) ? '' : ' ';
+}
+
+/**
+ * The words in a range as a reader reads them (`seenText`). pdf.js ends a
+ * line with a `<br>` rather than a space, which `Range.toString` drops, so
+ * two lines' words would run together in what the agent reads; between two
+ * Chinese or Japanese characters the break is no space at all. A quote saved
+ * with a space there is found all the same, since quotes are compared with
+ * every space dropped (`normal`).
  */
 export function wordsIn(range: Range): string {
   const root = range.commonAncestorContainer;
-  if (root instanceof Text) return root.data.slice(range.startOffset, range.endOffset);
-  const out: string[] = [];
+  if (root instanceof Text) return seenText(root.data.slice(range.startOffset, range.endOffset));
+  // Text read so far, and a break waiting for the text after it.
+  let out = '';
+  let broken = false;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     if (!range.intersectsNode(n)) continue;
     if (n instanceof Text) {
       const from = n === range.startContainer ? range.startOffset : 0;
       const to = n === range.endContainer ? range.endOffset : n.data.length;
-      out.push(n.data.slice(from, to));
+      const text = seenText(n.data.slice(from, to));
+      if (!text) continue;
+      if (broken) out += lineBreak(out, text);
+      broken = false;
+      out += text;
     } else if ((n as Element).localName === 'br') {
-      out.push(' ');
+      broken = true;
     }
   }
-  return out.join('');
+  // A break with nothing after it still ends the line.
+  return broken ? `${out} ` : out;
 }
 
 /** `range` kept to one layer's words: a selection running onto the next page is its first page's. */
@@ -60,7 +101,44 @@ function within(range: Range, layer: Element): Range {
   return r;
 }
 
+type PagePlace = NonNullable<TextAnchor['rect']>;
+
+/**
+ * Where `range` sits on its page, as fractions of the page's text layer,
+ * which covers the page at any zoom: a page of the same line over and over
+ * tells its lines apart by this alone. Null for a layer not laid out.
+ */
+export function placeOn(range: Range, layer: Element): PagePlace | null {
+  // A document with no layout (a test's) has no box for a range.
+  if (typeof range.getBoundingClientRect !== 'function') return null;
+  const page = layer.getBoundingClientRect();
+  const r = range.getBoundingClientRect();
+  if (!page.width || !page.height || (!r.width && !r.height)) return null;
+  const x = placeFraction((r.left - page.left) / page.width);
+  const y = placeFraction((r.top - page.top) / page.height);
+  return { x, y, w: placeFraction(Math.min(r.width / page.width, 1 - x)), h: placeFraction(Math.min(r.height / page.height, 1 - y)) };
+}
+
+/** How far a place on the page is from where words sat: their top-left corners apart, as fractions of the page. */
+function awayFrom(was: PagePlace, layer: Element): Nearness {
+  return ({ range }) => {
+    const now = placeOn(range(), layer);
+    return now ? Math.hypot(now.x - was.x, now.y - was.y) : Infinity;
+  };
+}
+
 export function pdfSpots(root: Element): SpotStrategy {
+  // Each text layer read once in a pass of finds, however many comments are on its page.
+  const sources = new Map<Element, TextSource>();
+  const sourceOf = (layer: Element): TextSource => {
+    let source = sources.get(layer);
+    if (!source) {
+      source = textSource(layer, { reading: SEEN });
+      sources.set(layer, source);
+    }
+    return source;
+  };
+
   const findWords = (anchor: TextAnchor): Found | null => {
     if (!anchor.quote || !anchor.page) return null;
     // No page laid out yet: the document is loading, or loading a newer copy.
@@ -69,7 +147,7 @@ export function pdfSpots(root: Element): SpotStrategy {
     if (!slot) return null;
     const layer = slot.querySelector(LAYER);
     if (!drawn(layer)) return { parked: slot };
-    const range = findQuote(layer, anchor);
+    const range = findQuote(sourceOf(layer), anchor, anchor.rect && awayFrom(anchor.rect, layer));
     return range && { range };
   };
 
@@ -86,11 +164,26 @@ export function pdfSpots(root: Element): SpotStrategy {
       const kept = within(range, on.layer);
       const quote = squash(wordsIn(kept));
       if (!quote) return null;
-      return { kind: 'text', page: on.page, quote: clip(quote, MAX_SELECTION), ...wordsAround(kept, on.layer, on.layer, wordsIn) };
+      const rect = placeOn(kept, on.layer);
+      return {
+        kind: 'text',
+        page: on.page,
+        quote: clip(quote, MAX_SELECTION),
+        ...wordsAround(kept, on.layer, on.layer, wordsIn),
+        ...(rect ? { rect } : {}),
+      };
     },
 
     find(anchor) {
       return anchor.kind === 'text' ? findWords(anchor) : null;
+    },
+
+    // A layer's text may change between passes, as pdf.js lays it out.
+    fresh() {
+      sources.clear();
+    },
+    settled() {
+      sources.clear();
     },
   };
 }

@@ -111,7 +111,9 @@
       "why": "Why?",
       "badTickers": "Not a ticker: {{tickers}}",
       "tooManyTickers": "A memo takes at most {{max}} tickers."
-    }
+    },
+    "revisedShort": "revised",
+    "revisedSinceFinal": "Revised since Final v{{seq}}"
   },
   "versions": {
     "viewing": "Version {{seq}}, {{when}} by {{who}}",
@@ -334,5 +336,15 @@
     "noRoom": "{{name}} does not fit: only {{left}} of your {{max}} is free. Delete files to make room.",
     "changed": "{{name}} changed since you last looked. Look at it again, then try once more.",
     "notMemo": "{{name}} is not a memo any more."
+  },
+  "comments": {
+    "open_one": "{{count}} open comment",
+    "open_other": "{{count}} open comments",
+    "unread_one": "{{count}} with an unread answer",
+    "unread_other": "{{count}} with unread answers",
+    "openAndUnread": "{{open}}, {{unread}}",
+    "onVersion": "On v{{seq}}",
+    "onVersionTitle": "Comments made on version {{seq}}, shown read only",
+    "seeOnVersion": "See it on v{{seq}}"
   }
 }

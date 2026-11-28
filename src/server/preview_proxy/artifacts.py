@@ -40,7 +40,7 @@ from src.server.database.artifacts import (
 )
 from src.server.database.workspace import get_workspace
 from src.server.database.workspace_file_blobs import fetch_blob
-from src.server.preview_proxy.page_bridge import bridge_for, with_bridge
+from src.server.preview_proxy.page_bridge import bridge_for, is_html, with_bridge
 from src.server.services.artifacts.grants import (
     ArtifactGrantError,
     is_member_grant,
@@ -180,10 +180,6 @@ def _content_type(stored: str) -> str:
     ):
         return f"{stored}; charset=utf-8"
     return stored
-
-
-def _is_html(content_type: str) -> bool:
-    return content_type.split(";", 1)[0].strip().lower() == "text/html"
 
 
 def _charset_is_utf8(content_type: str) -> bool:
@@ -413,7 +409,7 @@ async def load_artifact_file(
     if stored is None:
         return None
     content_type = _content_type(stored.content_type)
-    bridged = _is_html(content_type) and _charset_is_utf8(content_type)
+    bridged = is_html(content_type) and _charset_is_utf8(content_type)
     bridge = bridge_for("view")
     etag = f"{stored.sha256}-{bridge.digest}" if bridged else stored.sha256
     if visitor:

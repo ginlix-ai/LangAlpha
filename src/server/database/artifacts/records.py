@@ -1,9 +1,10 @@
 """The file's record: its ``share_links`` row, made on first need.
 
-A chart has one too (``kind = 'chart'``, ``path`` its chart id), which only
-holds comments and where they go. A read by id takes either and the record
-says which; a write that shares, publishes, keeps or versions takes files
-alone (``FILE_RECORDS``), so none of them can reach a chart."""
+A chart has one too (``kind = 'chart'``, ``path`` its chart id), and so does
+a Drive file (``kind = 'drive'``, in its owner's Home, ``path`` its entry id),
+each only holding comments and where they go. A read by id takes any and the
+record says which; a write that shares, publishes, keeps or versions takes
+files alone (``FILE_RECORDS``), so none of them can reach the others."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal, get_args
 
+from psycopg.errors import ForeignKeyViolation
 from psycopg.rows import dict_row, tuple_row
 
 from src.server.database.pool import get_db_connection
@@ -23,13 +25,39 @@ from src.server.utils.pg_sanitize import like_escape
 _TITLE_CHARS = 300
 
 
-RecordKind = Literal["file", "chart"]
+RecordKind = Literal["file", "chart", "drive"]
 _RECORD_KINDS: tuple[str, ...] = get_args(RecordKind)
 
 #: The records a statement takes off ``share_links l``: a file's alone, or
-#: any that holds comments, a file's or a chart's.
+#: any that holds comments, a file's, a chart's or a Drive file's.
 FILE_RECORDS = "l.kind = 'file'"
-COMMENT_RECORDS = "l.kind IN ('file', 'chart')"
+COMMENT_RECORDS = "l.kind IN ('file', 'chart', 'drive')"
+
+#: A Drive file's entry as ``de`` beside its record ``l``; null for any other
+#: record. A Drive record's ``path`` is its entry id, so the file's own place
+#: has to be read off the entry, which moves while the record stays put.
+DRIVE_JOIN = "LEFT JOIN drive_entries de ON de.entry_id = l.drive_entry_id"
+#: Where the record's file is now, over ``DRIVE_JOIN``: a Drive file's path in
+#: its space, else the record's own ``path``.
+PLACE_SQL = "COALESCE(de.path, l.path)"
+#: The record's Drive file is deleted, over ``DRIVE_JOIN``: in the trash, or
+#: ended as a tombstone (the source of a rename over a file), which nothing
+#: restores and the sweep purges after a day.
+DELETED_SQL = "de.deleted_at IS NOT NULL"
+#: The record's Drive file is in the trash, where its owner can restore it,
+#: over ``DRIVE_JOIN``. ``drive_entries_ended`` (migration 150) sets
+#: ``trash_id`` on a trashed entry alone, and the test is false, never null,
+#: on a record with no entry.
+TRASHED_SQL = "de.trash_id IS NOT NULL"
+#: The record's Drive file ended as a tombstone, over ``DRIVE_JOIN``: nothing
+#: restores it, so its record and comments only wait for the sweep.
+ENDED_SQL = f"({DELETED_SQL} AND NOT {TRASHED_SQL})"
+#: Whether a send may carry comments on the record, over ``DRIVE_JOIN`` with
+#: ``%(drive_on)s`` the owner's Drive: with it off, or the file deleted, the
+#: agent has no file to open at the path the comment names.
+SENDABLE_SQL = f"(l.kind <> 'drive' OR (%(drive_on)s AND NOT {DELETED_SQL}))"
+#: The foreign key from a Drive record to its entry (migration 155).
+_DRIVE_ENTRY_FK = "share_links_drive_entry_id_fkey"
 
 
 class ArtifactNotFound(LookupError):
@@ -52,7 +80,8 @@ class Artifact:
     code: str
     workspace_id: str
     kind: RecordKind
-    #: Workspace-relative; a chart's id (``SYMBOL:timeframe``) for a chart.
+    #: Workspace-relative; a chart's id (``SYMBOL:timeframe``) for a chart,
+    #: the entry id for a Drive file.
     path: str
     created_thread_id: str | None
     bound_thread_id: str | None
@@ -188,29 +217,44 @@ async def _select_record(
 
 
 async def ensure_record(workspace_id: str, kind: RecordKind, key: str) -> Artifact:
-    """The record of a file (``key`` its path) or a chart (its chart id),
-    made private on first sight.
+    """The record of a file (``key`` its path), a chart (its chart id) or a
+    Drive file (its entry id, in its owner's Home), made private on first
+    sight.
 
     The caller has checked the workspace is reached and ``key`` is the one
-    spelling of a file that may be shared, or of a chart
-    (``normalize_chart_id``). Two writers for one land on one row and one code.
+    spelling of a file that may be shared, of a chart
+    (``normalize_chart_id``), or of a live Drive file of the Home's owner.
+    Two writers for one land on one row and one code. A Drive file purged
+    after that check is ``ArtifactNotFound``, as a file already gone is.
     """
     kind = _kind(kind)
-    async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                f"""
-                INSERT INTO share_links AS l (code, workspace_id, kind, path)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (workspace_id, path) WHERE kind = '{kind}' DO NOTHING
-                RETURNING {ARTIFACT_COLUMNS}
-                """,
-                (mint_share_code(), workspace_id, kind, key),
-            )
-            created = artifact_from_row(await cur.fetchone())
-            if created is not None:
-                return created
-            existing = await _select_record(cur, workspace_id, kind, key)
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    f"""
+                    INSERT INTO share_links AS l
+                        (code, workspace_id, kind, path, drive_entry_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (workspace_id, path) WHERE kind = '{kind}' DO NOTHING
+                    RETURNING {ARTIFACT_COLUMNS}
+                    """,
+                    (
+                        mint_share_code(),
+                        workspace_id,
+                        kind,
+                        key,
+                        key if kind == "drive" else None,
+                    ),
+                )
+                created = artifact_from_row(await cur.fetchone())
+                if created is not None:
+                    return created
+                existing = await _select_record(cur, workspace_id, kind, key)
+    except ForeignKeyViolation as e:
+        if e.diag.constraint_name != _DRIVE_ENTRY_FK:
+            raise
+        raise ArtifactNotFound(key) from None
     if existing is None:
         raise RuntimeError("artifact record vanished between insert and read")
     return existing
@@ -219,7 +263,8 @@ async def ensure_record(workspace_id: str, kind: RecordKind, key: str) -> Artifa
 async def find_record(
     workspace_id: str, kind: RecordKind, key: str
 ) -> Artifact | None:
-    """The file's or chart's record if it has one; never makes it."""
+    """The file's, chart's or Drive file's record if it has one; never
+    makes it."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             return await _select_record(cur, workspace_id, kind, key)
@@ -248,13 +293,16 @@ async def list_chart_records(workspace_id: str, symbol: str) -> list[Artifact]:
 
 
 async def get_artifact(artifact_id: str, *, user_id: str) -> Artifact | None:
-    """The user's record by id, a file's or a chart's, or None."""
+    """The user's record by id, of any kind that holds comments, or None. A
+    Drive file ended as a tombstone has none: a comment written on it would
+    go with the sweep, where one on a trashed file returns with a restore."""
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"""
-                SELECT {ARTIFACT_COLUMNS} FROM {OWNED}
+                SELECT {ARTIFACT_COLUMNS} FROM {OWNED} {DRIVE_JOIN}
                  WHERE l.artifact_id = %(artifact_id)s AND {COMMENT_RECORDS}
+                   AND NOT {ENDED_SQL}
                 """,
                 {"artifact_id": artifact_id, "user_id": user_id},
             )

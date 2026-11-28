@@ -270,7 +270,12 @@ async def test_a_symbol_no_chart_could_be_named_by_is_refused(owner, symbol):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("kind", "shared", "offered"),
-    [("file", False, True), ("chart", False, False), ("file", True, False)],
+    [
+        ("file", False, True),
+        ("chart", False, False),
+        ("file", True, False),
+        ("drive", False, True),
+    ],
 )
 async def test_a_new_chief_of_staff_chat_is_offered_only_for_a_file_its_owner_holds(
     kind, shared, offered
@@ -286,7 +291,12 @@ async def test_a_new_chief_of_staff_chat_is_offered_only_for_a_file_its_owner_ho
     artifact = _record(kind=kind)
     access = Access("owner", object() if shared else None)
     found = SimpleNamespace(
-        default=(None, "new"), artifact=artifact, bound=None, beside=None, creator=None
+        default=(None, "new"),
+        artifact=artifact,
+        bound=None,
+        beside=None,
+        creator=None,
+        worked=None,
     )
     with (
         patch.object(records, "reached", AsyncMock(return_value=(artifact, access))),

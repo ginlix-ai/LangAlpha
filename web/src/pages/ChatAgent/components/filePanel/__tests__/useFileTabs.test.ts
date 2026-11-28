@@ -1172,6 +1172,19 @@ describe('useFileTabs Drive tabs', () => {
     expect(result.current.historyTarget(result.current.activeId, 'forward')).toMatchObject({ loc: { tab: 'record' } });
   });
 
+  it("opens a file's comment on its document, in the tab already there, and stores no ask", () => {
+    const { result } = renderHook(() => useFileTabs('ws', 't1'));
+    act(() => result.current.openDrive({ loc: { file: 'm.md', tab: 'record' }, pin: true }));
+    act(() => result.current.openDrive({ loc: { file: 'm.md', ask: { comment: 'c-1' } }, pin: true }));
+
+    expect(places(result.current.tabs)).toHaveLength(1);
+    const tab = result.current.activeTab;
+    expect(tab).toMatchObject({ kind: 'drive', loc: { file: 'm.md', ask: { comment: 'c-1' } } });
+    expect(tab.kind === 'drive' && tab.loc.tab).toBeFalsy();
+    // Shown once: a strip read back tomorrow does not open the comment again.
+    expect(stored(threadTabsStorageKey('ws', 't1')).tabs).toEqual([{ kind: 'drive', loc: { file: 'm.md' }, preview: false }]);
+  });
+
   it('takes a step back from the memo list beside a file to the folder it showed', () => {
     const { result } = renderHook(() => useFileTabs('ws'));
     act(() => result.current.openDrive({ loc: { file: 'm.md' }, pin: true }));

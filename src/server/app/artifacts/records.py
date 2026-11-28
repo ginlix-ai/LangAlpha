@@ -1,7 +1,9 @@
 """The owner's routes on a file's record: find or make it, where its comments
-go, publishing and versions. A chart's record takes the first two and nothing
-else: every other route takes its record through ``reached_file``, which
-answers a chart's id as not found.
+go, publishing and versions. A chart's or a Drive file's record takes the
+first two and nothing else: every other route takes its record through
+``reached_file``, which answers their ids as not found. A Drive file's record
+is its owner's alone, in their Home, which is never shared, and answers as
+not found while the ``drive`` feature is off for them.
 
 A shared workspace's members use them as its owner does: the record is the
 holder's, read and written as the holder's rows (``Access.owner_id``), while
@@ -32,10 +34,12 @@ from src.server.app.artifacts.models import (
     ChartRecordsResponse,
     DefaultDestination,
     DestinationsResponse,
+    DestinationThreadsResponse,
     DriftResponse,
     KeepUpdatedRequest,
     KeptRequest,
     LeftOutRequest,
+    PickableThreadResponse,
     PublishRequest,
     PublishResponse,
     ShareCapResponse,
@@ -47,9 +51,11 @@ from src.server.services.workspace_files import owner_work_dir
 from src.server.database import artifacts as artifacts_db
 from src.server.database.artifacts import Artifact, RecordKind
 from src.server.database.conversation import thread_reach
+from src.server.database.drive.reads import live_file
 from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.share_codes import share_path
 from src.server.models.chart_layer import normalize_chart_id, normalize_chart_symbol
+from src.server.services import drive
 from src.server.services.artifacts import snapshot
 from src.server.services.artifacts.events import publish_artifact_change
 from src.server.services.artifacts.grants import (
@@ -171,6 +177,8 @@ async def reached(artifact_id: str, caller: str) -> tuple[Artifact, Access]:
     artifact_id = path_id(artifact_id)
     artifact = await artifacts_db.get_artifact(artifact_id, user_id=caller)
     if artifact is not None:
+        if artifact.kind == "drive" and not await drive.enabled(caller):
+            raise not_found()
         return artifact, Access(caller)
     from src.server.services.membership import teams_door_open
 
@@ -188,7 +196,9 @@ async def reached(artifact_id: str, caller: str) -> tuple[Artifact, Access]:
     except (NoAccess, AccountSuspended):
         raise not_found() from None
     artifact = await artifacts_db.get_artifact(artifact_id, user_id=access.owner_id)
-    if artifact is None:
+    # A Drive file's record is in its owner's Home, which no one else
+    # reaches; refused here as well, should a Home ever be.
+    if artifact is None or artifact.kind == "drive":
         raise not_found()
     return artifact, access
 
@@ -265,14 +275,52 @@ async def _reached_workspace(
     return workspace
 
 
+async def _drive_record_key(
+    workspace_id: str, entry_ref: str, user_id: str
+) -> tuple[str, RecordKind, str, str]:
+    """A Drive file's record key: only on the caller's own Home, for a live
+    file of their personal space, with the Drive on for them (``drive.open``);
+    anything else is not found."""
+    home_id = get_home_workspace_id(user_id)
+    if normalize_uuid(workspace_id) != home_id:
+        raise not_found()
+    try:
+        space = await drive.open(user_id, "personal")
+        entry = await live_file(space.space_id, entry_ref)
+    except drive.DriveError as e:
+        if e.code in ("not_found", "is_folder"):
+            raise not_found() from None
+        raise
+    return home_id, "drive", entry.entry_id, user_id
+
+
+async def _ensure_home(user_id: str) -> None:
+    """Home's row, which a Drive file's record hangs off, made if the user
+    has none yet; one that cannot be made leaves the record not found."""
+    from src.server.database.workspace import (
+        HomeWorkspaceTaken,
+        get_or_create_home_workspace,
+    )
+
+    try:
+        await get_or_create_home_workspace(user_id)
+    except HomeWorkspaceTaken:
+        raise not_found() from None
+
+
 async def _record_key(
-    workspace_id: str, place: ArtifactPathRequest, user_id: str
+    workspace_id: str,
+    place: ArtifactPathRequest,
+    user_id: str,
 ) -> tuple[str, RecordKind, str, str]:
     """The workspace's id, the record's kind and key (a file's canonical path,
-    or a chart's one spelling), and whose rows its records are, in a workspace
-    the caller reaches. Another user's workspace, or a deleted one, is not
-    found, as every owner route answers. A chart is no file, so its workspace
-    need not be on a computer."""
+    a chart's one spelling, or a Drive file's entry id), and whose rows its
+    records are, in a workspace the caller reaches. Another user's workspace,
+    or a deleted one, is not found, as every owner route answers. A chart is
+    no file, so its workspace need not be on a computer, nor need Home for a
+    Drive file."""
+    if place.drive is not None:
+        return await _drive_record_key(workspace_id, place.drive, user_id)
     chart_id = None
     if place.chart is not None:
         chart_id = normalize_chart_id(place.chart)
@@ -301,8 +349,8 @@ async def find_artifact(
     place: Annotated[ArtifactPathRequest, Query()],
     x_user_id: CurrentUserId,
 ) -> ArtifactLookupResponse:
-    """The file's or chart's record, or null for one never recorded. Never
-    makes one."""
+    """The file's, chart's or Drive file's record, or null for one never
+    recorded. Never makes one."""
     ws_id, kind, key, owner_id = await _record_key(workspace_id, place, x_user_id)
     artifact = await artifacts_db.find_record(ws_id, kind, key)
     return ArtifactLookupResponse(
@@ -341,9 +389,12 @@ async def find_chart_records(
 async def ensure_artifact(
     workspace_id: str, body: ArtifactPathRequest, x_user_id: CurrentUserId
 ) -> ArtifactResponse:
-    """The file's or chart's record, made private if new."""
+    """The file's, chart's or Drive file's record, made private if new."""
     ws_id, kind, key, owner_id = await _record_key(workspace_id, body, x_user_id)
-    artifact = await artifacts_db.ensure_record(ws_id, kind, key)
+    if kind == "drive":
+        await _ensure_home(owner_id)
+    with db_errors():
+        artifact = await artifacts_db.ensure_record(ws_id, kind, key)
     return await _response(artifact, owner_id, x_user_id)
 
 
@@ -483,11 +534,47 @@ async def get_destinations(
         bound=_thread(found.bound),
         beside=_thread(found.beside),
         creator=_thread(found.creator),
+        worked=_thread(found.worked),
         home_workspace_id=(
             get_home_workspace_id(access.owner_id)
-            if found.artifact.kind == "file" and not access.is_shared
+            if found.artifact.kind in artifacts_db.HOME_KINDS and not access.is_shared
             else None
         ),
+    )
+
+
+@router.get(
+    "/{artifact_id}/destination-threads", response_model=DestinationThreadsResponse
+)
+async def get_destination_threads(
+    artifact_id: str,
+    x_user_id: CurrentUserId,
+    q: str | None = Query(None, max_length=200, description="Part of a title."),
+    thread: str | None = Query(
+        None, max_length=64, description="Only this thread, if it may take them."
+    ),
+    limit: int = Query(20, ge=1, le=50),
+) -> DestinationThreadsResponse:
+    """The threads a comment on the record may be sent to that the caller
+    may see, most recently active first: what "Another chat" searches. With
+    ``thread``, that one alone or none: whether a chat picked earlier (a kept
+    draft's) still takes them."""
+    artifact, access = await reached(artifact_id, x_user_id)
+    only = None
+    if thread is not None:
+        only = normalize_uuid(thread)
+        if only is None:
+            return DestinationThreadsResponse(threads=[])
+    found = await artifacts_db.destination_threads(
+        user_id=access.owner_id,
+        artifact_id=artifact.artifact_id,
+        caller=x_user_id,
+        query=(q or "").strip() or None,
+        limit=limit,
+        thread_id=only,
+    )
+    return DestinationThreadsResponse(
+        threads=[PickableThreadResponse.model_validate(t) for t in found]
     )
 
 

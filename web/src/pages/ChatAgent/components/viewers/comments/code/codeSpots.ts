@@ -9,7 +9,7 @@
  * `text` anchor that names their lines.
  */
 import {
-  MAX_LABEL, MAX_SELECTION, clip, laidOutBox, linesAnchor, linesText, nearestByQuote, normal, overlaps, parseLines, quoteFinder,
+  MAX_LABEL, MAX_SELECTION, clip, laidOutBox, linesAnchor, linesText, nearestByQuote, normal, overlaps, parseLines, findQuote, nearLines, textSource,
   squash, wordsAround,
 } from '../spotKit';
 import type { Found, SpotStrategy } from '../spotStrategy';
@@ -99,7 +99,7 @@ export function codeSpots(root: Element): SpotStrategy {
     for (const t of texts) starts.push(starts[starts.length - 1] + t.length);
     return (read = { all, text: texts.join(''), starts });
   };
-  const quotes = quoteFinder(root, NUMBER);
+  const quotes = textSource(root, { skip: NUMBER });
 
   const findRun = (stored: { lines?: string; quote?: string }): Element[] | null => {
     const span = parseLines(stored.lines);
@@ -178,7 +178,7 @@ export function codeSpots(root: Element): SpotStrategy {
         return parts.some(Boolean) ? { parts } : null;
       }
       if (anchor.kind === 'text') {
-        const range = quotes.find(anchor, (node) => lineNo(node.parentElement?.closest(LINE) ?? null));
+        const range = findQuote(quotes, anchor, nearLines(anchor, (node) => lineNo(node.parentElement?.closest(LINE) ?? null)));
         return range ? { range } : null;
       }
       return null;

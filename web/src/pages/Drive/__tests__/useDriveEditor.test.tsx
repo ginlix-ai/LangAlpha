@@ -462,3 +462,15 @@ describe('useDriveEditor: unsaved text kept while the person is away', () => {
     expect(setup({ atHeadDocument: false }).result.current.session).toBeNull();
   });
 });
+
+describe('the last head kept on screen while a new one loads', () => {
+  it('is no base to open the editor on', () => {
+    const entry = entryAt(SHA.theirs);
+    const kept = { data: { content: 'base', from: 'live', version: SHA.base }, isPlaceholderData: true } as unknown as UseQueryResult<FileBody>;
+    const { result } = renderHookWithProviders(() => useDriveEditor('space-1', 'notes/q3.md', entry, kept, true));
+
+    act(() => result.current.start());
+
+    expect(result.current.session).toBeNull();
+  });
+});

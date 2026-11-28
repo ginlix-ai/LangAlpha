@@ -16,7 +16,8 @@ import { ALL, refreshArtifactComments, type ArtifactRef } from '@/lib/artifactCa
 import { readArtifactAnswers, readingFor } from '@/lib/artifactPreferences';
 import type { ArtifactCommentsShown } from '@/types/api';
 import { carriedIds, type CommentSendListener } from '../../hooks/utils/requestKey';
-import { CommentSendRefused, postArtifactComments, type CommentTarget } from '../../utils/api/artifacts';
+import { CommentSendRefused, type CommentTarget } from '../../utils/api/artifacts';
+import { postComments } from './commentPosts';
 import { shownFromQueued, type CommentInWorkspace } from './artifactCommentSend';
 import { CommentSendsContext, useCommentSendStore, type CommentSendStore } from './commentSendStore';
 import { sameTarget } from './destinations';
@@ -74,7 +75,7 @@ export function useChatCommentSends({ threadId, workspaceId, running, watch, cha
   const hear = useStableHandler<Parameters<CommentSendListener>, void>((comments, outcome) => {
     const ids = carriedIds(comments);
     if ('comments' in comments) {
-      for (const c of comments.comments) files.current.set(c.comment_id, { artifactId: c.artifact_id, workspaceId: c.workspace_id || null });
+      for (const c of comments.comments) files.current.set(c.comment_id, { artifactId: c.artifact_id, workspaceId: c.workspace_id || null, kind: c.kind });
     }
     let reason = '';
     let moved = true;
@@ -142,14 +143,14 @@ export function useChatCommentSends({ threadId, workspaceId, running, watch, cha
   const send = useStableHandler<Parameters<ArtifactCommentSender['send']>, ReturnType<ArtifactCommentSender['send']>>(
     async (comments, to) => {
       if (!sameTarget(beside, to)) {
-        return postArtifactComments(comments.map((c) => c.comment_id), to, { reading: readingFor(answers, true) });
+        return postComments(comments, to, { reading: readingFor(answers, true), queryClient });
       }
       const leaving = gone.current;
       // A new chat whose first send is still making its thread: these join
       // that thread once it is made, as a steer, rather than start another.
       if (!threadId && running) {
         const made = await Promise.race([new Promise<string | null>((tell) => naming.current.add(tell)), leaving]);
-        if (!made || made === GONE) throw new CommentSendRefused('The comments were not sent.', null, null);
+        if (!made || made === GONE) throw new CommentSendRefused(null);
       }
       const left = new Set(comments.map((c) => c.comment_id));
       let answered!: (answer: ChatAnswer) => void;
@@ -176,14 +177,14 @@ export function useChatCommentSends({ threadId, workspaceId, running, watch, cha
         waiters.current.delete(waiter);
         // A refusal the chat worded can come before its send gives up.
         const said = await Promise.race([answer, Promise.resolve(null)]);
-        throw new CommentSendRefused(said?.kind === 'refused' ? said.reason : 'The comments were not sent.', null, said?.kind === 'refused' ? 409 : null);
+        throw new CommentSendRefused(said?.kind === 'refused' ? said.reason : null);
       }
       // Once the chat is gone nobody answers: the comments' rows say where they are.
       const outcome = await Promise.race([answer, leaving.then((): ChatAnswer => ({ kind: 'dropped' }))]);
       waiters.current.delete(waiter);
       if (outcome.kind === 'taken') return { threadId: went };
       // The chat's own words for it, which the card says after "Not sent."
-      if (outcome.kind === 'refused') throw new CommentSendRefused(outcome.reason, null, 409);
+      if (outcome.kind === 'refused') throw new CommentSendRefused(outcome.reason);
       return sentByRows(queryClient, comments, went);
     },
   );
@@ -227,7 +228,7 @@ async function sentByRows(
   const rows = new Map((lists ?? []).flat().map((c) => [c.comment_id, c]));
   const went = rows.get(comments[0].comment_id)?.thread_id ?? threadId;
   if (lists && went && comments.every((c) => rows.get(c.comment_id)?.delivery === 'sent')) return { threadId: went };
-  throw new CommentSendRefused('The comments were not sent.', null, null);
+  throw new CommentSendRefused(null);
 }
 
 /**

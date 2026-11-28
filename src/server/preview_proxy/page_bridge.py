@@ -13,13 +13,25 @@ render or a download reads the bytes as they are.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-__all__ = ["Bridge", "Inject", "Variant", "bridge_for", "parse_inject", "with_bridge"]
+from src.server.services.served_paths import is_utf8
+
+__all__ = [
+    "Bridge",
+    "Inject",
+    "Variant",
+    "bridge_for",
+    "bridged",
+    "is_html",
+    "parse_inject",
+    "with_bridge",
+]
 
 Inject = Literal["view", "comments"]
 # What a document is served with: what its URL asks for, or ``nested`` for a
@@ -32,6 +44,8 @@ _PARTS: dict[Variant, tuple[str, ...]] = {
     "view": _VIEW_PARTS,
     "comments": (
         *_VIEW_PARTS,
+        # Compiled from the app's own code by bridge/generate-shared.mjs.
+        "comments-shared.generated",
         "comments-text",
         "comments-areas",
         "comments-anchors",
@@ -142,6 +156,26 @@ def parse_inject(value: str | None) -> Inject | None:
     if value == "comments":
         return "comments"
     return None
+
+
+#: The types a browser parses as HTML, the only documents the bridge is
+#: spliced into. XHTML is parsed as XML, which the bridge's script, holding
+#: ``<`` and ``&&`` outside any CDATA section, would leave ill-formed.
+_HTML_TYPES = frozenset({"text/html", "text/htm"})
+
+
+def is_html(content_type: str) -> bool:
+    return content_type.split(";", 1)[0].strip().lower() in _HTML_TYPES
+
+
+async def bridged(document: bytes, bridge: Bridge) -> bytes:
+    """*document* with *bridge* in its head, if it is UTF-8. The bridge is
+    ASCII, but a document in another encoding (GBK, Shift-JIS) is served
+    byte-faithful rather than risk a splice the browser reads as something
+    else. Off the event loop, for the 25 MiB a version holds."""
+    if not is_utf8(document):
+        return document
+    return await asyncio.to_thread(with_bridge, document, bridge)
 
 
 def _declares_color_scheme(document: bytes) -> bool:

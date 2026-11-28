@@ -2,37 +2,21 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { artifactPathKey } from '@/hooks/useArtifact';
 import { useWorkspaceFolders } from '../../contexts/WorkspaceContext';
+import { commentable } from '@/lib/artifactTarget';
 import PublishDialog from '../PublishDialog';
 import type { HtmlArtifactView } from '../viewers/html/ArtifactFrames';
 import { CommentTools } from '../viewers/html/comments/CommentTools';
 import { LazyCommentLayer } from '../viewers/html/comments/lazyCommentLayer';
 import type { CommentUi } from '../viewers/html/comments/useCommentUi';
+import type { CommentViewer } from '../viewers/comments/commentViewer';
 import type { ViewerCommentsTarget } from '../viewers/comments/ViewerComments';
 import { ArtifactCrumbs } from './ArtifactCrumbs';
 import type { FileQuoteAnchor } from './types';
-import type { FocusViewer } from './useFileFocus';
 import { PinPageButton } from './PinPageButton';
 import { useArtifactVersionView, usePanelVersionStores, versionKey, LIVE_VIEW, type VersionStore } from './useArtifactVersionView';
 
 /** A view with no file to keep a version for. */
 const NO_STORE: VersionStore = { state: LIVE_VIEW, dispatch: () => {} };
-
-/** A viewer in the app that draws the comment layer, through `ViewerComments`. */
-export type CommentViewer = 'markdown' | 'code' | 'pdf' | 'sheet' | 'image';
-
-const LAYERS: Partial<Record<FocusViewer, 'html' | CommentViewer>> = {
-  html: 'html', markdown: 'markdown', code: 'code', pdf: 'pdf', excel: 'sheet', csv: 'sheet', image: 'image',
-};
-
-/**
- * The comment layer the viewer showing a file draws for its owner, or null
- * where it draws none: a large tool result, an edited file. An
- * HTML file is known by its name, any other once its bytes are `read`.
- */
-export function commentViewer(viewer: FocusViewer, read: boolean): 'html' | CommentViewer | null {
-  const layer = LAYERS[viewer] ?? null;
-  return layer === 'html' || read ? layer : null;
-}
 
 interface FileCommentsOptions {
   workspaceId: string;
@@ -90,10 +74,12 @@ export function useFileComments({
 }: FileCommentsOptions): FileComments {
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
-  const path = ui && commentViewer === 'html' ? file : null;
+  // Comments only where the file can hold them: none on the agent's own files.
+  const viewer = file && commentable({ kind: 'file', path: file }, root) ? commentViewer : null;
+  const path = ui && viewer === 'html' ? file : null;
   const target = useMemo(
-    () => (ui && file && commentViewer && commentViewer !== 'html' ? { workspaceId, kind: 'file' as const, path: file, tabId, ui, active } : null),
-    [ui, file, commentViewer, workspaceId, tabId, active],
+    () => (ui && file && viewer && viewer !== 'html' ? { workspaceId, kind: 'file' as const, path: file, tabId, ui, active } : null),
+    [ui, file, viewer, workspaceId, tabId, active],
   );
   const stores = usePanelVersionStores();
   const versionView = useArtifactVersionView(

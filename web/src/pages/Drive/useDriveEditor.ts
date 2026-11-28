@@ -62,7 +62,9 @@ export function useDriveEditor(
   // while the editor was open leaves a note typed before it unsent.
   const asksWhy = memoState(entry).kind === 'memo';
   const noteToSend = (s: EditSession) => (asksWhy ? s.note.trim() || null : null);
-  const headContent = asContent(head.data);
+  // The last head's bytes, kept on screen while the new head loads, are not
+  // a base to write over nor what "theirs" is.
+  const headContent = head.isPlaceholderData ? null : asContent(head.data);
   const theirs = session && ours && headContent && !isPast(session, headContent.sha) ? headContent : null;
   /** The file moved on under an open editor. */
   const behind = !!session && ours && !!entry?.sha256 && !isPast(session, entry.sha256) && session.save === 'idle' && !session.conflict;

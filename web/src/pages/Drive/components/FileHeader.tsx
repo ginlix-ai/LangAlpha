@@ -45,7 +45,7 @@ function useSaveMark(editor: DriveEditor): string {
  * it, a memo's band. Where the folder list is not beside it in the panel,
  * the folders it sits in sit above its name, each a way to that folder.
  */
-export function FileHeader({ path, entry, mobile, editor, edit, html, children }: {
+export function FileHeader({ path, entry, mobile, editor, edit, html, comments, children }: {
   path: string;
   entry: DriveEntry | undefined;
   mobile: boolean;
@@ -58,6 +58,8 @@ export function FileHeader({ path, entry, mobile, editor, edit, html, children }
   edit: 'none' | 'waiting' | 'ready';
   /** An HTML file at its head: whether its source is shown, and the switch. */
   html: { source: boolean; toggle: () => void } | null;
+  /** The file's comment controls (`CommentTools`), where its current content takes comments. */
+  comments?: React.ReactNode;
   /** Under the name row, inside the header: a memo's status and views. */
   children?: React.ReactNode;
 }) {
@@ -122,6 +124,7 @@ export function FileHeader({ path, entry, mobile, editor, edit, html, children }
               </>
             ) : (
               <>
+                {comments}
                 {html && (
                   <PaneAction
                     variant="ghost"

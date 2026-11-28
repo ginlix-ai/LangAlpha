@@ -7,9 +7,11 @@
  */
 import type { ArtifactCommentAnchor } from '@/types/artifacts';
 import { listsEvery } from '../../artifactComments/anchorKinds';
-import type { FrameRect, PageAnchorItem, PageToViewerWire } from '../html/pageProtocol';
+import type { FrameRect, PageAnchorItem, PageToViewerWire, Point, SpotRect } from '../html/pageProtocol';
 import type { Edges, Found, SpotStrategy } from './spotStrategy';
 import { TextMarks } from './textMarks';
+import { pinPoint } from '../html/comments/pinPlaces';
+import { type PinMemo, type PinPass, type PinPlaced, keptBlockPin, keptWordsPin, pinPass, union, wordsPin } from './pinRoom';
 
 export interface Tracked {
   id: string;
@@ -17,6 +19,8 @@ export interface Tracked {
   mark: boolean;
   draft: boolean;
   found: Found | null;
+  /** Its pin as the last report placed it, kept while its spot only scrolls (`PinMemo`). */
+  pin: PinMemo | null;
 }
 
 /**
@@ -25,18 +29,17 @@ export interface Tracked {
  */
 export const PARKED: FrameRect = { x: -100_000, y: -100_000, width: 0, height: 0 };
 
+/** Whether a reported spot is a parked one (`PARKED`): there, but on a part of the file not drawn yet. */
+export function isParked(rect: FrameRect): boolean {
+  return rect.x === PARKED.x && rect.y === PARKED.y && !rect.width && !rect.height;
+}
+
 export function round(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-export function union(rects: readonly Edges[]): Edges | null {
-  if (!rects.length) return null;
-  return {
-    left: Math.min(...rects.map((r) => r.left)),
-    top: Math.min(...rects.map((r) => r.top)),
-    right: Math.max(...rects.map((r) => r.right)),
-    bottom: Math.max(...rects.map((r) => r.bottom)),
-  };
+function roundPoint(p: Point): Point {
+  return { x: round(p.x), y: round(p.y) };
 }
 
 /** A client box in the scroll viewport's coordinates, which the layer's overlay covers. */
@@ -45,10 +48,33 @@ export function toFrame(scroller: Element, r: Edges): FrameRect {
   return { x: round(r.left - v.left), y: round(r.top - v.top), width: round(r.right - r.left), height: round(r.bottom - r.top) };
 }
 
+/** The scroll viewport's inside, scroll bars left out, in client coordinates: where a pin may go. */
+function viewOf(scroller: Element): Edges {
+  const v = scroller.getBoundingClientRect();
+  return { left: v.left, top: v.top, right: v.left + scroller.clientWidth, bottom: v.top + scroller.clientHeight };
+}
+
+function framePoint(scroller: Element, at: Point): Point {
+  const v = scroller.getBoundingClientRect();
+  return { x: round(at.x - v.left), y: round(at.y - v.top) };
+}
+
+/** Where the pin on selected words goes, in the viewport's coordinates, or null when the words show nowhere. */
+export function wordsPinIn(scroller: Element, range: Range): Point | null {
+  const at = wordsPin(range, scroller, viewOf(scroller));
+  return at && framePoint(scroller, at);
+}
+
 export class PageAnchors {
   private tracked: Tracked[] = [];
   private stale = true;
   private lastPositions = '';
+  /**
+   * The content's scroll size at the last report. A change is a resize,
+   * which can move text without a mutation (an image or a font loading), so
+   * no kept pin outlives it.
+   */
+  private size = '';
   /** The comment whose card is open (`page:outlined`): besides the draft, the only one whose parts are measured. */
   private outlined: string | null = null;
   /** Words just picked in comment mode, marked until the viewer's anchor marks them. */
@@ -64,12 +90,12 @@ export class PageAnchors {
   /** The spots' boxes together, in client coordinates. */
   edgesOfSpots(spots: readonly Element[]): Edges | null {
     const picker = this.strategy.spots;
-    return picker ? union(spots.flatMap((s) => picker.rectsOf(s))) : null;
+    return picker ? spots.flatMap((s) => picker.rectsOf(s)).reduce<Edges | null>((u, r) => union(u, r), null) : null;
   }
 
   /** The viewer's list, answered in full on the next report. Returns whether a comment is being written. */
   set(items: PageAnchorItem[]): boolean {
-    this.tracked = items.map((item) => ({ id: item.id, anchor: item.anchor, mark: !!item.mark, draft: !!item.draft, found: null }));
+    this.tracked = items.map((item) => ({ id: item.id, anchor: item.anchor, mark: !!item.mark, draft: !!item.draft, found: null, pin: null }));
     // The viewer has opened the words' box, whose anchor marks them now.
     if (items.some((item) => item.mark)) this.pending = null;
     this.stale = true;
@@ -86,10 +112,21 @@ export class PageAnchors {
     this.stale = true;
   }
 
+  /**
+   * The text was laid out again with no change to the content or its size
+   * (a web font finished loading): the anchors still stand, but every pin is
+   * placed afresh, since a kept one checks only its spot's box.
+   */
+  relaid(): void {
+    for (const t of this.tracked) t.pin = null;
+  }
+
   private resolve(): void {
     if (!this.stale) return;
     this.strategy.fresh?.();
     for (const t of this.tracked) {
+      // Found again, maybe in another layout: its pin is placed afresh.
+      t.pin = null;
       try {
         t.found = this.strategy.find(t.anchor);
       } catch {
@@ -99,6 +136,21 @@ export class PageAnchors {
     this.strategy.settled?.();
     this.stale = false;
     this.paint();
+  }
+
+  /**
+   * Whether an anchor waits on a part drawn in view, such as a PDF page in
+   * view whose words are still being laid out: it will be found in a moment,
+   * so the page is not settled yet.
+   */
+  drawingInView(): boolean {
+    this.resolve();
+    const v = this.scroller.getBoundingClientRect();
+    return this.tracked.some((t) => {
+      if (!t.found || !('parked' in t.found) || !t.found.parked.isConnected) return false;
+      const r = t.found.parked.getBoundingClientRect();
+      return r.bottom > v.top && r.top < v.bottom && r.right > v.left && r.left < v.right;
+    });
   }
 
   draft(): Tracked | null {
@@ -139,6 +191,12 @@ export class PageAnchors {
    */
   report(): boolean {
     this.resolve();
+    const size = `${this.scroller.scrollWidth} ${this.scroller.scrollHeight}`;
+    if (size !== this.size) {
+      this.size = size;
+      for (const t of this.tracked) t.pin = null;
+    }
+    const pass = pinPass();
     let whole = true;
     const items = this.tracked.map((t) => {
       let edges = this.edgesOf(t.found);
@@ -155,7 +213,8 @@ export class PageAnchors {
         const e = part && this.edgesOfSpots(part);
         return e ? [toFrame(this.scroller, e)] : [];
       });
-      return parts.length ? { id: t.id, rect, parts } : { id: t.id, rect };
+      const spot = rect && edges && t.found && !('parked' in t.found) ? this.withPin(t, t.found, edges, rect, pass) : rect;
+      return parts.length ? { id: t.id, rect: spot, parts } : { id: t.id, rect: spot };
     });
     const key = JSON.stringify(items);
     if (key !== this.lastPositions) {
@@ -163,6 +222,25 @@ export class PageAnchors {
       this.send({ type: 'page:positions', items });
     }
     return whole;
+  }
+
+  /**
+   * The spot with where its pin goes: clear of the words beside it
+   * (`pinRoom`), else where `pinPoint` would put it. Said for every spot, so
+   * the layer places none itself.
+   */
+  private withPin(t: Tracked, found: Exclude<Found, { parked: Element }>, edges: Edges, rect: FrameRect, pass: PinPass): SpotRect {
+    const view = viewOf(this.scroller);
+    let placed: PinPlaced;
+    if ('range' in found) placed = keptWordsPin(found.range, this.scroller, view, edges, pass, t.pin);
+    else {
+      const at = pinPoint(t.anchor, rect);
+      const spots = found.parts.flatMap((part) => part ?? []);
+      placed = keptBlockPin(spots, edges, { x: at.x + view.left, y: at.y + view.top }, view, edges, pass, t.pin);
+    }
+    t.pin = placed.memo;
+    const pin = placed.at && framePoint(this.scroller, placed.at);
+    return { ...rect, pin: pin ?? roundPoint(pinPoint(t.anchor, rect)) };
   }
 
   /** Marks words just picked until the viewer answers; null lets the mark go. */

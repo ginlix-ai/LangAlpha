@@ -95,3 +95,25 @@ async def test_a_token_without_the_drive_scopes_is_refused():
         resp = await c.get("/api/v1/drive/personal/entries")
     assert resp.status_code == 403
     assert resp.json()["detail"]["type"] == "insufficient_scope"
+
+
+_ENTRY = "44444444-4444-4444-8444-444444444444"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("found", "code"),
+    [
+        (type("E", (), {"deleted_at": NOW, "trash_id": "t1"})(), "in_trash"),
+        # A rename's tombstone: nothing restores it, so it is gone.
+        (type("E", (), {"deleted_at": NOW, "trash_id": None})(), "not_found"),
+        (None, "not_found"),
+    ],
+)
+async def test_a_file_by_id_is_in_the_trash_only_when_it_can_come_back(found, code):
+    """A comment's link finds its file by id, and the owner is told it is in
+    the trash only where a restore can bring it back."""
+    with patch(f"{READS}.entry_by_id", AsyncMock(return_value=found)):
+        with pytest.raises(DriveError) as refused:
+            await drive.look_up(MINE, entry_id=_ENTRY)
+    assert refused.value.code == code

@@ -95,6 +95,7 @@ export const ChartComments = memo(function ChartComments({
       strategy={strategy}
       target={{ workspaceId, path: chartId, kind: 'chart', tabId: host.tabId, ui: host.ui, active: host.active }}
       modeHint={t('pageViewer:comments.modeHintChart')}
+      touchHint={t('pageViewer:comments.modeHintChartTouch')}
       pictures={pictures}
       // The region drawn stays in view.
       keepSpotClear

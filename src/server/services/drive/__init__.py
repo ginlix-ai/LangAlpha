@@ -45,7 +45,7 @@ from src.server.services.drive import content_bytes as _bytes
 from src.server.services.drive import extract, feed
 from src.server.services.drive.content_bytes import TEXT_MAX_BYTES, holding, read_range, stream
 from src.server.services import membership
-from src.server.services.features import user_feature_enabled
+from src.server.services.features import user_feature_enabled, user_feature_enabled_or
 from src.utils.storage import get_signed_url, is_storage_enabled, multipart_enabled
 
 logger = logging.getLogger(__name__)
@@ -114,6 +114,14 @@ _TEXT_PAGE_BYTES = 16 * 1024 * 1024
 async def enabled(user_id: str) -> bool:
     """Whether the ``drive`` feature is on for the user."""
     return await user_feature_enabled(user_id, FEATURE)
+
+
+async def sends_comments(user_id: str) -> bool:
+    """Whether comments on the user's Drive files may reach an agent: with
+    the Drive off the agent has no Drive to open their paths in. A failed
+    read keeps them waiting, the cheaper mistake, and the queue a composer
+    shows reads the same answer, so it never shows what a send leaves."""
+    return await user_feature_enabled_or(user_id, FEATURE, on_error=False)
 
 
 def _uuid(value: str, message: str) -> str:
@@ -250,6 +258,21 @@ async def stat(
         found = await reads.live_entry(space.space_id, path=normalize(path or ""), conn=conn)
     if found is None:
         raise DriveError("not_found", f"Nothing at {path}" if path else "No such entry")
+    return found
+
+
+async def look_up(space: Space, path: str | None = None, *, entry_id: str | None = None) -> Entry:
+    """:func:`stat` for a link that names a file by id, such as a comment's,
+    which tells a file in the trash (``in_trash``) from one that is gone. A
+    tombstone (the source of a rename over a file) is gone: nothing can
+    restore it, and only a trashed entry has a ``trash_id``."""
+    if entry_id is None:
+        return await stat(space, path)
+    found = await reads.entry_by_id(space.space_id, _uuid(entry_id, "No such entry"))
+    if found is None or (found.deleted_at is not None and found.trash_id is None):
+        raise DriveError("not_found", "No such entry")
+    if found.deleted_at is not None:
+        raise DriveError("in_trash", "The file is in the trash")
     return found
 
 

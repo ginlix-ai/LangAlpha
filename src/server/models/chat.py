@@ -43,10 +43,13 @@ class ShownComment(BaseModel):
     comment_id: str
     artifact_id: str
     workspace_id: str
-    #: A file's path, or a chart's id.
+    #: A file's path, a chart's id, or a Drive file's path in its space.
     path: str
     #: Rows written before charts had comments hold files.
-    kind: Literal["file", "chart"] = "file"
+    kind: Literal["file", "chart", "drive"] = "file"
+    #: A Drive file's entry, which names it wherever it moves. Left out for
+    #: any other, so a file's or a chart's chip reads as it always has.
+    entry_id: Optional[str] = Field(default=None, exclude_if=lambda v: v is None)
     title: Optional[str] = None
     number: int
     #: The owner's words this send carried, clipped.

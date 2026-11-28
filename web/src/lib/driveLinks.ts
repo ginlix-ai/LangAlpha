@@ -5,7 +5,9 @@
  * `?dir=a/b` is a folder, `?file=a/b/x.md` a file (shown in its folder),
  * `?trash=1` the trash, `?memos=1` every memo (beside a file it opens). On a
  * memo, `?tab=` picks the record, the changes or who wrote what, `?v=` the
- * version shown or compared and `?vs=` what it is compared with. `space`
+ * version shown or compared and `?vs=` what it is compared with. On any
+ * file, `?comment=` opens one of its comments, once, and `?comments=open`
+ * its comment list, once, at the first answer not read yet. `space`
  * names a space by id and is left out for the personal one, the only one
  * there is for now.
  */
@@ -22,7 +24,16 @@ export interface DriveLocation {
   tab?: MemoTab | null;
   /** The version Changes compares with; null is the one before. */
   against?: number | null;
+  /** What of the open file's comments to show, once. */
+  ask?: DriveCommentAsk | null;
 }
+
+/**
+ * What the address asks the open file's comments to show, once: one comment
+ * (a chat's link to it), or the list at its first unread answer (a list
+ * row's comment marker).
+ */
+export type DriveCommentAsk = { comment: string } | 'list';
 
 export const MEMO_TABS = ['record', 'changes', 'who'] as const;
 export type MemoTab = (typeof MEMO_TABS)[number];
@@ -40,6 +51,8 @@ export function driveHref(loc: DriveLocation = {}): string {
       if (loc.tab) params.set('tab', loc.tab);
       if (loc.version) params.set('v', String(loc.version));
       if (loc.against) params.set('vs', String(loc.against));
+      if (loc.ask === 'list') params.set('comments', 'open');
+      else if (loc.ask) params.set('comment', loc.ask.comment);
     } else if (loc.dir && !loc.memos) params.set('dir', loc.dir);
   }
   const query = params.toString();
@@ -62,6 +75,7 @@ export interface ReadLocation {
   version: number | null;
   tab: MemoTab | null;
   against: number | null;
+  ask: DriveCommentAsk | null;
 }
 
 function seqParam(value: string | null): number | null {
@@ -73,6 +87,7 @@ export function readDriveLocation(params: URLSearchParams): ReadLocation {
   const tab = params.get('tab');
   // A stage 1 link to a file's history (`?history=1`) is its record.
   const legacy = params.get('history') === '1' ? 'record' : null;
+  const comment = params.get('comment');
   return {
     space: params.get('space'),
     dir: cleanDrivePath(params.get('dir')),
@@ -82,6 +97,7 @@ export function readDriveLocation(params: URLSearchParams): ReadLocation {
     version: seqParam(params.get('v')),
     tab: MEMO_TABS.find((known) => known === tab) ?? legacy,
     against: seqParam(params.get('vs')),
+    ask: comment ? { comment } : params.get('comments') === 'open' ? 'list' : null,
   };
 }
 
@@ -96,6 +112,7 @@ export function fillLocation(loc: DriveLocation): ReadLocation {
     version: loc.version ?? null,
     tab: loc.tab ?? null,
     against: loc.against ?? null,
+    ask: loc.ask ?? null,
   };
 }
 

@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react';
+import { useThreadFlags } from '@/lib/threadLifecycle/store';
 import type { ArtifactComment } from '@/types/api';
 import { describeComment, type CommentLook } from '../../../artifactComments/commentModel';
 import type { CommentDestinations } from '../../../artifactComments/destinations';
@@ -23,8 +24,17 @@ export function useCommentLayer(): CommentLayerValue {
   return layer;
 }
 
-/** How a comment reads on this layer, its send from here and the turn on its thread included. */
+/**
+ * How a comment reads on this layer, its send from here and the turn on its
+ * thread included. The turn is the user feed's lifecycle store's, which the
+ * app keeps for every thread whatever is mounted. The chat beside the file
+ * says it too (`runningFor`), for the one moment the store cannot: a send
+ * there runs before the feed has heard of its run, or before its new chat
+ * has a thread at all.
+ */
 export function useCommentLook(comment: ArtifactComment): CommentLook {
   const { actions, runningFor } = useCommentLayer();
-  return describeComment(comment, actions.sendState(comment), runningFor(comment));
+  const run = useThreadFlags(comment.thread_id ?? '');
+  const running = run.isRunning || runningFor(comment);
+  return describeComment(comment, actions.sendState(comment), running, !running && run.status === 'failed');
 }

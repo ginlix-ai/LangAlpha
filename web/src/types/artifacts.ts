@@ -23,14 +23,17 @@ export interface ArtifactVersion {
 }
 
 /**
- * What a record holds comments on: a workspace file, or a market chart, which
- * has no file, is never shared and is keyed by its chart id.
+ * What a record holds comments on: a workspace file; a market chart, which
+ * has no file, is never shared and is keyed by its chart id; or a file in the
+ * owner's Drive, keyed by its entry id under the owner's Home, so a rename or
+ * a move keeps its comments.
  */
-export type ArtifactKind = 'file' | 'chart';
+export type ArtifactKind = 'file' | 'chart' | 'drive';
 
 /**
- * A record's target as a lookup names it: a file by its workspace path, or a
- * chart by its id, `SYMBOL:timeframe`, the key its chart layers use.
+ * A record's target as a lookup names it: a file by its workspace path, a
+ * chart by its id, `SYMBOL:timeframe`, the key its chart layers use, or a
+ * Drive file by its entry id.
  */
 export interface ArtifactTarget {
   kind: ArtifactKind;
@@ -98,8 +101,11 @@ export interface ArtifactThread {
   home: boolean;
 }
 
-/** Which rule picked the default: bound thread, the thread beside the panel, the creator, or a new thread. */
-export type ArtifactDestinationRule = 'bound' | 'beside' | 'creator' | 'new';
+/**
+ * Which rule picked the default: bound thread, the thread beside the panel,
+ * the creator, the chat that last worked on a Drive file, or a new thread.
+ */
+export type ArtifactDestinationRule = 'bound' | 'beside' | 'creator' | 'worked' | 'new';
 
 /** Where a comment goes unless the owner picks another thread, and the candidates for the "To:" menu. */
 export interface ArtifactDestinations {
@@ -113,6 +119,11 @@ export interface ArtifactDestinations {
   bound: ArtifactThread | null;
   beside: ArtifactThread | null;
   creator: ArtifactThread | null;
+  /**
+   * A Drive file's: the chat that last worked on it, by a comment sent there
+   * or the agent's latest save. Null when unknown; absent on other kinds.
+   */
+  worked?: ArtifactThread | null;
   /**
    * The Home a new Chief of Staff chat may take the comment in: the owner's,
    * for a file they own. Null for a chart and in a shared workspace; absent
@@ -304,6 +315,11 @@ interface TextAnchorFields extends SpotAnchorFields {
   lines?: string;
   /** The page they are on, in a PDF. */
   page?: number;
+  /**
+   * Where they sat on that page, as fractions of it: words that read the same
+   * as others there, and have the same words around, are found again by it.
+   */
+  rect?: { x: number; y: number; w: number; h: number };
 }
 
 interface BlockAnchorFields {
@@ -452,6 +468,19 @@ export interface ArtifactComment {
 /** A comment waiting for a thread's next send, on any artifact. */
 export interface QueuedArtifactComment extends ArtifactComment {
   workspace_id: string;
+  /** A Drive file's entry id, whose `path` is then its Drive path now. */
+  entry_id?: string | null;
+}
+
+/** `GET /artifacts/{id}/destination-threads`: one chat a comment could go to, as the picker lists it. */
+export interface DestinationThread {
+  thread_id: string;
+  title: string | null;
+  workspace_id: string;
+  workspace_name: string | null;
+  /** A Chief of Staff chat, in the owner's Home. */
+  home: boolean;
+  updated_at: string | null;
 }
 
 export interface CreateArtifactCommentRequest {
@@ -509,7 +538,10 @@ export interface ShownArtifactComment {
   workspace_id: string;
   /** Read as a file where an older server sends none (`kindOf`). */
   kind: ArtifactKind;
+  /** A file's workspace path; a chart's id; a Drive file's path in its Drive now. */
   path: string;
+  /** A Drive file's entry id, which still finds it after a rename. */
+  entry_id?: string | null;
   title: string | null;
   number: number;
   /** The words this send carried, clipped to 500. */

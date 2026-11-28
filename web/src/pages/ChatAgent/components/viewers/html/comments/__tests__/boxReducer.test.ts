@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ArtifactComment } from '@/types/api';
 import type { PageHover, PagePick } from '../../pageProtocol';
-import { boxReducer, initialBox, pressCloses, type BoxAction, type BoxState } from '../boxReducer';
+import { boxReducer, initialBox, pressAnswer, type BoxAction, type BoxState } from '../boxReducer';
 
 const RECT = { x: 10, y: 20, width: 100, height: 30 };
 const HOVER: PageHover = { rect: RECT, label: 'Revenue', word: false };
@@ -75,6 +75,7 @@ describe('a pick', () => {
     expect(state.open).toEqual({
       kind: 'draft',
       serial: 1,
+      takesFocus: true,
       draft: { anchor: { kind: 'text', quote: 'Q3' }, rect: RECT, path: 'report.html', title: 'Report' },
     });
     expect(state).toMatchObject({ forAgent: true, to: null, text: '' });
@@ -107,13 +108,20 @@ describe('a pick', () => {
 describe('a press on the page', () => {
   it('lets an empty draft go and keeps the outline under the pointer', () => {
     const before = run({ type: 'hover', hover: HOVER }, picked);
-    expect(pressCloses(before)).toBe(true);
     const state = boxReducer(before, { type: 'pressAway' });
     expect(state.open).toBeNull();
     expect(state.hover).toBe(HOVER);
   });
 
+  it('has an empty draft give way, naming its spot, so the press goes on to pick', () => {
+    const before = run(picked);
+    expect(pressAnswer(before)).toEqual({ gaveWay: pick().anchor });
+    // Spaces alone are no words.
+    expect(pressAnswer(run(picked, { type: 'write', text: '  ' }))).toEqual({ gaveWay: pick().anchor });
+  });
+
   it('asks before throwing written words away, and a second press does not answer', () => {
+    expect(pressAnswer(run(picked, { type: 'write', text: 'words' }))).toBe('closed');
     const asked = run(picked, { type: 'write', text: 'words' }, { type: 'pressAway' });
     expect(asked.confirmDiscard).toBe(true);
     expect(asked.open?.kind).toBe('draft');
@@ -121,6 +129,7 @@ describe('a press on the page', () => {
   });
 
   it('closes an open card, keeping the outline', () => {
+    expect(pressAnswer(run({ type: 'pinPressed', id: 'c-1' }))).toBe('closed');
     const state = run({ type: 'pinPressed', id: 'c-1' }, { type: 'hover', hover: HOVER }, { type: 'pressAway' });
     expect(state.open).toBeNull();
     expect(state.hover).toBe(HOVER);
@@ -128,7 +137,7 @@ describe('a press on the page', () => {
 
   it('does nothing with no box open, so its click picks', () => {
     const state = run();
-    expect(pressCloses(state)).toBe(false);
+    expect(pressAnswer(state)).toBeNull();
     expect(boxReducer(state, { type: 'pressAway' })).toBe(state);
   });
 });
@@ -341,5 +350,42 @@ describe('a card asked for while a comment is being written', () => {
   it('lets an empty draft go', () => {
     const state = run(picked, { type: 'brought', id: 'c-1' });
     expect(state.listed).toBeNull();
+  });
+});
+
+describe('a draft taken up again', () => {
+  const kept = { draft: { anchor: pick().anchor, rect: RECT, path: 'report.html', title: 'Report' }, text: 'kept words', forAgent: true, to: null };
+
+  it('opens without the focus until a new spot is picked, which takes it as ever', () => {
+    const state = run({ type: 'restore', kept, replace: false });
+    expect(state.open).toMatchObject({ kind: 'draft', takesFocus: false });
+    const picked = boxReducer(state, { type: 'pick', pick: pick('Q4'), path: 'report.html', selected: false, extend: false });
+    expect(picked.open).toMatchObject({ kind: 'draft', takesFocus: true });
+  });
+
+  it('keeps opening without the focus once set aside in the list', () => {
+    const state = run({ type: 'restore', kept, replace: false }, { type: 'listDraft' });
+    expect(state.listed).toMatchObject({ takesFocus: false });
+  });
+});
+
+describe('comment mode going off', () => {
+  it('lets an empty draft over the page go, and keeps one with words', () => {
+    expect(run({ type: 'modeShown', on: true }, picked, { type: 'modeShown', on: false }).open).toBeNull();
+    const kept = run({ type: 'modeShown', on: true }, picked, { type: 'write', text: 'why' }, { type: 'modeShown', on: false });
+    expect(kept.open).toMatchObject({ kind: 'draft' });
+  });
+});
+
+describe('words selected in the page for a draft', () => {
+  const selected: BoxAction = { ...picked, selected: true } as BoxAction;
+
+  it('are let go whichever way their draft goes, but for a press on the page, which drops them itself', () => {
+    expect(run(selected, { type: 'escape' }).selectionLetGo).toBe(1);
+    expect(run(selected, { type: 'listDraft' }, { type: 'listShown', open: false, comments: [] }).selectionLetGo).toBe(1);
+    expect(run(selected, { type: 'pressAway' }).selectionLetGo).toBe(0);
+    // A new pick of words takes the selection over: the page dropped the old one as it made the new.
+    expect(run(selected, selected).selectionLetGo).toBe(0);
+    expect(run(selected, picked).selectionLetGo).toBe(1);
   });
 });

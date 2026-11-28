@@ -86,12 +86,13 @@ MOVES: dict[str, str] = {
         )
     """,
     # A chart's record holds comments on Home's own chart, answered by Home's
-    # threads, which move above. One Home's chart already has was merged into
-    # it first (``_merge_colliding_charts``). A file's record stays with the
-    # sandbox state below: its path names a file on a computer.
+    # threads, which move above; a Drive file's record is kept in its owner's
+    # Home. One Home already has a record of was merged into it first
+    # (``_merge_colliding_records``). A file's record stays with the sandbox
+    # state below: its path names a file on a computer.
     "share_links": """
         UPDATE share_links SET workspace_id = %(home)s
-        WHERE workspace_id = %(former)s AND kind = 'chart'
+        WHERE workspace_id = %(former)s AND kind IN ('chart', 'drive')
     """,
 }
 
@@ -179,7 +180,7 @@ async def fold_former_homes(user_id: str, home_id: str, conn=None) -> list[str]:
                 params = {"home": home_id, "former": former}
                 renamed = await _rename_colliding_layers(cur, params)
                 await _rename_marked_layers(cur, params, renamed)
-                await _merge_colliding_charts(cur, params)
+                await _merge_colliding_records(cur, params)
                 for table, statement in MOVES.items():
                     await cur.execute(statement, params)
                     moved[table] += cur.rowcount
@@ -284,11 +285,11 @@ async def _rename_marked_layers(
         )
 
 
-async def _merge_colliding_charts(cur, params: dict[str, str]) -> None:
-    """Move the comments on each of the former row's chart records whose
-    chart Home already has a record of onto Home's, numbered after its last,
-    and drop the emptied record: one chart has one record per workspace, and
-    a comment's number is unique on its record. Home's record is locked first,
+async def _merge_colliding_records(cur, params: dict[str, str]) -> None:
+    """Move the comments on each of the former row's chart or Drive records
+    whose chart or file Home already has a record of onto Home's, numbered
+    after its last, and drop the emptied record: one chart or file has one
+    record per workspace, and a comment's number is unique on its record. Home's record is locked first,
     so a comment made there meanwhile cannot take a number moved in. The
     former record's binding goes along when Home's has none: its thread moves
     into Home with the rest, so it is still where those comments went."""
@@ -298,8 +299,8 @@ async def _merge_colliding_charts(cur, params: dict[str, str]) -> None:
                h.last_comment_number, o.bound_thread_id AS old_bound
         FROM share_links o
         JOIN share_links h
-          ON h.workspace_id = %(home)s AND h.kind = 'chart' AND h.path = o.path
-        WHERE o.workspace_id = %(former)s AND o.kind = 'chart'
+          ON h.workspace_id = %(home)s AND h.kind = o.kind AND h.path = o.path
+        WHERE o.workspace_id = %(former)s AND o.kind IN ('chart', 'drive')
         ORDER BY h.artifact_id
         FOR UPDATE OF o, h
         """,

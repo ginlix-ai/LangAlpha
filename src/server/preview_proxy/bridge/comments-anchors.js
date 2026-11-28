@@ -5,113 +5,34 @@
 
 // ---- Finding an anchor again ----
 
-/** @typedef {{ text: string, nodes: Text[], nodeAt: number[], offsetAt: number[] }} TextIndex */
+// How a quote is found again (`normal`, `indexText`, `findQuoteIn`) is the
+// app's own code, compiled into `comments-shared.generated.js`.
 
 var SKIPPED = /^(script|style|noscript|template|title)$/;
 
-/** @param {number} code */
-function isSpace(code) {
-  return code <= 32 || code === 160 || code === 0x1680 || code === 0x2028 || code === 0x2029 || code === 0x202f ||
-    code === 0x205f || code === 0x3000 || code === 0xfeff || (code >= 0x2000 && code <= 0x200b);
+/** @param {Text} node */
+function shownText(node) {
+  var parent = /** @type {Element | null} */ (node.parentNode);
+  return !(parent && parent.localName && SKIPPED.test(parent.localName));
 }
 
-// Lower case with every space dropped: the stored quote is the rendered
-// text, which spaces table cells and capitalises with CSS, and the text
-// nodes are neither.
-/** @param {unknown} text */
-function normal(text) {
-  var out = '';
-  var s = String(text || '');
-  for (var i = 0; i < s.length; i++) {
-    if (!isSpace(s.charCodeAt(i))) out += s.charAt(i);
-  }
-  return out.toLowerCase();
-}
-
-// The body's text in that same form, each character mapped back to the
-// text node and offset it came from.
+// The body's text as `normal` reads it.
 function textIndex() {
-  var body = document.body;
-  if (!body) return null;
-  var chars = [];
-  var nodeAt = [];
-  var offsetAt = [];
-  var nodes = [];
-  var walker = document.createTreeWalker(body, 4);
-  /** @type {Text | null} */
-  var node;
-  while ((node = /** @type {Text | null} */ (walker.nextNode()))) {
-    var parent = /** @type {Element | null} */ (node.parentNode);
-    if (parent && parent.localName && SKIPPED.test(parent.localName)) continue;
-    var data = node.data;
-    var at = nodes.length;
-    nodes.push(node);
-    for (var i = 0; i < data.length; i++) {
-      if (isSpace(data.charCodeAt(i))) continue;
-      var lower = data.charAt(i).toLowerCase();
-      chars.push(lower.length === 1 ? lower : data.charAt(i));
-      nodeAt.push(at);
-      offsetAt.push(i);
-    }
-  }
-  return { text: chars.join(''), nodes: nodes, nodeAt: nodeAt, offsetAt: offsetAt };
-}
-
-/** @param {string} a @param {string} b */
-function sharedTail(a, b) {
-  var n = 0;
-  while (n < a.length && n < b.length && a.charAt(a.length - 1 - n) === b.charAt(b.length - 1 - n)) n++;
-  return n;
-}
-
-/** @param {string} a @param {string} b */
-function sharedHead(a, b) {
-  var n = 0;
-  while (n < a.length && n < b.length && a.charAt(n) === b.charAt(n)) n++;
-  return n;
+  return document.body ? indexText(document.body, shownText) : null;
 }
 
 // The occurrence of `quote` its stored neighbours fit best, as a range;
-// only inside `within` when given.
+// only inside `within` when given. A page's text is anyone's, so a single
+// character, found anywhere, is not looked for.
 /**
- * @param {TextIndex | null} index
+ * @param {() => TextIndex | null} index
  * @param {string} quote
- * @param {string} prefix
- * @param {string} suffix
+ * @param {unknown} prefix
+ * @param {unknown} suffix
  * @param {Element | null} within
  */
 function findText(index, quote, prefix, suffix, within) {
-  var q = normal(quote);
-  if (!index || q.length < 2) return null;
-  var p = normal(prefix);
-  var s = normal(suffix);
-  var hay = index.text;
-  var best = -1;
-  var bestScore = -1;
-  var from = 0;
-  var tries = 0;
-  var at;
-  while ((at = hay.indexOf(q, from)) !== -1 && tries++ < 200) {
-    if (!within || within.contains(index.nodes[index.nodeAt[at]])) {
-      var score = sharedTail(hay.slice(Math.max(0, at - p.length), at), p) +
-        sharedHead(hay.slice(at + q.length, at + q.length + s.length), s);
-      if (score > bestScore) {
-        bestScore = score;
-        best = at;
-      }
-    }
-    from = at + 1;
-  }
-  return best < 0 ? null : rangeAt(index, best, q.length);
-}
-
-/** @param {TextIndex} index @param {number} at @param {number} length */
-function rangeAt(index, at, length) {
-  var last = at + length - 1;
-  var range = document.createRange();
-  range.setStart(index.nodes[index.nodeAt[at]], index.offsetAt[at]);
-  range.setEnd(index.nodes[index.nodeAt[last]], index.offsetAt[last] + 1);
-  return range;
+  return findQuoteIn(index, quote, prefix, suffix, { within: within, shortest: 2 });
 }
 
 // A path without its positions: the kinds of element it walks through,
@@ -170,15 +91,6 @@ function wordsOf(el) {
   return el.localName === 'img' ? attr(el, 'alt') : el.textContent;
 }
 
-// A selection past the cap was stored cut, so only its opening words can be
-// found; a quote that merely ends in an ellipsis is searched as it stands.
-/** @param {string} quote */
-function selectedWords(quote) {
-  return quote.length >= MAX_SELECTION - 1 && quote.charAt(quote.length - 1) === '\u2026'
-    ? quote.slice(0, -1)
-    : quote;
-}
-
 // Whether an element could be the quoted one, edited: it keeps the
 // quote's opening words, or its closing ones when the quote was stored
 // whole. One that reads nothing like it is another element that came to
@@ -188,7 +100,7 @@ function readsLike(el, quote, whole) {
   var q = normal(quote);
   var text = normal(wordsOf(el));
   var need = Math.min(8, Math.ceil(q.length / 2));
-  return sharedHead(text, q) >= need || (whole && sharedTail(text, q) >= need);
+  return sharedHead(text, 0, text.length, q) >= need || (whole && sharedTail(text, 0, text.length, q) >= need);
 }
 
 // A label stored whole ("Revenue") is not the sentence that begins with it
@@ -228,9 +140,9 @@ function hitOf(anchor, index) {
   var el = byPath(anchor.path);
   if (anchor.kind === 'text') {
     if (!anchor.quote) return null;
-    var words = selectedWords(anchor.quote);
-    var range = (el && findText(index(), words, anchor.prefix, anchor.suffix, el)) ||
-      findText(index(), words, anchor.prefix, anchor.suffix, null);
+    var words = searchedQuote(String(anchor.quote), MAX_SELECTION);
+    var range = (el && findText(index, words, anchor.prefix, anchor.suffix, el)) ||
+      findText(index, words, anchor.prefix, anchor.suffix, null);
     return range ? { range: range } : null;
   }
   // A path still names an element on a later version, but maybe another
@@ -248,11 +160,13 @@ function hitOf(anchor, index) {
   return byId || readsLike(el, quote, quote === anchor.quote) ? { el: el } : null;
 }
 
+// Where a hit is: its box as reported, rounded, and its edges as measured,
+// which a kept pin moves with (`keptWordsPin`).
 /**
  * @param {BridgeHit | null} hit
- * @returns {BridgeBox | null | undefined} undefined: the node went with a re-render
+ * @returns {{ rect: BridgeBox, edges: BridgeEdges } | null | undefined} undefined: the node went with a re-render
  */
-function rectOfHit(hit) {
+function spotOfHit(hit) {
   if (!hit) return null;
   if (hit.els) {
     /** @type {BridgeEdges | null} */
@@ -261,17 +175,66 @@ function rectOfHit(hit) {
       if (!hit.els[i].isConnected) return undefined;
       if (hit.els[i].getClientRects().length) bounds = union(bounds, hit.els[i].getBoundingClientRect());
     }
-    return bounds ? box(sized(bounds)) : null;
+    return bounds ? { rect: box(sized(bounds)), edges: bounds } : null;
   }
   if (hit.el) {
     if (!hit.el.isConnected) return undefined;
     if (!hit.el.getClientRects().length) return null;
-    return box(hit.el.getBoundingClientRect());
+    var own = hit.el.getBoundingClientRect();
+    return { rect: box(own), edges: own };
   }
   var range = /** @type {Range} */ (hit.range);
   if (!range.startContainer.isConnected) return undefined;
   var r = range.getBoundingClientRect();
-  return r.width || r.height ? box(r) : null;
+  return r.width || r.height ? { rect: box(r), edges: r } : null;
+}
+
+// ---- Where a pin goes ----
+
+// The rule is the app's own (`wordsPin`, `blockPin`, `pinDefault`), compiled
+// into `comments-shared.generated.js`; here it is given the page's root and
+// viewport, and its answer rounded as every box the page reports is.
+
+function pinView() {
+  var root = document.documentElement;
+  return { left: 0, top: 0, right: root.clientWidth || innerWidth, bottom: root.clientHeight || innerHeight };
+}
+
+/** @param {{ x: number, y: number }} at */
+function roundedPoint(at) {
+  return { x: round(at.x), y: round(at.y) };
+}
+
+/**
+ * The pin on words, past the end of their last line, or null when they show nowhere.
+ * @param {Range} range @returns {{ x: number, y: number } | null}
+ */
+function pinWords(range) {
+  var at = wordsPin(range, document.body || document.documentElement, pinView());
+  return at && roundedPoint(at);
+}
+
+/**
+ * Where a found spot's pin goes, said for every spot so the viewer places
+ * none itself, with what keeps it for the next report: `kept`, from the last,
+ * while the spot has only scrolled, and the text `pass` measured.
+ * @param {BridgeTracked} t @param {BridgeBox} rect @param {BridgeEdges} edges
+ * @param {PinPass} pass @param {PinMemo | null} kept
+ * @returns {{ at: { x: number, y: number }, memo: PinMemo | null }}
+ */
+function pinFor(t, rect, edges, pass, kept) {
+  var hit = t.hit;
+  var at = pinDefault(t.anchor, rect);
+  var root = document.body || document.documentElement;
+  if (hit && hit.range) {
+    var words = keptWordsPin(hit.range, root, pinView(), edges, pass, kept);
+    return { at: roundedPoint(words.at || at), memo: words.memo };
+  }
+  var spots = hit ? hit.els || (hit.el ? [hit.el] : []) : [];
+  if (!spots.length) return { at: roundedPoint(at), memo: null };
+  var bounds = { left: rect.x, top: rect.y, right: rect.x + rect.width, bottom: rect.y + rect.height };
+  var placed = keptBlockPin(spots, bounds, at, pinView(), edges, pass, kept);
+  return { at: roundedPoint(placed.at || at), memo: placed.memo };
 }
 
 // ---- Reporting ----
@@ -281,6 +244,13 @@ var mode = false;
 var tracked = [];
 var stale = true;
 var lastPositions = '';
+// Each tracked anchor's pin as the last report placed it, by its place in
+// `tracked`, dropped whenever anchors are found again (`resolveAll`).
+/** @type {(PinMemo | null)[]} */
+var pinsKept = [];
+// The document's scroll size at the last report. A change is a resize,
+// which can move text without a mutation, so no kept pin outlives it.
+var pinLayout = '';
 // The comment whose card is open: beside the draft, the only spot whose
 // parts the viewer outlines, so the only other one they are measured for.
 /** @type {string | null} */
@@ -316,23 +286,40 @@ function resolveAll() {
       tracked[i].hit = null;
     }
   }
+  // Found again, maybe in another layout: every pin is placed afresh.
+  pinsKept = [];
   stale = false;
   paintMarks();
 }
 
 function reportPositions() {
   if (stale) resolveAll();
+  var root = document.documentElement;
+  var layout = root.scrollWidth + ' ' + root.scrollHeight;
+  if (layout !== pinLayout) {
+    pinLayout = layout;
+    pinsKept = [];
+  }
+  var pass = pinPass();
   var items = [];
   for (var i = 0; i < tracked.length; i++) {
-    var rect = rectOfHit(tracked[i].hit);
-    if (rect === undefined) {
+    var found = spotOfHit(tracked[i].hit);
+    if (found === undefined) {
       // The node went with a re-render; find it again next frame.
       stale = true;
       schedule();
-      rect = null;
+      found = null;
     }
+    var rect = found ? found.rect : null;
     var parts = rect && (tracked[i].draft || tracked[i].id === outlined) ? partRects(tracked[i]) : null;
-    items.push(parts ? { id: tracked[i].id, rect: rect, parts: parts } : { id: tracked[i].id, rect: rect });
+    /** @type {BridgeSpotBox | null} */
+    var spot = null;
+    if (found) {
+      var placed = pinFor(tracked[i], found.rect, found.edges, pass, pinsKept[i] || null);
+      pinsKept[i] = placed.memo;
+      spot = { x: found.rect.x, y: found.rect.y, width: found.rect.width, height: found.rect.height, pin: placed.at };
+    }
+    items.push(parts ? { id: tracked[i].id, rect: spot, parts: parts } : { id: tracked[i].id, rect: spot });
   }
   var key = JSON.stringify(items);
   if (key === lastPositions) return;
@@ -366,7 +353,7 @@ function reportSelection() {
   /** @type {PageToViewerWire} */
   var message;
   if (range && selection) {
-    message = { type: 'page:selection', anchor: selection.anchor, rect: box(range.getBoundingClientRect()) };
+    message = { type: 'page:selection', anchor: selection.anchor, rect: spotBox(range.getBoundingClientRect(), pinWords(range)) };
   } else {
     selection = null;
     message = { type: 'page:selection', clear: true };
@@ -432,6 +419,14 @@ function watch() {
     if (document.body) sizes.observe(document.body);
     else document.addEventListener('DOMContentLoaded', function () { if (document.body) sizes.observe(document.body); });
   }
+  // A font that loads late lays the text out again without a mutation, and
+  // often without a resize: kept pins are placed afresh.
+  if (document.fonts && document.fonts.addEventListener) {
+    document.fonts.addEventListener('loadingdone', function () {
+      pinsKept = [];
+      schedule();
+    });
+  }
 }
 
 // ---- The words a comment is being written on ----
@@ -444,25 +439,83 @@ function watch() {
 // highlight API keeps the selection instead, which the viewer clears when
 // the box closes.
 var MARK = '__page_comment_mark__';
+// Words that lost their mark fade on the exit beat the box over them leaves
+// on, as the app's viewers fade theirs (`textMarks.ts`), under a highlight of
+// their own so words still marked keep their fill.
+var LEAVING = '__page_comment_leaving__';
+/** @type {typeof import('../../../../web/src/lib/motion').DURATION.exit} */
+var FADE_S = 0.14;
+var MARK_STRENGTH = 32;
 // The amber the app's accent is, for a theme that did not say.
 var MARK_ACCENT = 'hsl(28 78% 60%)';
 /** @type {Range | null} */
 var pendingMark = null;
+/** @type {Range[]} */
+var shownMarks = [];
+var fadeFrame = 0;
 
 function canMark() {
   return !!(window.CSS && CSS.highlights && typeof window.Highlight === 'function');
 }
 
-function markFill() {
-  return 'color-mix(in srgb, ' + (accent || MARK_ACCENT) + ' 32%, transparent)';
+/** @param {number} [percent] */
+function markFill(percent) {
+  return 'color-mix(in srgb, ' + (accent || MARK_ACCENT) + ' ' + (percent === undefined ? MARK_STRENGTH : percent) + '%, transparent)';
 }
 
 // Through the style sheet, not the element: a change to the page's DOM
-// would have every observer of it, the page's own too, look again.
-function tintMark() {
+// would have every observer of it, the page's own too, look again. The
+// first rule fills marked words, the second fading ones.
+/** @returns {CSSRuleList | null} */
+function markRules() {
   var style = /** @type {HTMLStyleElement | null} */ (document.getElementById(MARK));
-  var rules = style && style.sheet ? style.sheet.cssRules : null;
+  if (!style) {
+    style = document.createElement('style');
+    style.id = MARK;
+    style.textContent = '::highlight(' + MARK + '){background-color:' + markFill() + '}' +
+      '::highlight(' + LEAVING + '){background-color:' + markFill() + '}';
+    headOf().appendChild(style);
+  }
+  return style.sheet ? style.sheet.cssRules : null;
+}
+
+function tintMark() {
+  var style = document.getElementById(MARK);
+  var rules = style ? markRules() : null;
   if (rules && rules.length) /** @type {CSSStyleRule} */ (rules[0]).style.setProperty('background-color', markFill());
+}
+
+/** @param {Range[]} gone */
+function fadeMarks(gone) {
+  if (fadeFrame) window.cancelAnimationFrame(fadeFrame);
+  fadeFrame = 0;
+  var rules = markRules();
+  var rule = rules && rules.length > 1 ? /** @type {CSSStyleRule} */ (rules[1]) : null;
+  var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!rule || still) {
+    CSS.highlights['delete'](LEAVING);
+    return;
+  }
+  var leaving = new Highlight();
+  for (var i = 0; i < gone.length; i++) leaving.add(gone[i]);
+  CSS.highlights.set(LEAVING, leaving);
+  var fading = rule;
+  var start = -1;
+  /** @param {number} now */
+  var step = function (now) {
+    if (start < 0) start = now;
+    var t = Math.min(1, (now - start) / (FADE_S * 1000));
+    // Eased out, as the app's exits are.
+    fading.style.setProperty('background-color', markFill(MARK_STRENGTH * Math.pow(1 - t, 3)));
+    if (t < 1) {
+      fadeFrame = window.requestAnimationFrame(step);
+      return;
+    }
+    fadeFrame = 0;
+    CSS.highlights['delete'](LEAVING);
+  };
+  fading.style.setProperty('background-color', markFill());
+  fadeFrame = window.requestAnimationFrame(step);
 }
 
 function paintMarks() {
@@ -473,16 +526,16 @@ function paintMarks() {
     var hit = tracked[i].mark ? tracked[i].hit : null;
     if (hit && hit.range) ranges.push(hit.range);
   }
+  var gone = shownMarks.filter(function (was) {
+    return !ranges.some(function (now) { return rangesOverlap(was, now); });
+  });
+  shownMarks = ranges;
+  if (gone.length) fadeMarks(gone);
   if (!ranges.length) {
     CSS.highlights['delete'](MARK);
     return;
   }
-  if (!document.getElementById(MARK)) {
-    var style = document.createElement('style');
-    style.id = MARK;
-    style.textContent = '::highlight(' + MARK + '){background-color:' + markFill() + '}';
-    headOf().appendChild(style);
-  }
+  markRules();
   var mark = new Highlight();
   for (var j = 0; j < ranges.length; j++) mark.add(ranges[j]);
   CSS.highlights.set(MARK, mark);
@@ -500,14 +553,13 @@ function clearNativeSelection() {
 /**
  * @param {Range | null} range
  * @param {number} press
- * @param {BridgePoint} release
  * @param {boolean} select
  */
-function composeText(range, press, release, select) {
+function composeText(range, press, select) {
   /** @type {BridgeSelection | null} */
   var found = null;
   try {
-    found = rangeAnchor(range, release);
+    found = rangeAnchor(range);
   } catch (e) {
     found = null;
   }

@@ -1,5 +1,6 @@
 import type { CommentEnter } from '@/lib/artifactPreferences';
 import type { CommentIntent } from '../../../artifactComments/destinations';
+import type { CommentSurface } from './commentSurface';
 
 /**
  * The comment box's footer: which route the filled button takes, what the
@@ -36,13 +37,27 @@ export function footerLayout(forAgent: boolean, canQueue: boolean, enter: Commen
   return { primary, quiet, modEnter: other };
 }
 
-/** Where a key sends the words, or null for one that only edits them, Shift+Enter's newline among them. */
-export function routeForKey(
+/**
+ * What Enter does in a box on `surface`: the surface's own default where it
+ * sets one (the Drive sends at once), else the owner's preference.
+ */
+export function enterFor(surface: CommentSurface, preference: CommentEnter): CommentEnter {
+  return surface.enter ?? preference;
+}
+
+/**
+ * Which Enter a key is in a comment field: plain, with ⌘/Ctrl (`mod`), or
+ * null for a key that only edits the words, Shift+Enter's newline among them.
+ * An on-screen keyboard's return carries no modifier, so with one up
+ * (`onScreenKeyboard`) Enter is always a new line and the buttons send, as in
+ * the chat's box.
+ */
+export function enterKey(
   key: { key: string; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean },
-  layout: FooterLayout,
-): CommentIntent | null {
-  if (key.key !== 'Enter' || key.shiftKey) return null;
-  return key.metaKey || key.ctrlKey ? layout.modEnter : layout.primary;
+  onScreenKeyboard = false,
+): 'plain' | 'mod' | null {
+  if (key.key !== 'Enter' || key.shiftKey || onScreenKeyboard) return null;
+  return key.metaKey || key.ctrlKey ? 'mod' : 'plain';
 }
 
 /** Each intent as a footer button names it. */

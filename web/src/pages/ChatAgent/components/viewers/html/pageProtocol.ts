@@ -12,6 +12,7 @@
  * (`make test-bridge`) holds both ends to one shape.
  */
 import * as z from 'zod/mini';
+import type { Point } from '../comments/pinRoom';
 import { MAX_PAGE_LOADS } from '@/lib/pageLoads';
 import { parseRange } from '@/pages/ChatAgent/utils/a1';
 import type {
@@ -100,6 +101,19 @@ export interface FrameRect {
   height: number;
 }
 
+// Where a pin goes is the page's to say, by the rule a framed page runs too.
+export { PIN_SIZE, type Point } from '../comments/pinRoom';
+
+/**
+ * A spot's box and where its pin's tail goes, which the page decides
+ * (`comments/pinRoom.ts`, `pinFor` in the bridge): it alone can see the words
+ * a pin would cover. Without `pin` the layer places the pin itself
+ * (`pinPoint`), as for a spot kept from before pages said.
+ */
+export interface SpotRect extends FrameRect {
+  pin?: Point;
+}
+
 export interface PageHover {
   rect: FrameRect;
   label: string | null;
@@ -135,6 +149,8 @@ export interface PageAreaDrag {
 }
 
 export interface PageSelection extends PagePressed {
+  /** Words say where their pin goes from the start, so it does not move once the page reports them. */
+  rect: SpotRect;
   /**
    * Made in comment mode, by a drag over words or a click on one: the box
    * opens on it at once, with no chip, paired with `press` as a pick is.
@@ -157,7 +173,7 @@ export type PageToViewer =
    * the page. An area that lists every part also says where each part shows,
    * for the draft and the spot `page:outlined` names.
    */
-  | { type: 'page:positions'; items: { id: string; rect: FrameRect | null; parts?: FrameRect[] }[] }
+  | { type: 'page:positions'; items: { id: string; rect: SpotRect | null; parts?: FrameRect[] }[] }
   /** In comment mode, what is under the pointer; null when nothing is. */
   | { type: 'page:hover'; hover: PageHover | null }
   /** A press on the page, in either mode, numbered from 1 for each document. */
@@ -277,9 +293,15 @@ const coord = z.number().check(z.gte(-MAX_COORD), z.lte(MAX_COORD));
 const extent = z.number().check(z.gte(0), z.lte(MAX_COORD));
 const unit = z.number().check(z.gte(0), z.lte(1));
 const frameRect = z.object({ x: coord, y: coord, width: extent, height: extent });
+const spotRect = z.pipe(
+  z.object({ x: coord, y: coord, width: extent, height: extent, pin: lenient(z.object({ x: coord, y: coord })) }),
+  z.transform((r): SpotRect => defined(r)),
+);
 const pressNumber = z.int().check(z.gt(0));
 /** Where on the anchored box the pin sits, as fractions of it. */
 const point = z.object({ x: unit, y: unit });
+/** Where a spot sat, as fractions of what it sat on. */
+const place = z.object({ x: unit, y: unit, w: unit, h: unit });
 
 const spotFields = {
   path: text(ANCHOR_LIMITS.path),
@@ -309,6 +331,8 @@ const textAnchor = z.pipe(
     ...spotFields,
     lines: lenient(sourceLines),
     page: lenient(z.int().check(z.gte(1), z.lte(100_000))),
+    /** Where the words sat on their PDF page. */
+    rect: lenient(place),
   }).check(z.refine((a) => !!a.quote)),
   z.transform((a): TextAnchor => defined(a)),
 );
@@ -431,7 +455,7 @@ const areaAnchor = z.pipe(
     label: text(ANCHOR_LIMITS.label),
     point: lenient(point),
     /** Where the area sat, as fractions of the document. */
-    rect: lenient(z.object({ x: unit, y: unit, w: unit, h: unit })),
+    rect: lenient(place),
   }).check(z.refine((a) => a.count >= a.elements.length)),
   z.transform((a): AreaAnchor => defined(a)),
 );
@@ -484,7 +508,7 @@ const pageToViewer = z.discriminatedUnion('type', [
       items: m.items.slice(0, MAX_POSITIONS).flatMap((item) => {
         const read = z.object({
           id: z.string(),
-          rect: z.catch(z.nullable(frameRect), null),
+          rect: z.catch(z.nullable(spotRect), null),
           parts: lenient(z.array(frameRect).check(z.maxLength(MAX_AREA_ELEMENTS))),
         }).safeParse(item);
         if (!read.success) return [];
@@ -526,7 +550,7 @@ const pageToViewer = z.discriminatedUnion('type', [
         type: z.literal('page:selection'),
         clear: z.optional(z.literal(false)),
         anchor: textAnchor,
-        rect: frameRect,
+        rect: spotRect,
         title,
         press,
         compose: lenient(z.boolean()),
@@ -551,14 +575,14 @@ const pageToViewer = z.discriminatedUnion('type', [
 export type PageToViewerWire = z.input<typeof pageToViewer>;
 
 /** Any spot a comment being written is on: a pick, an area or selected words, with its box. */
-const draftSpot = z.object({ anchor: z.union([pickAnchor, areaAnchor, textAnchor]), rect: frameRect });
+const draftSpot = z.object({ anchor: z.union([pickAnchor, areaAnchor, textAnchor]), rect: spotRect });
 
 /**
  * A spot kept with a comment being written between visits, held to the same
  * rules as one the page reports, or null for one not to trust: anything on
  * the origin can write browser storage.
  */
-export function parseDraftSpot(data: unknown): { anchor: ArtifactCommentAnchor; rect: FrameRect } | null {
+export function parseDraftSpot(data: unknown): { anchor: ArtifactCommentAnchor; rect: SpotRect } | null {
   const read = draftSpot.safeParse(data);
   return read.success ? read.data : null;
 }

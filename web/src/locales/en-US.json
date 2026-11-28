@@ -960,7 +960,9 @@
         "open": "Show it in the file",
         "openLabel": "Show comment {{number}} in the file",
         "open_chart": "Show it on the chart",
-        "openLabel_chart": "Show comment {{number}} on the chart"
+        "openLabel_chart": "Show comment {{number}} on the chart",
+        "open_drive": "Open it in the Drive",
+        "openLabel_drive": "Open comment {{number}} in the Drive"
       },
       "reply": {
         "replied_one": "Replied to comment <nums/> on {{title}}",
@@ -992,8 +994,13 @@
         "placeholder_one": "Add a note, or just send",
         "placeholder_other": "Add a note for all {{count}}, or just send",
         "placeholderRunning": "Add a note; Enter adds them to this turn",
-        "keepFailed": "Some could not be kept as notes, so they are still queued."
-      }
+        "keepFailed": "Some could not be kept as notes, so they are still queued.",
+        "showInFile_drive": "Open it in the Drive"
+      },
+      "driveInTrash": "That file is in the Drive's trash. Restore it to open the comment.",
+      "driveGone": "That file is no longer in the Drive.",
+      "driveOpenFailed": "Couldn't open that file. Try again.",
+      "driveFile": "a Drive file"
     },
     "backToWorkflow": "Back to workflow",
     "backToMain": "Back to main",

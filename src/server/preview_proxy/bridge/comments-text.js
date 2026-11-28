@@ -15,15 +15,15 @@
 /** @typedef {import('../../../../web/src/types/artifacts').AreaAnchor} AreaAnchor */
 /** @typedef {{ left: number, top: number, right: number, bottom: number }} BridgeEdges */
 /** @typedef {{ node: Text, offset: number, box: DOMRect }} BridgeGlyph */
-/** @typedef {{ anchor: TextAnchor, rect: { x: number, y: number, width: number, height: number }, range: Range }} BridgeSelection */
+/** @typedef {{ x: number, y: number, width: number, height: number, pin?: { x: number, y: number } }} BridgeSpotBox */
+/** @typedef {{ anchor: TextAnchor, rect: BridgeSpotBox, range: Range }} BridgeSelection */
 // A node the code has checked is text, by its nodeType.
-/** @typedef {Node & { data: string }} TextLike */
 /** @typedef {{ x: number, y: number, width: number, height: number }} BridgeBox */
 /** @typedef {{ clientX: number, clientY: number }} BridgePoint */
 /** @typedef {{ node: Text, box: DOMRect | null }} BridgeRun */
 // The viewer's anchor as the page-side code reads it: its fields are checked
 // where they are used, since a stored anchor may be of any shape.
-/** @typedef {{ kind: string, path?: any, quote?: any, prefix?: any, suffix?: any, elements?: any, count?: any }} BridgeAnchor */
+/** @typedef {{ kind: string, path?: any, quote?: any, prefix?: any, suffix?: any, elements?: any, count?: any, point?: any }} BridgeAnchor */
 /** @typedef {{ el?: Element, els?: Element[], range?: Range }} BridgeHit */
 /** @typedef {{ id: string, anchor: BridgeAnchor, hit: BridgeHit | null, mark: boolean, draft: boolean }} BridgeTracked */
 // `extend`: a modifier was held at the press, so what it picks joins the
@@ -59,7 +59,6 @@ var MAX_LABEL = 120;
 var MAX_QUOTE = 300;
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').ANCHOR_LIMITS['quote']} */
 var MAX_SELECTION = 2000;
-var MAX_AROUND = 60;
 
 /** @type {typeof import('../../../../web/src/pages/ChatAgent/components/viewers/html/pageProtocol').MAX_POSITIONS} */
 var MAX_ANCHORS = 500;
@@ -86,33 +85,15 @@ function sendSpot(message) {
   send(message);
 }
 
-/** @param {unknown} text */
-function squash(text) {
-  return String(text == null ? '' : text).replace(/\s+/g, ' ').replace(/^ | $/g, '');
-}
-
-/** @param {string} text @param {number} limit */
-function clip(text, limit) {
-  return text.length > limit ? keptHead(text, limit - 1) + '\u2026' : text;
-}
-
-// A cut never leaves half a surrogate pair: the server cannot store one alone.
-/** @param {string} text @param {number} length */
-function keptHead(text, length) {
-  var last = text.charCodeAt(length - 1);
-  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? length - 1 : length);
-}
-
-/** @param {string} text @param {number} length */
-function keptTail(text, length) {
-  var from = Math.max(0, text.length - length);
-  var first = text.charCodeAt(from);
-  return text.slice(first >= 0xdc00 && first <= 0xdfff ? from + 1 : from);
-}
-
 /** @param {{ left: number, top: number, width: number, height: number }} r */
 function box(r) {
   return { x: round(r.left), y: round(r.top), width: round(r.width), height: round(r.height) };
+}
+
+/** @param {DOMRect} r @param {{ x: number, y: number } | null} pin @returns {BridgeSpotBox} */
+function spotBox(r, pin) {
+  var b = box(r);
+  return pin ? { x: b.x, y: b.y, width: b.width, height: b.height, pin: pin } : b;
 }
 
 /** @param {number} n */
@@ -499,60 +480,9 @@ function selectedRange() {
   return sel.getRangeAt(0);
 }
 
-// Letters of a word in scripts that space their words; CJK is left out,
-// since each of its characters already stands alone.
-var WORD = /[0-9A-Za-z_'\u2019\u00c0-\u024f\u0370-\u03ff\u0400-\u04ff]/;
-var SNAP = 40;
-
-/** @param {string} ch */
-function isWord(ch) {
-  return !!ch && WORD.test(ch);
-}
-
-// The selection grown to whole words where it starts or ends inside one,
-// so the quote never opens on a fragment ("arter ended"). A copy: the
-// reader's own selection stays as they made it.
-/** @param {Range} live */
-function wholeWords(live) {
-  var range = live.cloneRange();
-  var node = /** @type {TextLike} */ (range.startContainer);
-  var at = range.startOffset;
-  if (node.nodeType === 3 && isWord(node.data.charAt(at - 1)) && isWord(node.data.charAt(at))) {
-    var first = Math.max(0, at - SNAP);
-    while (at > first && isWord(node.data.charAt(at - 1))) at--;
-    range.setStart(node, at);
-  }
-  node = /** @type {TextLike} */ (range.endContainer);
-  at = range.endOffset;
-  if (node.nodeType === 3 && isWord(node.data.charAt(at - 1)) && isWord(node.data.charAt(at))) {
-    var last = Math.min(node.data.length, at + SNAP);
-    while (at < last && isWord(node.data.charAt(at))) at++;
-    range.setEnd(node, at);
-  }
-  return range;
-}
-
-// The selection's words without the spaces at either end, as the anchor
-// finds them again, so the mark drawn at once is the one that stays.
-/** @param {Range} range */
-function trimmed(range) {
-  var r = range.cloneRange();
-  var node = /** @type {TextLike} */ (r.startContainer);
-  var at = r.startOffset;
-  if (node.nodeType === 3) {
-    while (at < node.data.length && isSpace(node.data.charCodeAt(at))) at++;
-    r.setStart(node, at);
-  }
-  node = /** @type {TextLike} */ (r.endContainer);
-  at = r.endOffset;
-  if (node.nodeType === 3) {
-    while (at > 0 && isSpace(node.data.charCodeAt(at - 1))) at--;
-    if (node !== r.startContainer || at > r.startOffset) r.setEnd(node, at);
-  }
-  return r;
-}
-
-var TABLE_PART = /^(table|thead|tbody|tfoot|tr)$/;
+// Rows of equals: a table's first cell and a list's first item name nothing
+// else in it, so words there go by their heading.
+var ROWS = /^(table|thead|tbody|tfoot|tr|ul|ol|dl|menu)$/;
 // Past this much text a block is a section rather than a tile, named by
 // its heading.
 var CAPTIONED = 240;
@@ -579,12 +509,12 @@ function captionOf(el, range) {
 // the caption of the small block around them, as "Revenue" names the
 // "$46.7B" under it, else the nearest heading. A heading standing between
 // that caption and the words is nearer, and names them instead. A table
-// goes by its heading: its first cell names nothing else.
+// or a list goes by its heading (`ROWS`).
 /** @param {Element} host @param {Range} range */
 function textLabel(host, range) {
   var heading = headingElement(host);
   for (var el = /** @type {Element | null} */ (host), depth = 0; el && el !== document.body && depth < 4; el = el.parentElement, depth++) {
-    if (TABLE_PART.test(el.localName) || squash(el.textContent).length > CAPTIONED) break;
+    if (ROWS.test(el.localName) || squash(el.textContent).length > CAPTIONED) break;
     if (ownText(el)) continue;
     var named = captionOf(el, range);
     if (!named) continue;
@@ -595,11 +525,11 @@ function textLabel(host, range) {
   return heading ? visibleText(heading) : '';
 }
 
-// A text anchor for selected words, grown to whole words. `release`, a
-// point the pointer let go or clicked at, keeps where on the words the
-// pin stands, as a click's point does on an element.
-/** @param {Range | null} live @param {BridgePoint | null} release */
-function rangeAnchor(live, release) {
+// A text anchor for selected words, grown to whole words, with where their
+// pin goes by the rule their position reports use, so it stays put once
+// those come.
+/** @param {Range | null} live */
+function rangeAnchor(live) {
   if (!live || live.collapsed) return null;
   var range = wholeWords(live);
   var quote = squash(range.toString());
@@ -613,29 +543,13 @@ function rangeAnchor(live, release) {
   put(anchor, 'path', pathOf(host));
   var label = textLabel(host, range);
   put(anchor, 'label', label && clip(label, MAX_LABEL));
-  if (release && rect.width > 0 && rect.height > 0) {
-    anchor.point = {
-      x: fraction((release.clientX - rect.left) / rect.width),
-      y: fraction((release.clientY - rect.top) / rect.height),
-    };
-  }
-  var block = blockAround(host);
-  try {
-    var before = document.createRange();
-    before.setStart(block, 0);
-    before.setEnd(range.startContainer, range.startOffset);
-    var after = document.createRange();
-    after.setStart(range.endContainer, range.endOffset);
-    after.setEnd(block, block.childNodes.length);
-    put(anchor, 'prefix', keptTail(squash(before.toString()), MAX_AROUND));
-    put(anchor, 'suffix', keptHead(squash(after.toString()), MAX_AROUND));
-  } catch (e) {
-    // The selection reached outside the block; its words alone still find it.
-  }
-  return { anchor: anchor, rect: box(rect), range: range };
+  var around = wordsAround(range, blockAround(host));
+  put(anchor, 'prefix', around.prefix);
+  put(anchor, 'suffix', around.suffix);
+  return { anchor: anchor, rect: spotBox(rect, pinWords(range)), range: range };
 }
 
 function selectionAnchor() {
-  return rangeAnchor(selectedRange(), null);
+  return rangeAnchor(selectedRange());
 }
 

@@ -55,8 +55,8 @@ export function latestOwnerWords(comment: Pick<ArtifactComment, 'messages'>): st
   return '';
 }
 
-/** A comment with the workspace its file is in, which a send's bubble names. */
-export type CommentInWorkspace = ArtifactComment & { workspace_id: string };
+/** A comment with the workspace its file is in, which a send's bubble names, and a Drive file's entry id where it is known. */
+export type CommentInWorkspace = ArtifactComment & { workspace_id: string; entry_id?: string | null };
 
 /** What a send of `comments` with `note` will show, built before the server
  *  answers with its own. */
@@ -76,6 +76,7 @@ export function shownFromQueued(
         workspace_id: c.workspace_id,
         kind: c.kind,
         path: c.path,
+        ...(c.entry_id ? { entry_id: c.entry_id } : {}),
         title: c.title,
         number: c.number,
         text: clip(delivered.join('\n'), SHOWN_CHARS),
@@ -111,6 +112,7 @@ export function readArtifactCommentsShown(raw: unknown): ArtifactCommentsShown |
       workspace_id: str(c.workspace_id) ?? '',
       kind: kindOf(c),
       path: str(c.path) ?? '',
+      ...(str(c.entry_id) ? { entry_id: str(c.entry_id) } : {}),
       title: str(c.title),
       number: c.number,
       text: str(c.text) ?? '',

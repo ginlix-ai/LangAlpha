@@ -1,4 +1,4 @@
-"""File and chart comments reaching the agent: one chat send carries any
+"""File, chart and Drive file comments reaching the agent: one chat send carries any
 number of them.
 
 The owner's typed note comes first, then a block per comment, as one message
@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, get_args
 
 from fastapi import HTTPException
+from ptc_agent.core.paths import drive_file_path
 
 from src.server.database import artifacts as artifacts_db
 from src.server.database.artifacts import ClaimedComment
@@ -44,6 +45,7 @@ from src.server.services.artifacts.events import publish_comment_change
 logger = logging.getLogger(__name__)
 
 Reading = Literal["chat", "file"]
+
 
 # A follow-up recalls the exchange it continues, briefly: the thread holds it
 # too, unless it was compacted away.
@@ -313,15 +315,17 @@ def _render_file(
         # A chart is named by its id wherever the turn runs; only its
         # pictures are files.
         parts.add("chart")
-        return f"<chart>{_data(comment.path)}</chart>"
+        return f"<chart>{_data(comment.place)}</chart>"
+    if comment.kind == "drive":
+        return f"<file>{_data(drive_file_path(comment.place))}</file>"
     if place is None:
-        return f"<file>{_data(comment.path)}</file>"
+        return f"<file>{_data(comment.place)}</file>"
     if place.computer:
         parts.add("computer")
         opening = f'<file computer="{_attr(place.computer)}">'
     else:
         opening = "<file>"
-    return f"{opening}{_data(place.prefix + comment.path)}</file>"
+    return f"{opening}{_data(place.prefix + comment.place)}</file>"
 
 
 def _render_comment(
@@ -430,8 +434,9 @@ def shown_send(
                 comment_id=c.comment_id,
                 artifact_id=c.artifact_id,
                 workspace_id=c.workspace_id,
-                path=c.path,
+                path=c.place,
                 kind=c.kind,
+                entry_id=c.path if c.kind == "drive" else None,
                 title=c.title,
                 number=c.number,
                 text=_clip("\n".join(c.delivered), _SHOWN_CHARS),
@@ -573,19 +578,49 @@ class CommentSendScope:
         # refused send should not cost a title call.
         self._made_thread = await make_thread()
         self._row_ensured = True
-        self._claimed = await artifacts_db.claim_comments(
+        from src.server.services import drive
+
+        claim = await artifacts_db.claim_comments(
             user_id=self._owner_id,
             thread_id=self._thread_id,
             comment_ids=list(request.artifact_comment_ids),
             request_key=request.request_key,
             caller=self._user_id,
+            drive_on=await drive.sends_comments(self._owner_id),
         )
+        self._claimed = claim.comments
         if self._made_thread:
             self._title_query = note.strip() or "\n\n".join(
                 "\n".join(c.delivered) for c in self._claimed
             )
         if not self._claimed:
             if not note.strip():
+                # A Drive file's comments the Drive's state keeps unsent are
+                # no reason to tell the owner they went or were deleted.
+                if claim.drive_off:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "drive_off",
+                            # True of a Drive turned off and of one whose
+                            # state could not be read (``sends_comments``).
+                            "message": (
+                                "The Drive is not available, so comments on "
+                                "its files stay unsent."
+                            ),
+                        },
+                    )
+                if claim.in_trash:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "file_in_trash",
+                            "message": (
+                                "The file is in the Drive's trash. Restore it "
+                                "to send its comments."
+                            ),
+                        },
+                    )
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -766,15 +801,9 @@ async def publish_returned_comments(thread_id: str, returned: list[dict]) -> Non
     in the stamp's transaction. The stopping tab reconciles from its answer;
     every other tab hears here. Never raises."""
     changed: dict[str, list[str]] = {}
-    files: dict[str, tuple[str, str, RecordKind]] = {}
     for entry in returned:
         for c in (entry.get("artifact_comments") or {}).get("comments") or ():
             changed.setdefault(c["artifact_id"], []).append(c["comment_id"])
-            files[c["artifact_id"]] = (
-                c["workspace_id"],
-                c["path"],
-                c.get("kind", "file"),
-            )
     if not changed:
         return
     from src.server.database.conversation import get_thread_auth_meta
@@ -787,7 +816,9 @@ async def publish_returned_comments(thread_id: str, returned: list[dict]) -> Non
         )
         return
     if meta:
-        await _publish_changes(str(meta["user_id"]), thread_id, changed, files)
+        # A chip names where its file was, not the record's key, so each
+        # record is read again for the event.
+        await _publish_changes(str(meta["user_id"]), thread_id, changed)
 
 
 #: A send may wait behind a /compact or a cold computer before it is admitted,

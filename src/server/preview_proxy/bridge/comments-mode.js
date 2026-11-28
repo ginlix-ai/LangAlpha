@@ -403,10 +403,10 @@ window.addEventListener('pointerup', function (event) {
         endDrag();
       }
     } else if (drag.selecting || drag.dropped) {
-      // Words selected: their comment opens, its pin where the pointer let go.
+      // Words selected: their comment opens.
       swallowed = drag.press;
       var was = /** @type {BridgeDrag} */ (endDrag());
-      if (was.selecting) composeText(selectedRange(), was.press, event, false);
+      if (was.selecting) composeText(selectedRange(), was.press, false);
       // Called off: Chrome keeps the press's selection under the hold, and
       // shows it again once the hold lifts, after this release.
       else window.setTimeout(clearNativeSelection, 0);
@@ -482,13 +482,13 @@ window.addEventListener('click', function (event) {
 }, true);
 
 // A click on glyphs, by TEXT_CLICK: whether it made a text comment's
-// words, its pin where it was clicked, rather than picking the element.
+// words, rather than picking the element.
 /** @param {MouseEvent} event */
 function clickText(event) {
   if (TEXT_CLICK !== 'word') return false;
   var glyph = glyphAt(event.clientX, event.clientY) || (textPress && textPress.glyph);
   var word = glyph && glyph.node.isConnected ? wordAt(glyph, event.clientX) : null;
-  return !!word && composeText(word, presses, event, true);
+  return !!word && composeText(word, presses, true);
 }
 
 window.addEventListener('pointerover', function (event) {

@@ -54,8 +54,9 @@ def _comment(**overrides) -> ClaimedComment:
         "number": 3,
         "anchor": {"kind": "element", "path": "#margin", "quote": "41%"},
         "delivered": ["Show the quarter before too."],
+        **overrides,
     }
-    return ClaimedComment(**{**fields, **overrides})
+    return ClaimedComment(**{"place": fields["path"], **fields})
 
 
 def test_an_area_renders_its_parts_one_element_each():
@@ -198,6 +199,25 @@ def test_words_say_their_lines_or_page_before_the_quote():
         "<quote>net revenue</quote>",
         "</anchor>",
     ]
+
+
+def test_where_pdf_words_sat_is_never_shown_to_the_agent():
+    words = {
+        "kind": "text",
+        "page": 3,
+        "quote": "revenue growth",
+        "prefix": "Lorem ipsum",
+        "suffix": "margins valuation",
+        "point": {"x": 1.0, "y": 0.5},
+    }
+    placed = {**words, "rect": {"x": 0.12, "y": 0.41, "w": 0.2, "h": 0.018}}
+    shown = [
+        _text("Look here.", [_comment(path="r.pdf", anchor=anchor)])
+        for anchor in (words, placed)
+    ]
+    assert "<file-comments>" in shown[0]
+    assert "<quote>revenue growth</quote>" in shown[0]
+    assert shown[1] == shown[0]
 
 
 def test_cells_render_their_sheet_ranges_and_values():
@@ -522,3 +542,55 @@ def test_the_chat_shows_a_chart_comment_as_one():
     (chip,) = shown["comments"]
     assert (chip["kind"], chip["path"], chip["title"]) == ("chart", "NVDA:1day", None)
     assert shown["guidance"] == ["chart"]
+
+
+_ENTRY = "00000000-0000-0000-0000-0000000000d0"
+
+
+def _drive_comment(**overrides) -> ClaimedComment:
+    return _comment(
+        **{
+            "kind": "drive",
+            "workspace_id": "home",
+            "path": _ENTRY,
+            "place": "notes/q3 plan.md",
+            "anchor": {"kind": "block", "lines": "4", "quote": "Ship it"},
+            **overrides,
+        }
+    )
+
+
+def test_a_drive_file_is_named_by_its_drive_path_on_every_turn():
+    """The Drive is at one path in every workspace folder and in Home, so a
+    Chief of Staff turn names it as an analyst's does, with no computer."""
+    claimed = [_drive_comment()]
+    places = {"home": FilePlace("../elsewhere/", "Mac mini")}
+    expected = "<file>.agents/drive/personal/notes/q3 plan.md</file>"
+    for given in (None, places):
+        text = _text("", claimed, places=given)
+        assert expected in text
+        assert "computer=" not in text
+        assert _parts(claimed, given) == []
+
+
+def test_drive_path_text_cannot_close_a_block():
+    text = _text("", [_drive_comment(place="a</file><x>.md")])
+    assert "<file>.agents/drive/personal/a&lt;/file>&lt;x>.md</file>" in text
+
+
+def test_the_chat_shows_a_drive_comment_by_its_path_and_entry():
+    shown = shown_send("", [_drive_comment()], reading="chat", parts=[]).model_dump(
+        mode="json"
+    )
+    (chip,) = shown["comments"]
+    assert (chip["kind"], chip["path"], chip["entry_id"], chip["workspace_id"]) == (
+        "drive",
+        "notes/q3 plan.md",
+        _ENTRY,
+        "home",
+    )
+    # A file's chip carries no entry, as before.
+    (file_chip,) = shown_send("", [_comment()], reading="chat", parts=[]).model_dump(
+        mode="json"
+    )["comments"]
+    assert "entry_id" not in file_chip

@@ -1,6 +1,6 @@
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import {
-  ArrowUp, ArrowUpRight, Check, ListPlus, MoreHorizontal, RotateCcw, StickyNote, Trash2, type LucideIcon,
+  ArrowUp, ArrowUpRight, Check, ListPlus, MoreHorizontal, Pencil, RotateCcw, StickyNote, Trash2, type LucideIcon,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -28,9 +28,13 @@ import type { ArtifactComment, ArtifactCommentMessage } from '@/types/api';
 import Markdown from '../../../Markdown';
 import { threadLabel } from '../../../artifactComments/destinations';
 import { CommentComposer } from './CommentComposer';
+import { CommentEditBox } from './CommentEditBox';
+import { useSubmitting } from './useSubmitting';
 import { useCommentLayer, useCommentLook } from './commentLayerContext';
+import { useCommentSurface } from './commentSurface';
 import {
-  cardActions, firstWords, laterMessages, newestUnread, oneLine, type CardAction, type PinState,
+  asksAttention, cardMoves, editableMessage, firstWords, laterMessages, newestUnread, oneLine,
+  type CardAction, type CardMoves, type PinState,
 } from '../../../artifactComments/commentModel';
 import { spotPhrase } from '../../../artifactComments/anchorKinds';
 import { PinBadge } from '../../../artifactComments/PinBadge';
@@ -49,6 +53,7 @@ const SETTLED_MS = DURATION.quick * 1000;
 const REPLY = { kind: 'reply' } as const;
 
 const ACTION_ICON: Record<CardAction, LucideIcon> = {
+  edit: Pencil,
   keepNote: StickyNote,
   sendNow: ArrowUp,
   addToQueue: ListPlus,
@@ -57,6 +62,7 @@ const ACTION_ICON: Record<CardAction, LucideIcon> = {
 };
 
 const ACTION_LABEL: Record<CardAction, string> = {
+  edit: 'pageViewer:comments.edit',
   keepNote: 'pageViewer:comments.keepNote',
   sendNow: 'pageViewer:comments.sendNow',
   addToQueue: 'pageViewer:comments.addToQueue',
@@ -135,14 +141,38 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
   const now = useNow();
   const bodyId = useId();
   const [reply, setReply] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const { busy, failed, run } = useSubmitting();
   const [confirming, setConfirming] = useState(false);
+  // The message whose words are open to change, while they are.
+  const [editing, setEditing] = useState<string | null>(null);
 
   const { user } = useUser();
   const me = user?.user_id ?? null;
   const { actions, besideThreadId, destinations } = useCommentLayer();
-  const { state, working, reached, canReply, pending, refusal } = useCommentLook(comment);
+  const { readOnly, outdatedLink } = useCommentSurface();
+  const look = useCommentLook(comment);
+  const { state, working, reached, pending, refusal, needsRetry } = look;
+  // Words no send has taken can still change; a send taking them meanwhile ends the edit.
+  const editable = state === 'resolved' ? null : editableMessage(comment, me);
+  if (editing && editable?.message_id !== editing) setEditing(null);
+  const firstOwn = comment.messages.find((m) => m.author === 'user');
+  // The edit was asked from the ⋯ menu, so the focus goes back there as it
+  // ends by Save or Cancel (not as a send takes the words meanwhile).
+  const [menu, setMenu] = useState<HTMLButtonElement | null>(null);
+  const endEdit = () => {
+    setEditing(null);
+    menu?.focus({ preventScroll: true });
+  };
+  const editBox = (message: ArtifactCommentMessage) => (
+    <CommentEditBox
+      initial={message.body}
+      onCancel={endEdit}
+      onSave={async (body) => {
+        await actions.edit(comment, message.message_id, body);
+        endEdit();
+      }}
+    />
+  );
   // The ⋯ menu, Send now and the reply box go where this comment's words go:
   // the thread it waits for or went to, else the file's default.
   const sendRoute = destinations.targetFor(comment, 'send');
@@ -150,6 +180,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
   const sendNow = () => {
     if (sendRoute?.kind === 'send') actions.send(comment, sendRoute.to);
   };
+  const moves = cardMoves(look, { writes: !readOnly, canSend: sendRoute !== null, canQueue: queueRoute !== null, canEdit: editable !== null });
   const resolved = comment.status === 'resolved';
   const queued = state === 'queued';
   // Kept while its fold closes, once the comment has gone or been sent again.
@@ -167,6 +198,8 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
   const status = queued ? 'queued' : away ? 'sent' : null;
   // What the comment was on, kept for when the file no longer shows it.
   const stored = outdated ? (comment.anchor.quote ?? null) : null;
+  // Where it can be seen as it was made, while that version is kept.
+  const seeItOn = outdated ? (outdatedLink?.(comment) ?? null) : null;
 
   // A reader at the foot of the thread stays there as an answer folds in;
   // one who scrolled up to reread is left where they are.
@@ -184,31 +217,23 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
     return holdFoot(thread, content);
   }, [arrived]);
 
-  const run = async (act: () => Promise<void>) => {
-    if (busy) return;
-    setBusy(true);
-    setFailed(false);
-    try {
-      await act();
-    } catch {
-      setFailed(true);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const act = (action: CardAction) => {
     if (action === 'keepNote') void run(() => actions.setDelivery(comment, { kind: 'note' }));
     else if (action === 'addToQueue') {
       if (queueRoute?.kind === 'queue') void run(() => actions.setDelivery(comment, queueRoute));
     } else if (action === 'reopen') void run(() => actions.setStatus(comment, 'open'));
     else if (action === 'sendNow') sendNow();
-    else setConfirming(true);
+    else if (action === 'edit') {
+      if (!editable) return;
+      setEditing(editable.message_id);
+      // A later message shows only in an open card.
+      if (!open && place.kind === 'list' && editable.message_id !== firstOwn?.message_id) place.onToggle();
+    } else setConfirming(true);
   };
 
   const who = (
     <>
-      <PinBadge number={comment.number} state={state} working={working} unread={unread} />
+      <PinBadge number={comment.number} state={state} working={working} unread={asksAttention(comment, look)} />
       <span className="sr-only">{t('pageViewer:comments.pinLabel', { number: comment.number })}</span>
       {unread && <span className="sr-only">{t('pageViewer:comments.unreadLabel')}</span>}
       <span className="min-w-0 truncate text-[13px] font-medium" style={{ color: 'var(--color-text-primary)' }}>
@@ -223,11 +248,27 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
         </span>
       )}
       {STATE_LABEL[state] && <span className="sr-only">{t(STATE_LABEL[state])}</span>}
-      {/* Said folded or open: a list read top to bottom should not hide which
-          comments the file has moved out from under. */}
-      {outdated && <span className="page-comment-outdated shrink-0">{t('pageViewer:comments.outdated')}</span>}
+      {/* Heard as part of the toggle's name; drawn beside it, in the note. */}
+      {outdated && <span className="sr-only">{t('pageViewer:comments.outdated')}</span>}
     </>
   );
+  // Said folded or open: a list read top to bottom should not hide which
+  // comments the file has moved out from under. The pill and its version link
+  // keep a box of their own beside the toggle, which gives way first and
+  // stacks the link under the pill, so neither runs into the other or under
+  // the toggle's time.
+  const outdatedNote = outdated ? (
+    <span className="page-comment-outdated-note">
+      <span className="page-comment-outdated" aria-hidden>
+        {t('pageViewer:comments.outdated')}
+      </span>
+      {seeItOn && (
+        <button type="button" className="page-comment-card-over page-comment-see-version" onClick={seeItOn.open}>
+          {seeItOn.label}
+        </button>
+      )}
+    </span>
+  ) : null;
 
   return (
     <div className="page-comment-card" data-open={open || undefined} data-resolved={resolved || undefined} data-pin={place.kind === 'over' ? '' : undefined}>
@@ -237,58 +278,65 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
             {who}
           </button>
         ) : (
-          <span className="flex min-w-0 flex-1 items-center gap-[7px]">{who}</span>
+          <span className="page-comment-card-who">{who}</span>
         )}
-        <span className="page-comment-card-over flex shrink-0 items-center">
-          <button
-            type="button"
-            className="page-comment-icon-btn"
-            disabled={busy}
-            aria-label={resolved ? t('pageViewer:comments.reopen') : t('pageViewer:comments.resolve')}
-            title={resolved ? t('pageViewer:comments.reopen') : t('pageViewer:comments.resolve')}
-            onClick={() => void run(() => actions.setStatus(comment, resolved ? 'open' : 'resolved'))}
-          >
-            <InPlaceSwap scale swapped={resolved} from={<Check className="h-[15px] w-[15px]" />} to={<RotateCcw className="h-3.5 w-3.5" />} />
-          </button>
-          <DropdownMenu modal={false}>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="page-comment-icon-btn"
-                aria-label={t('pageViewer:comments.more')}
-                title={t('pageViewer:comments.more')}
-              >
-                <MoreHorizontal className="h-[15px] w-[15px]" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-44">
-              {cardActions(state, { canSend: sendRoute !== null, canQueue: queueRoute !== null }).map((action) => {
-                const Icon = ACTION_ICON[action];
-                return (
-                  <DropdownMenuItem
-                    key={action}
-                    variant={action === 'delete' ? 'destructive' : 'default'}
-                    disabled={busy && action !== 'delete'}
-                    onSelect={() => act(action)}
-                  >
-                    <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                    {t(ACTION_LABEL[action])}
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </span>
+        {outdatedNote}
+        {/* Read only, a card has no moves: only its thread to read. */}
+        {moves.menu && (
+          <span className="page-comment-card-over flex shrink-0 items-center">
+            <button
+              type="button"
+              className="page-comment-icon-btn"
+              disabled={busy}
+              aria-label={resolved ? t('pageViewer:comments.reopen') : t('pageViewer:comments.resolve')}
+              title={resolved ? t('pageViewer:comments.reopen') : t('pageViewer:comments.resolve')}
+              onClick={() => void run(() => actions.setStatus(comment, resolved ? 'open' : 'resolved'))}
+            >
+              <InPlaceSwap scale swapped={resolved} from={<Check className="h-[15px] w-[15px]" />} to={<RotateCcw className="h-3.5 w-3.5" />} />
+            </button>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  ref={setMenu}
+                  type="button"
+                  className="page-comment-icon-btn"
+                  aria-label={t('pageViewer:comments.more')}
+                  title={t('pageViewer:comments.more')}
+                >
+                  <MoreHorizontal className="h-[15px] w-[15px]" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                {moves.menu.map((action) => {
+                  const Icon = ACTION_ICON[action];
+                  return (
+                    <DropdownMenuItem
+                      key={action}
+                      variant={action === 'delete' ? 'destructive' : 'default'}
+                      disabled={busy && action !== 'delete'}
+                      onSelect={() => act(action)}
+                    >
+                      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      {t(ACTION_LABEL[action])}
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
+        )}
       </div>
 
       <div ref={threadRef} className="page-comment-thread min-h-0 overflow-y-auto">
         <div ref={contentRef}>
-          <p
-            className="pt-1 text-[13px] leading-[1.45] break-words whitespace-pre-wrap"
-            style={{ color: resolved ? 'var(--color-text-secondary)' : 'var(--color-text-primary)' }}
-          >
-            {firstWords(comment)}
-          </p>
+          {firstOwn && editing === firstOwn.message_id ? editBox(firstOwn) : (
+            <p
+              className="pt-1 text-[13px] leading-[1.45] break-words whitespace-pre-wrap"
+              style={{ color: resolved ? 'var(--color-text-secondary)' : 'var(--color-text-primary)' }}
+            >
+              {firstWords(comment)}
+            </p>
+          )}
           {/* Where the comment stands: queued, with the way out, or sent to
               another thread. One replaces the other in place as it goes. */}
           <Disclosure open={status !== null}>
@@ -304,12 +352,20 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
                   comment={comment}
                   besideThreadId={besideThreadId}
                   pending={pending}
-                  onSend={sendRoute ? sendNow : null}
+                  sendNow={moves.sendNow}
+                  onSend={sendNow}
                 />
               ) : away ? (
                 <ThreadLink id={away.id} label={away.label} text={t('pageViewer:comments.sentTo', { thread: away.label })} />
               ) : null}
             </SwapCell>
+          </Disclosure>
+          {/* The run that took it stopped on an error, and the answer waits
+              on a Retry in that chat, which the link above opens. */}
+          <Disclosure open={needsRetry && away !== null}>
+            <p role="status" className="page-comment-card-over pt-1 text-xs leading-[1.4]" style={{ color: 'var(--color-icon-danger)' }}>
+              {t('pageViewer:comments.needsRetry')}
+            </p>
           </Disclosure>
           <Disclosure open={refusal !== null}>
             <p role="alert" className="page-comment-card-over pt-1 text-xs leading-[1.4]" style={{ color: 'var(--color-icon-danger)' }}>
@@ -344,7 +400,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
               <AnimatePresence initial={false}>
                 {later.map((m) => (
                   <PresenceFold key={m.message_id} appear className="pt-2.5">
-                    <Reply message={m} me={me} locale={locale} now={now} />
+                    {editing === m.message_id ? <div className="pl-[27px]">{editBox(m)}</div> : <Reply message={m} me={me} locale={locale} now={now} />}
                   </PresenceFold>
                 ))}
               </AnimatePresence>
@@ -364,7 +420,7 @@ function CardBody({ comment, outdated, onDeleted, open, place }: CommentCardProp
         </div>
       </div>
 
-      <Disclosure open={open && canReply}>
+      <Disclosure open={open && moves.reply}>
         <div className="pt-2.5">
           <CommentComposer
             mode={REPLY}
@@ -430,13 +486,14 @@ function ThreadLink({ id, label, text }: { id: string; label: string; text: stri
  * thread it waits for, and Send now, which sends it alone to that thread
  * and shows the send until the server has it. The chat beside the file needs
  * no link; a comment whose thread is gone goes where new comments go, and
- * its Send now holds (`onSend` null) until that is known.
+ * its Send now holds (`sendNow` 'waiting') until that is known.
  */
-function QueuedRow({ comment, besideThreadId, pending, onSend }: {
+function QueuedRow({ comment, besideThreadId, pending, sendNow, onSend }: {
   comment: ArtifactComment;
   besideThreadId: string | null;
   pending: boolean;
-  onSend: (() => void) | null;
+  sendNow: CardMoves['sendNow'];
+  onSend: () => void;
 }): React.ReactElement {
   const { t } = useTranslation();
   const thread = comment.thread_archived ? null : comment.thread_id;
@@ -451,33 +508,35 @@ function QueuedRow({ comment, besideThreadId, pending, onSend }: {
       ) : thread ? (
         <span className="truncate" style={{ color: 'var(--color-text-secondary)' }}>{t('pageViewer:comments.forThisThread')}</span>
       ) : null}
-      <Button
-        type="button"
-        size="sm"
-        className="ml-auto h-6 shrink-0 gap-1 rounded-md px-2 text-xs"
-        // Held while the send goes, without the faded look of a control that cannot act.
-        aria-disabled={pending || !onSend || undefined}
-        onClick={() => {
-          if (!pending) onSend?.();
-        }}
-      >
-        <InPlaceSwap
-          swapped={pending}
-          className="justify-items-center"
-          from={(
-            <>
-              <ArrowUp className="h-3 w-3" aria-hidden />
-              {t('pageViewer:comments.sendNow')}
-            </>
-          )}
-          to={(
-            <>
-              <SendingGlyph on={pending} />
-              {t('pageViewer:comments.sending')}
-            </>
-          )}
-        />
-      </Button>
+      {sendNow && (
+        <Button
+          type="button"
+          size="sm"
+          className="ml-auto h-6 shrink-0 gap-1 rounded-md px-2 text-xs"
+          // Held while the send goes, without the faded look of a control that cannot act.
+          aria-disabled={pending || sendNow === 'waiting' || undefined}
+          onClick={() => {
+            if (!pending && sendNow === 'ready') onSend();
+          }}
+        >
+          <InPlaceSwap
+            swapped={pending}
+            className="justify-items-center"
+            from={(
+              <>
+                <ArrowUp className="h-3 w-3" aria-hidden />
+                {t('pageViewer:comments.sendNow')}
+              </>
+            )}
+            to={(
+              <>
+                <SendingGlyph on={pending} />
+                {t('pageViewer:comments.sending')}
+              </>
+            )}
+          />
+        </Button>
+      )}
     </>
   );
 }

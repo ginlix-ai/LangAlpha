@@ -6,9 +6,10 @@ import type { CommentTarget } from '../../../../utils/api/artifacts';
 import { useArtifactCommentSender } from '../../../artifactComments/sendContext';
 import type { CommentDestinationProps } from './CommentDestination';
 import type { CommentLayerValue } from './commentLayerContext';
-import { targetKey, threadOf, type CommentIntent, type CommentRoute } from '../../../artifactComments/destinations';
+import { threadOf, type CommentIntent, type CommentRoute } from '../../../artifactComments/destinations';
+import { useCommentSurface } from './commentSurface';
 import { useCommentActions } from './useCommentActions';
-import { useCommentDestinations } from '../../../artifactComments/useCommentDestinations';
+import { useCommentDestinations, useDraftDestination } from '../../../artifactComments/useCommentDestinations';
 import type { CommentUi } from './useCommentUi';
 
 interface LayerSendingOptions {
@@ -44,13 +45,12 @@ export function useLayerSending({ workspaceId, doc, draft, ui, to, onTo }: Layer
   const sender = useArtifactCommentSender();
   const beside = threadOf(sender.beside);
   const destinations = useCommentDestinations(workspaceId, doc);
-  const forDraft = useCommentDestinations(workspaceId, draft);
   const { bind } = useArtifactBinding();
   // The agent is on a comment while a turn runs on the thread beside and the
   // comment went there; a turn on another thread is not one this view hears.
   const runningFor = (comment: ArtifactComment) =>
     sender.running && (comment.thread_id ?? beside) === beside;
-  const actions = useCommentActions({ workspaceId, sender, sends: ui.sends });
+  const actions = useCommentActions({ workspaceId, sender, sends: ui.sends, entryId: doc.kind === 'drive' ? doc.path : null });
 
   // Binding makes the thread beside the default for this file's comments.
   const bindBeside = () => {
@@ -60,20 +60,17 @@ export function useLayerSending({ workspaceId, doc, draft, ui, to, onTo }: Layer
     });
     onTo(null);
   };
-  // A pick counts while the menu offers it. One kept with a draft from an
-  // earlier visit (the chat beside it since moved on, or its thread
-  // archived) goes nowhere the "To:" line does not name: the default instead.
-  const offered = to && forDraft.choices.some((c) => c.key === targetKey(to)) ? to : null;
-  const picked = offered ?? forDraft.fallback;
+  const forDraft = useDraftDestination(workspaceId, draft, { to, onTo, searchable: useCommentSurface().pickAnyChat === true });
 
   return {
     layer: { actions, besideThreadId: beside, destinations, runningFor },
-    draftRoute: (intent) => forDraft.targetFor(null, intent, offered),
+    draftRoute: forDraft.draftRoute,
     destination: {
       choices: forDraft.choices,
-      selected: picked ? targetKey(picked) : '',
-      onPick: (choice) => onTo(choice.isDefault ? null : choice.target),
+      status: forDraft.status,
+      onPick: forDraft.onPick,
       onBindBeside: forDraft.canBind ? bindBeside : null,
+      search: forDraft.search,
     },
   };
 }

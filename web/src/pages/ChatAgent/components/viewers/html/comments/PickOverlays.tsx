@@ -19,6 +19,7 @@ const CHIP_VARIANTS = {
 
 type Outline = { rect: FrameRect; label: string | null; picked: boolean };
 type Area = { rect: FrameRect; live: boolean; key: number };
+type Parts = { rects: FrameRect[]; tone: 'picked' | 'marked'; key: number };
 
 function sameRect(a: FrameRect, b: FrameRect): boolean {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
@@ -30,6 +31,10 @@ function sameOutline(a: Outline, b: Outline): boolean {
 
 function sameArea(a: Area, b: Area): boolean {
   return sameRect(a.rect, b.rect) && a.live === b.live && a.key === b.key;
+}
+
+function sameParts(a: Parts, b: Parts): boolean {
+  return a.tone === b.tone && a.key === b.key && a.rects.length === b.rects.length && a.rects.every((r, i) => sameRect(r, b.rects[i]));
 }
 
 /** How many times `shown` has turned on: each is a fresh appearance, drawn in place rather than glided to. */
@@ -122,6 +127,12 @@ export function PickOverlays({
   const areaShows = useAppearances(areaShown);
   const area = useKeptWhileFading<Area>(areaRect && { rect: areaRect, live: liveArea !== null, key: areaShows }, sameArea);
 
+  // The parts one by one, kept once they go so they fade with the box over
+  // them; each fresh show is new outlines, drawn in place, as an area's is.
+  const partsShown = parts !== null;
+  const partsShows = useAppearances(partsShown);
+  const keptParts = useKeptWhileFading<Parts>(parts && { ...parts, key: partsShows }, sameParts);
+
   // Outside comment mode only: in it, words picked open their box at once.
   let chip: { right: number; top: number; above: boolean } | null = null;
   if (selection && !mode && size.width > 0) {
@@ -180,13 +191,14 @@ export function PickOverlays({
         />
       )}
 
-      {parts?.rects.map((r, i) => (
+      {keptParts?.rects.map((r, i) => (
         <div
           // A part has no id here; by its place, each outline glides as the parts move.
-          key={i}
+          key={`${keptParts.key}:${i}`}
           className="page-comments-part"
-          data-tone={parts.tone}
+          data-tone={keptParts.tone}
           data-still={scrolling || undefined}
+          data-gone={!partsShown || undefined}
           style={{
             transform: `translate(${r.x - AREA_PAD}px, ${r.y - AREA_PAD}px)`,
             width: r.width + 2 * AREA_PAD,

@@ -1,5 +1,5 @@
-"""The owner's routes on a file's or a chart's comments, and a thread's queue
-of them.
+"""The owner's routes on the comments of a file, a chart or a Drive file, and
+a thread's queue of them.
 
 A shared workspace's comments are its holder's, like its records: every
 member writes, queues, resolves and reads them as the workspace's owner does,
@@ -20,6 +20,7 @@ from src.server.app.artifacts.models import (
     CommentListResponse,
     CommentResponse,
     CreateCommentRequest,
+    EditCommentMessageRequest,
     MarkCommentReadRequest,
     QueuedCommentListResponse,
     QueuedCommentResponse,
@@ -30,6 +31,7 @@ from src.server.database import artifacts as artifacts_db
 from src.server.database.artifacts import Artifact
 from src.server.database.artifacts.comments import Comment
 from src.server.database.conversation import thread_reach
+from src.server.services import drive
 from src.server.services.account import AccountSuspended
 from src.server.services.shared_workspaces.access import Access, NoAccess, thread_access
 from src.server.services.artifacts.comment_pictures import remove_pictures_soon
@@ -111,10 +113,16 @@ async def list_thread_queued_comments(
     except (NoAccess, AccountSuspended):
         raise not_found("Thread") from None
     comments = await artifacts_db.list_queued_comments(
-        user_id=access.owner_id, thread_id=thread_id
+        user_id=access.owner_id,
+        thread_id=thread_id,
+        drive_on=await drive.sends_comments(access.owner_id),
     )
+    # A queued comment is shown where its file is now.
     return QueuedCommentListResponse(
-        comments=[QueuedCommentResponse.model_validate(c) for c in comments]
+        comments=[
+            QueuedCommentResponse.model_validate(replace(c, path=c.place))
+            for c in comments
+        ]
     )
 
 
@@ -186,6 +194,37 @@ async def add_comment_message(
     await _comments_changed(
         owner_id, artifact, [comment_id], comment.thread_id, before
     )
+    return await _one(access, x_user_id, comment)
+
+
+@router.patch(
+    "/{artifact_id}/comments/{comment_id}/messages/{message_id}",
+    response_model=CommentResponse,
+)
+async def edit_comment_message(
+    artifact_id: str,
+    comment_id: str,
+    message_id: str,
+    body: EditCommentMessageRequest,
+    x_user_id: CurrentUserId,
+) -> CommentResponse:
+    """The owner rewrites words no send has taken yet: a note's or a queued
+    comment's. Refused as ``comment_sent`` once a send has them."""
+    artifact, access = await reached(artifact_id, x_user_id)
+    owner_id = access.owner_id
+    comment_id = path_id(comment_id, "Comment")
+    message_id = path_id(message_id, "Comment")
+    with db_errors():
+        comment = await artifacts_db.edit_owner_message(
+            user_id=owner_id,
+            artifact_id=artifact.artifact_id,
+            comment_id=comment_id,
+            message_id=message_id,
+            body=body.body,
+            caller=x_user_id,
+        )
+    # The thread it waits for shows it in its queue's deck.
+    await _comments_changed(owner_id, artifact, [comment_id], comment.thread_id)
     return await _one(access, x_user_id, comment)
 
 

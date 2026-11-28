@@ -49,8 +49,10 @@ describe('Drive paths', () => {
   });
 
   it('reads any Drive page link as the place it names, and no other page', () => {
-    const loc = (over: object) => ({ space: null, dir: '', file: null, trash: false, memos: false, version: null, tab: null, against: null, ...over });
+    const loc = (over: object) => ({ space: null, dir: '', file: null, trash: false, memos: false, version: null, tab: null, against: null, ask: null, ...over });
     expect(driveRouteLocation('/drive?file=research%2FQ3+notes.md')).toEqual(loc({ file: 'research/Q3 notes.md' }));
+    // A link to one of a file's comments opens the file at it.
+    expect(driveRouteLocation('/drive?file=plan.md&comment=c-1')).toEqual(loc({ file: 'plan.md', ask: { comment: 'c-1' } }));
     expect(driveRouteLocation('/drive?space=team-1&file=plan.md&tab=changes&v=3&vs=1'))
       .toEqual(loc({ space: 'team-1', file: 'plan.md', tab: 'changes', version: 3, against: 1 }));
     expect(driveRouteLocation('/drive?dir=research')).toEqual(loc({ dir: 'research' }));

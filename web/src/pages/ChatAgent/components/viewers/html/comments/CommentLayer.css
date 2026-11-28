@@ -109,7 +109,8 @@
 /* The parts of an area one by one, where the page reports them so: picked,
    in the pick blue a single element's outline settles to; on a comment whose
    card is open, dashed amber, as an area's outline. Each glides as its part
-   moves, and stays put while the page scrolls. */
+   moves, and stays put while the page scrolls. Gone, they fade where they
+   were, on the exit beat the box over them leaves on. */
 .page-comments-part {
   position: absolute;
   top: 0;
@@ -132,16 +133,23 @@
 .page-comments-part[data-still] {
   transition: none;
 }
+.page-comments-part[data-gone] {
+  opacity: 0;
+  transition: opacity var(--motion-exit) var(--ease-out);
+}
 
 /* Every pin, in one layer: faded out while the document under them is being
    replaced, and dimmed while the page scrolls. A frame scrolls on its own
    compositor a frame ahead of anything drawn over it, so a pin trails its spot
    by a frame mid-scroll; dimmed, it reads as catching up. Out on the exit
-   beat, back on quick. */
+   beat, back on quick. The layer's box is the page's view, and a pin leaves
+   it as its words scroll out: cut at the edge, or one just past the top
+   would sit on the viewer's toolbar. */
 .page-comment-pins {
   position: absolute;
   inset: 0;
   z-index: 2;
+  overflow: clip;
   pointer-events: none;
   transition: opacity var(--motion-quick) var(--ease-out);
 }
@@ -192,6 +200,17 @@
   animation:
     pop-in var(--motion-quick) var(--ease-out),
     page-comment-arrival var(--motion-reveal) var(--ease-reveal) var(--motion-quick) backwards;
+}
+
+/* Leaving, the box fades where it stands, in step with its pin, outline and
+   marked words: `CommentPopover` fades it on their clock and keeps it
+   mounted until it has. No pop out: its shrink would draw the box toward the
+   corner Radix placed it by, which under a band is its far end, so its left
+   edge slid about 18 px as it went. */
+.page-comment-box.pop-in[data-state='closed'] {
+  animation: none;
+  /* Each frame's opacity is the fade's own, not eased again. */
+  transition: none;
 }
 
 /* The add key held over a draft that takes parts: the box fades and lets clicks
@@ -255,12 +274,15 @@
 }
 
 /* The mode's hint, centred by a full-width row so the row's own motion is
-   the only transform on it. */
+   the only transform on it. At the foot of the pane, out of the file's top
+   (its first heading, a sheet's headers, a PDF's page controls), clear of a
+   scroll bar the viewer reports (`--comments-inset-*`), and wrapping onto a
+   second line on a narrow pane rather than cutting its words. */
 .page-comments-hint-row {
   position: absolute;
   z-index: 5;
-  top: 10px;
-  right: 12px;
+  right: calc(12px + var(--comments-inset-right, 0px));
+  bottom: calc(12px + var(--comments-inset-bottom, 0px));
   left: 12px;
   display: flex;
   justify-content: center;
@@ -271,22 +293,29 @@
 .page-comments-hint {
   display: flex;
   min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: 4px;
   padding: 2px 2px 2px 12px;
   pointer-events: auto;
-  border-radius: 9999px;
+  border-radius: 16px;
   font-size: 0.75rem;
   color: var(--color-text-secondary);
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border-muted);
   box-shadow: var(--shadow-card);
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+/* A box open where the hint is wins: the hint steps out until it moves. */
+.page-comments-hint[data-covered] {
+  opacity: 0;
+  pointer-events: none;
 }
 .page-comments-hint-text {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: 4px 0;
+  line-height: 16px;
+  text-wrap: balance;
 }
 .page-comments-hint-exit {
   display: inline-flex;

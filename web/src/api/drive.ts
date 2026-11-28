@@ -7,6 +7,7 @@ import {
   type DriveAttribution,
   type DriveChanges,
   type DriveClearShown,
+  type DriveCommentCounts,
   type DriveEntry,
   type DriveErrorType,
   type DriveMemoPage,
@@ -100,6 +101,32 @@ export async function readBytes(space: string, entryId: string, seq?: number | n
     cache: 'no-store',
   });
   return { buffer: res.data, sha: etagValue(res.headers.etag) };
+}
+
+/**
+ * Which page bridge an HTML file is read with: `comments` for the comment
+ * layer over its page, `view` for a page shown read only.
+ */
+export type DrivePageBridge = 'comments' | 'view';
+
+/**
+ * An HTML file's text with the page bridge first in its head, for a frame
+ * drawn from it (`srcDoc`). The server answers any other file's bytes as they
+ * are.
+ */
+export async function readPage(space: string, entryId: string, inject: DrivePageBridge, seq?: number | null): Promise<string> {
+  const res = await api.get<string>(contentUrl(space), {
+    params: { ...contentParams(entryId, seq), inject },
+    responseType: 'text',
+    cache: 'no-store',
+  });
+  return res.data;
+}
+
+/** Open comments and unread answers per file, only for files with one of the two. */
+export async function getCommentCounts(space: string): Promise<DriveCommentCounts> {
+  const { data } = await api.get<{ entries: DriveCommentCounts }>(at(space, 'comment-counts'));
+  return data.entries ?? {};
 }
 
 /** A file by its path, as an object URL: an image a Markdown file in the Drive embeds. */

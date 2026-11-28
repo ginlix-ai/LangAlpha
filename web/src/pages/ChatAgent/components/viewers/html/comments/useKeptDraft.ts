@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type Dispatch } from 'react';
 import { useStorageUser } from '@/lib/userStorage';
 import type { ArtifactKind } from '@/types/api';
-import { boxReducer, initialBox, type BoxAction, type BoxState, type Draft } from './boxReducer';
+import { boxReducer, initialBox, type BoxAction, type BoxStart, type BoxState, type Draft } from './boxReducer';
 import { dropDraft, keepDraft, readDraft } from './commentDrafts';
+import { useCommentSurface } from './commentSurface';
 
 /** Where a draft is kept: the workspace, and the file or chart it is on. */
 interface Place {
@@ -25,7 +26,8 @@ interface Place {
  * picked there would write over it. With none in hand, the one kept there
  * comes back at once. `askedHere` is
  * a card asked for on what the layer now shows (another timeframe's, from the
- * list): it opens in the box's place, so the draft waits in the list.
+ * list): it opens in the box's place, so the draft waits in the list. A layer
+ * on a surface that only reads (`CommentSurface.readOnly`) takes up none.
  */
 export function useKeptDraft({ workspaceId, kind, path, box, draft, dispatchBox, askedHere }: Place & {
   box: BoxState;
@@ -34,6 +36,7 @@ export function useKeptDraft({ workspaceId, kind, path, box, draft, dispatchBox,
   dispatchBox: Dispatch<BoxAction>;
   askedHere: boolean;
 }): void {
+  const { readOnly } = useCommentSurface();
   // Drafts are kept per signed-in user, and an account switch in place leaves
   // the layer mounted: the next user's are not the last one's.
   const user = useStorageUser();
@@ -47,7 +50,7 @@ export function useKeptDraft({ workspaceId, kind, path, box, draft, dispatchBox,
     const elsewhere = shown.user !== user || shown.workspaceId !== workspaceId;
     const yields = !elsewhere && !!draft && !!kept && draft.path !== path;
     setSetDown(yields ? draft.path : null);
-    if (elsewhere || yields || !draft) {
+    if (!readOnly && (elsewhere || yields || !draft)) {
       dispatchBox({ type: 'restore', kept, replace: elsewhere || yields, behind: askedHere });
     }
   }
@@ -72,7 +75,8 @@ export function useKeptDraft({ workspaceId, kind, path, box, draft, dispatchBox,
   }, [user, workspaceId, kind, draft, text, forAgent, to, setDown]);
 }
 
-/** The box a layer opens with: on the comment last being written on what it shows, if any. */
-export function openingBox(start: { doc: string; listOpen: boolean }, { workspaceId, kind, path }: Place): BoxState {
+/** The box a layer opens with: on the comment last being written on what it shows, if any, unless it only reads. */
+export function openingBox(start: BoxStart, { workspaceId, kind, path }: Place, readOnly = false): BoxState {
+  if (readOnly) return initialBox(start);
   return boxReducer(initialBox(start), { type: 'restore', kept: readDraft(workspaceId, kind, path), replace: false });
 }

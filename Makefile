@@ -1,4 +1,4 @@
-.PHONY: help config _ensure-env up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-bridge test-market-protocol test-chartkit test-edgar-engine test-all lint data-probe setup-db migrate
+.PHONY: help config _ensure-env up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-bridge bridge-shared test-market-protocol test-chartkit test-edgar-engine test-all lint data-probe setup-db migrate
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -70,7 +70,10 @@ test-web: ## Run frontend unit tests
 
 BRIDGE := ../src/server/preview_proxy/bridge
 test-bridge: ## Typecheck and test the preview page bridge against the viewer's protocol, on web's toolchain
-	cd web && pnpm exec tsc -p $(BRIDGE) && pnpm exec tsc -p $(BRIDGE)/tsconfig.test.json && pnpm exec vitest run --root $(BRIDGE)
+	cd web && node $(BRIDGE)/generate-shared.mjs --check && pnpm exec tsc -p $(BRIDGE) && pnpm exec tsc -p $(BRIDGE)/tsconfig.test.json && pnpm exec vitest run --root $(BRIDGE)
+
+bridge-shared: ## Regenerate the bridge part compiled from the app's quote search and pin rule
+	cd web && node $(BRIDGE)/generate-shared.mjs
 
 test-market-protocol: ## Run the market-protocol package suite in its own environment
 	cd libs/market-protocol && uv run pytest -v --tb=short

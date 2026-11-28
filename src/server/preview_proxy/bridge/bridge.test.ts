@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // that file lists them. It runs on web's Vitest from this directory
 // (`make test-bridge`), so the web package never reads outside web/.
 const part = (name: string) => readFileSync(resolve(__dirname, `${name}.js`), 'utf8');
-const quoted = (source: string) => [...source.matchAll(/"([\w-]+)"/g)].map((name) => name[1]);
+const quoted = (source: string) => [...source.matchAll(/"([\w.-]+)"/g)].map((name) => name[1]);
 const { PARTS, NESTED_PARTS } = (() => {
   const python = readFileSync(resolve(__dirname, '../page_bridge.py'), 'utf8');
   const view = /^_VIEW_PARTS = \(([^)]*)\)/m.exec(python);
@@ -343,6 +343,8 @@ interface LayoutOptions {
 function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights, noSegmenter = false, platform = 'MacIntel', hintPlatform }: LayoutOptions = {}) {
   const sent: Record<string, unknown>[] = [];
   const viewer = { postMessage: (message: unknown) => sent.push(JSON.parse(JSON.stringify(message))) };
+  // How far the page is scrolled down: every box drawn that much higher.
+  let scrolled = 0;
   const { window: w } = new JSDOM(`<!doctype html><html><head><script>${source}</script></head><body>${body}</body></html>`, {
     url: 'https://page-x.example.com/v/3/index.html',
     runScripts: 'dangerously',
@@ -350,6 +352,8 @@ function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights
     beforeParse(win) {
       Object.defineProperty(win, 'parent', { value: viewer, configurable: true });
       Object.defineProperty(win.navigator, 'platform', { value: platform, configurable: true });
+      // jsdom has no font set; a page's own fires `loadingdone` as its web fonts arrive.
+      Object.defineProperty(win.document, 'fonts', { value: new win.EventTarget(), configurable: true });
       if (hintPlatform) Object.defineProperty(win.navigator, 'userAgentData', { value: { platform: hintPlatform }, configurable: true });
       type Box = { x: number; y: number; left: number; top: number; right: number; bottom: number; width: number; height: number; toJSON: () => object };
       const make = (left: number, top: number, right: number, bottom: number): Box => ({
@@ -359,7 +363,7 @@ function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights
         const spec = el.getAttribute('data-box');
         if (spec) {
           const [x, y, width, height] = spec.split(' ').map(Number);
-          return make(x, y, x + width, y + height);
+          return make(x, y - scrolled, x + width, y - scrolled + height);
         }
         let box: Box | null = null;
         for (const child of Array.from(el.children)) {
@@ -392,7 +396,7 @@ function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights
           const spec = t.parentElement?.getAttribute('data-box');
           if (!spec) return null;
           const [x, y, , h] = spec.split(' ').map(Number);
-          return { x, y, h };
+          return { x, y: y - scrolled, h };
         };
         const textRects = (range: Range): Box[] => {
           const doc = range.startContainer.ownerDocument!;
@@ -528,7 +532,12 @@ function laidOutPage(body: string, { glyphs = false, source = BRIDGE, highlights
     const rule = (w.document.getElementById('__page_comment_mode__') as HTMLStyleElement).sheet!.cssRules[0] as CSSStyleRule;
     return { ...last, cursor: rule.style.getPropertyValue('cursor') };
   };
-  return { w, sent, send, drag, click, hover };
+  /** The page scrolled to `y`, its boxes moved up with it; the scroll is heard as a browser's is. */
+  const scrollTo = (y: number) => {
+    scrolled = y;
+    w.document.dispatchEvent(new w.Event('scroll'));
+  };
+  return { w, sent, send, drag, click, hover, scrollTo };
 }
 
 // Four tiles in a row, 100 x 80 with a 10 px gap: a caption, a value and a
@@ -656,10 +665,10 @@ describe('the page bridge takes an area dragged around several elements', () => 
       { path: '#grid > div:nth-of-type(2)', quote: 'Gross margin 72.4%' },
       { path: '#grid > div:nth-of-type(3)', quote: 'Operating income $28.4B' },
     ];
-    expect(positions({ kind: 'area', elements, count: 2 })).toEqual({ x: 120, y: 10, width: 210, height: 80 });
+    expect(positions({ kind: 'area', elements, count: 2 })).toMatchObject({ x: 120, y: 10, width: 210, height: 80 });
     // A tile gone: the area stands where the rest still do.
     w.document.querySelector('#grid > div:nth-of-type(3)')!.remove();
-    expect(positions({ kind: 'area', elements, count: 2 })).toEqual({ x: 120, y: 10, width: 100, height: 80 });
+    expect(positions({ kind: 'area', elements, count: 2 })).toMatchObject({ x: 120, y: 10, width: 100, height: 80 });
     expect(positions({ kind: 'area', elements: [{ path: '#nowhere', quote: 'Nothing like it' }], count: 2 })).toBeNull();
   });
 });
@@ -869,6 +878,20 @@ describe('the page bridge picks several parts for one comment', () => {
     expect(added.anchor.elements.map((e) => e.label)).toEqual(['Line 1', 'Line 2', 'Line 3']);
   });
 
+  it('keeps the parts of a drag the viewer let an empty box give way to, so a Cmd-click grows the new draft', () => {
+    const lines = Array.from({ length: 6 }, (_, i) => `<p data-box="10 ${10 + i * 20} 100 16">Line ${i + 1}</p>`).join('');
+    const { drag, click, draft } = drafting(`<div id="list">${lines}</div>`);
+    draft(drag([4, 4], [120, 48]).area!.anchor);
+    // The box over Lines 1 to 2 had no words: the viewer declined nothing and
+    // opened the next drag's box, on Lines 4 to 6.
+    const next = drag([4, 66], [120, 128]).area!;
+    expect(next.anchor.elements.map((e) => e.label)).toEqual(['Line 4', 'Line 5', 'Line 6']);
+    draft(next.anchor);
+    const added = click([50, 58], { meta: true }).area!;
+    expect(added).toMatchObject({ extend: true });
+    expect(added.anchor.elements.map((e) => e.label).sort()).toEqual(['Line 3', 'Line 4', 'Line 5', 'Line 6']);
+  });
+
   describe('keeps the parts it still has for a draft whose page lost one', () => {
     const listed = { kind: 'area', count: 3, elements: [{ path: path(0) }, { path: '#gone' }, { path: path(2) }] };
 
@@ -984,6 +1007,82 @@ const SECTION = `<h2 data-box="10 100 300 20">Segment revenue</h2><p id="p" data
 /** A point on the left of a character of the sentence, where the caret goes before it. */
 const inSentence = (i: number): [number, number] => [10 + i * CHAR + 1, 138];
 
+describe('the page bridge keeps pins across a scroll', () => {
+  const ANCHORS = [
+    { id: 'words', anchor: { kind: 'text', quote: 'market platform', path: '#p', prefix: 'Revenue by ', suffix: ' as presented' } },
+    { id: 'heading', anchor: { kind: 'element', path: 'body > h2:nth-of-type(1)', quote: 'Segment revenue' } },
+  ];
+  type Pins = ({ x: number; y: number } | undefined)[];
+  // Past the 200 ms in which a change to the page has its anchors found again once more.
+  const settle = () => new Promise((done) => setTimeout(done, 300));
+
+  /** A page with a comment on words and one on a heading, scrolled to `y`, and a count of the line boxes it measures. */
+  function scrolledPage(y: number) {
+    const page = laidOutPage(SECTION, { glyphs: true });
+    const measure = page.w.Range.prototype.getClientRects;
+    let measured = 0;
+    page.w.Range.prototype.getClientRects = function (this: Range) {
+      measured += 1;
+      return measure.call(this);
+    };
+    page.scrollTo(y);
+    page.send({ type: 'page:anchors', items: ANCHORS });
+    const pins = (): Pins => {
+      const last = page.sent.filter((m) => m.type === 'page:positions').pop() as { items: { rect: { pin?: { x: number; y: number } } | null }[] };
+      return last.items.map((item) => item.rect?.pin);
+    };
+    /** Scrolled to `to`, what the next frame reports and how many line boxes it measured. */
+    const scroll = async (to: number) => {
+      measured = 0;
+      page.scrollTo(to);
+      await new Promise((done) => setTimeout(done, 50));
+      return { pins: pins(), measured };
+    };
+    return { ...page, pins, scroll, measured: () => measured };
+  }
+
+  it('measures no text for spots that only scrolled, and moves each pin by exactly the scroll', async () => {
+    const page = scrolledPage(0);
+    await settle();
+    const first = page.pins();
+    expect(first.every(Boolean)).toBe(true);
+    const after = await page.scroll(40);
+    expect(after.measured).toBe(0);
+    expect(after.pins).toEqual(first.map((pin) => ({ x: pin!.x, y: pin!.y - 40 })));
+    expect(after.pins).toEqual(scrolledPage(40).pins());
+  });
+
+  it('measures again once a change to the page has its anchors found again', async () => {
+    const page = scrolledPage(0);
+    await page.scroll(40);
+    await settle();
+    page.w.document.getElementById('p')!.setAttribute('data-seen', '1');
+    const after = await page.scroll(40);
+    expect(after.measured).toBeGreaterThan(0);
+    expect(after.pins).toEqual(scrolledPage(40).pins());
+  });
+
+  it('measures again once a font has loaded, which lays the text out again in place', async () => {
+    const page = scrolledPage(0);
+    await page.scroll(40);
+    await settle();
+    const before = page.measured();
+    page.w.document.fonts.dispatchEvent(new page.w.Event('loadingdone'));
+    await new Promise((done) => setTimeout(done, 50));
+    expect(page.measured()).toBeGreaterThan(before);
+    expect(page.pins()).toEqual(scrolledPage(40).pins());
+  });
+
+  it('places a pin the view\'s top edge holds down as a fresh look would', async () => {
+    const page = scrolledPage(0);
+    await settle();
+    // The words' line starts at the view's top: centred on it, their pin would reach above the edge.
+    const held = await page.scroll(130);
+    expect(held.pins).toEqual(scrolledPage(130).pins());
+    expect(held.pins[0]!.y).toBeGreaterThanOrEqual(22);
+  });
+});
+
 describe('the page bridge selects words in comment mode', () => {
   it('makes a press on glyphs that drags a selection of the words, opened at once, not an area', () => {
     const { w, drag } = laidOutPage(SECTION + ROW, { glyphs: true });
@@ -999,12 +1098,41 @@ describe('the page bridge selects words in comment mode', () => {
     expect(picks).toEqual([]);
     expect(words).toHaveLength(1);
     expect(words[0].press).toBe(1);
-    // Whole words, named by the section they are in, the pin where the drag was let go.
+    // Whole words, named by the section they are in.
     expect(words[0].anchor).toMatchObject({ quote: 'market platform as presented', label: 'Segment revenue', path: '#p' });
     expect(words[0].anchor.prefix?.endsWith('Revenue by')).toBe(true);
     expect(words[0].anchor.suffix?.startsWith('in the filing')).toBe(true);
-    const grown = { left: 10 + SENTENCE.indexOf('market') * CHAR, right: 10 + (SENTENCE.indexOf('presented') + 9) * CHAR };
-    expect(words[0].anchor.point).toEqual({ x: Math.round(((inSentence(to)[0] - grown.left) / (grown.right - grown.left)) * 1000) / 1000, y: 0.5 });
+    // Their pin goes past the line's end, said with the words, and no point is kept for it.
+    expect(words[0].anchor).not.toHaveProperty('point');
+    expect((words[0].rect as { pin?: unknown }).pin).toEqual({ x: 10 + SENTENCE.length * CHAR + 10, y: expect.any(Number) });
+  });
+
+  it('says where the pin on selected words goes as the page later reports it, so it does not move', () => {
+    const { drag, sent, send } = laidOutPage(SECTION, { glyphs: true });
+    const { words } = drag(inSentence(SENTENCE.indexOf('market') + 2), inSentence(SENTENCE.indexOf('resented')));
+    const picked = words[0];
+    send({ type: 'page:anchors', items: [{ id: '__draft__', anchor: picked.anchor, draft: true, mark: true }] });
+    const last = sent.filter((m) => m.type === 'page:positions').pop() as { items: { rect: { pin?: unknown } | null }[] };
+    expect(last.items[0].rect?.pin).toEqual((picked.rect as { pin?: unknown }).pin);
+  });
+
+  it('stands the pin on words clear past the line\'s last letter, so the open pin\'s rings do not touch it', () => {
+    const { sent, send } = laidOutPage(SECTION, { glyphs: true });
+    send({ type: 'page:anchors', items: [{ id: 'c1', anchor: { kind: 'text', quote: 'market platform', path: '#p', prefix: 'Revenue by ', suffix: ' as presented' } }] });
+    const last = sent.filter((m) => m.type === 'page:positions').pop() as { items: { rect: { pin?: { x: number; y: number } } | null }[] };
+    const lineEnd = 10 + SENTENCE.length * CHAR;
+    // The open pin's outer ring reaches 4.5 px past its edge; about 6 px clear of the ink beyond it.
+    expect(last.items[0].rect?.pin?.x).toBe(lineEnd + 10);
+  });
+
+  it.each([
+    ['a final sigma', 'ΟΔΟΣ'],
+    ['a dotted capital I', 'İstanbul'],
+  ])('finds again words with %s, which fold one letter at a time as the text does', (_, quote) => {
+    const { sent, send } = laidOutPage('<p id="q" data-box="10 130 600 16">The road, or ΟΔΟΣ, runs to İstanbul.</p>', { glyphs: true });
+    send({ type: 'page:anchors', items: [{ id: 'c1', anchor: { kind: 'text', quote } }] });
+    const last = sent.filter((m) => m.type === 'page:positions').pop() as { items: { rect: unknown }[] };
+    expect(last.items[0].rect).not.toBeNull();
   });
 
   it('draws an area from a press off glyphs, as before', () => {
@@ -1020,13 +1148,23 @@ describe('the page bridge selects words in comment mode', () => {
     expect(on.picks).toEqual([]);
     expect(on.words).toHaveLength(1);
     expect(on.words[0].press).toBe(1);
-    // A sign belongs to the number beside it; the pin stands where the click was.
+    // A sign belongs to the number beside it.
     expect(on.words[0].anchor).toMatchObject({ quote: '$46.7B', label: 'Revenue', path: '#grid > div:nth-of-type(1) > div:nth-of-type(2)' });
-    expect(on.words[0].anchor.point).toEqual({ x: Math.round((14 / 36) * 1000) / 1000, y: 0.5 });
+    expect(on.words[0].anchor).not.toHaveProperty('point');
     // In the value's box, right of its glyphs.
     const off = click([80, 48]);
     expect(off.words).toEqual([]);
     expect(off.picks.map((p) => [p.press, p.anchor.path])).toEqual([[2, '#grid > div:nth-of-type(1) > div:nth-of-type(2)']]);
+  });
+
+  it('names words in a list item by the heading over the list, not by the list\'s first item', () => {
+    const list = '<h2 data-box="10 100 300 20">Risks</h2><ul data-box="10 130 600 48">'
+      + '<li data-box="10 130 600 16">First item</li><li data-box="10 146 600 16">Second item</li>'
+      + '<li id="t" data-box="10 162 600 16">Third item here</li></ul>';
+    const { click } = laidOutPage(list, { glyphs: true });
+    const on = click([10 + CHAR + 1, 170]);
+    expect(on.words).toHaveLength(1);
+    expect(on.words[0].anchor).toMatchObject({ quote: 'Third', label: 'Risks', path: '#t' });
   });
 
   it('picks the element a click on glyphs is on once the switch says element', () => {
@@ -1051,6 +1189,27 @@ describe('the page bridge selects words in comment mode', () => {
     expect(second.words.map((m) => [m.press, m.anchor.quote])).toEqual([[2, 'presented']]);
     // A click on no element and no glyphs: a press, and nothing picked.
     expect(third.sent.map((m) => m.type)).toEqual(['page:press']);
+  });
+
+  it('drops the words it holds selected at a press on other words, which the viewer leaves to it', () => {
+    // A page that cannot mark words keeps them selected while their box is
+    // open. An empty box gives way to the next press, and the viewer sends no
+    // clear after it, which would land on the words being selected now.
+    const { w, drag, sent } = laidOutPage(SECTION + ROW, { glyphs: true });
+    const first = drag(inSentence(2), inSentence(12));
+    expect(first.words).toHaveLength(1);
+    expect(w.getSelection()!.isCollapsed).toBe(false);
+    sent.length = 0;
+    const at = w.document.getElementById('p')!;
+    const [x, y] = inSentence(30);
+    at.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, detail: 1 }));
+    at.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, detail: 1 }));
+    expect(w.getSelection()!.rangeCount).toBe(0);
+    at.dispatchEvent(new w.MouseEvent('pointerup', { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, detail: 1 }));
+    at.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y, detail: 1 }));
+    // The press's own words, paired with it as the first were with theirs.
+    const words = sent.filter((m) => m.type === 'page:selection' && m.compose) as { press?: number; anchor: { quote: string } }[];
+    expect(words.map((m) => [m.press, m.anchor.quote])).toEqual([[2, 'presented']]);
   });
 
   it('lets go of a selection called off with Esc, and opens nothing at the release', () => {
@@ -1138,6 +1297,7 @@ describe('the page bridge spaces a label where the page draws a gap', () => {
 });
 
 describe('the page bridge marks the words a comment is being written on', () => {
+  const LEAVING = '__page_comment_leaving__';
   const marked = (highlights: Map<string, { ranges: Range[] }>) =>
     [...highlights.values()].flatMap((h) => h.ranges.map((r) => r.toString()));
 
@@ -1151,18 +1311,21 @@ describe('the page bridge marks the words a comment is being written on', () => 
     expect(w.getSelection()!.toString()).toBe('');
     send({ type: 'page:anchors', items: [{ id: '__draft__', anchor: words[0].anchor, mark: true }] });
     expect(marked(highlights)).toEqual(['market platform as presented']);
-    // The draft gone: so is the mark.
+    // The draft gone: its words fade out with its box, then the mark is gone.
     send({ type: 'page:anchors', items: [] });
-    expect(marked(highlights)).toEqual([]);
+    expect([...highlights.keys()]).toEqual([LEAVING]);
+    expect(marked(highlights)).toEqual(['market platform as presented']);
+    await vi.waitFor(() => expect(marked(highlights)).toEqual([]), { timeout: 2000 });
   });
 
-  it('drops the mark of words the viewer opened nothing on', () => {
+  it('drops the mark of words the viewer opened nothing on', async () => {
     const highlights = new Map<string, { ranges: Range[] }>();
     const { click, send } = laidOutPage(SECTION + ROW, { glyphs: true, highlights });
     click([32, 48]);
     expect(marked(highlights)).toEqual(['$46.7B']);
     send({ type: 'page:clear-selection' });
-    expect(marked(highlights)).toEqual([]);
+    expect([...highlights.keys()]).toEqual([LEAVING]);
+    await vi.waitFor(() => expect(marked(highlights)).toEqual([]), { timeout: 2000 });
   });
 
   it('keeps the selection instead where the browser cannot mark words', () => {

@@ -7,10 +7,11 @@ import { FileViewer } from '@/pages/ChatAgent/components/filePanel/FileViewer';
 import type { FileBody as Body } from '@/pages/ChatAgent/components/filePanel/fileBody';
 import type { FileError } from '@/pages/ChatAgent/components/filePanel/fileErrors';
 import { WorkspaceProvider } from '@/pages/ChatAgent/contexts/WorkspaceContext';
+import type { ViewerCommentsTarget } from '@/pages/ChatAgent/components/viewers/comments/ViewerComments';
 import type { OpenFileHandler } from '@/pages/ChatAgent/utils/fileLocation';
 import type { DriveEntry } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
-import { DriveHtml } from './DriveHtml';
+import { DriveHtml, type DrivePage } from './DriveHtml';
 import { DriveLoading } from './DriveLoading';
 import { ExtractedText, type TextSource } from './ExtractedText';
 import { PaneProblem } from './PaneProblem';
@@ -34,7 +35,18 @@ export type BodyView =
     editorRef: React.RefObject<editor.IStandaloneCodeEditor | null>;
     onChange: (draft: string) => void;
   }
-  | { kind: 'html'; name: string; content: string; source: boolean }
+  | {
+    kind: 'html';
+    name: string;
+    content: string;
+    source: boolean;
+    /** The file and version the page is drawn from, with its bridge; null where its hash is not known. */
+    page: DrivePage | null;
+    /** The owner's comments on it, where its current content takes them. */
+    comments: ViewerCommentsTarget | null;
+    /** The page is framed with no bridge, or has one again: no comment layer is drawn while it has none. */
+    onDocumentFailed?: (failed: boolean) => void;
+  }
   | {
     kind: 'document';
     entry: DriveEntry;
@@ -44,6 +56,10 @@ export type BodyView =
     onRetry: () => void;
     /** The version shown in place of the head, which a download takes. */
     seq: number | null;
+    /** The owner's comments on it, where its current content takes them. */
+    comments: ViewerCommentsTarget | null;
+    /** The viewer failed on the bytes, or recovered: no comment layer is drawn while it has. */
+    onDocumentFailed?: (failed: boolean) => void;
   }
   /** A Word file, shown as the text the server reads out of it; `source` names the bytes it should come from. */
   | { kind: 'extract'; entry: DriveEntry; seq: number; sha: string; source: TextSource }
@@ -102,7 +118,7 @@ export function FileBody({ view, imageLoader, onOpenLink }: {
         />
       );
     case 'html':
-      return <DriveHtml content={view.content} name={view.name} source={view.source} />;
+      return <DriveHtml content={view.content} name={view.name} source={view.source} page={view.page} comments={view.comments} onUnbridged={view.onDocumentFailed} />;
     case 'loading':
       return <DriveLoading />;
     case 'extract':
@@ -140,6 +156,8 @@ export function FileBody({ view, imageLoader, onOpenLink }: {
               onAnchorLink={(id) => document.getElementById(id)?.scrollIntoView({ block: 'start' })}
               onViewerLink={onOpenLink}
               proseClassName="drive-prose"
+              comments={view.comments}
+              onDocumentFailed={view.onDocumentFailed}
             />
           </WorkspaceProvider>
         </div>

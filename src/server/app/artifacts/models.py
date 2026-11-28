@@ -59,7 +59,8 @@ class ArtifactResponse(BaseModel):
     code: str
     url: str
     workspace_id: str
-    #: A file's workspace-relative path, or a chart's id (``SYMBOL:timeframe``).
+    #: A file's workspace-relative path, a chart's id (``SYMBOL:timeframe``),
+    #: or a Drive file's entry id.
     path: str
     name: str
     shared: bool
@@ -105,8 +106,8 @@ CHART_ID_CHARS = 64
 
 
 class ArtifactPathRequest(BaseModel):
-    """A file's path or a chart's id, exactly one: the body that makes a
-    record, and the query that finds one."""
+    """A file's path, a chart's id or a Drive file's entry id, exactly one:
+    the body that makes a record, and the query that finds one."""
 
     path: str | None = Field(default=None, min_length=1, max_length=4096)
     chart: str | None = Field(
@@ -115,11 +116,17 @@ class ArtifactPathRequest(BaseModel):
         max_length=CHART_ID_CHARS,
         description="A chart's id, SYMBOL:timeframe, in place of a path.",
     )
+    drive: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="A Drive file's entry id, in place of a path, on the caller's Home.",
+    )
 
     @model_validator(mode="after")
     def _one(self) -> ArtifactPathRequest:
-        if (self.path is None) == (self.chart is None):
-            raise ValueError("name a path or a chart, not both")
+        if sum(v is not None for v in (self.path, self.chart, self.drive)) != 1:
+            raise ValueError("name one of a path, a chart or a Drive file")
         return self
 
 
@@ -148,7 +155,7 @@ class ArtifactThreadResponse(BaseModel):
 
 
 class DefaultDestination(BaseModel):
-    rule: Literal["bound", "beside", "creator", "new"]
+    rule: Literal["bound", "beside", "creator", "worked", "new"]
     thread: ArtifactThreadResponse | None
     workspace_id: str
 
@@ -158,11 +165,29 @@ class DestinationsResponse(BaseModel):
     bound: ArtifactThreadResponse | None
     beside: ArtifactThreadResponse | None
     creator: ArtifactThreadResponse | None
+    #: A Drive file's: the thread that last worked on it, where the caller
+    #: may still send its comments; null for any other record.
+    worked: ArtifactThreadResponse | None = None
     #: The Home a new Chief of Staff thread may take a comment in: the
-    #: owner's, for a file the caller owns. Null for a chart, whose comments
-    #: stay with its workspace, and for a member of a shared workspace, whose
-    #: Home is not the owner's.
+    #: owner's, for a file or a Drive file the caller owns. Null for a chart,
+    #: whose comments stay with its workspace, and for a member of a shared
+    #: workspace, whose Home is not the owner's.
     home_workspace_id: str | None = None
+
+
+class PickableThreadResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    thread_id: str
+    title: str | None
+    workspace_id: str
+    workspace_name: str
+    home: bool
+    updated_at: datetime
+
+
+class DestinationThreadsResponse(BaseModel):
+    threads: list[PickableThreadResponse]
 
 
 class ShareFileEntryResponse(BaseModel):
@@ -386,7 +411,9 @@ class CellRange(BaseModel):
 
 
 class AreaRect(BaseModel):
-    """Where an area sat, as fractions of the document's scroll size."""
+    """Where an area sat, as fractions of the document's scroll size, or where
+    a PDF's selected words sat, as fractions of their page. It only tells
+    apart places whose words read the same, so the agent is never shown it."""
 
     model_config = _ANCHOR_CONFIG
     x: float = Field(ge=0, le=1)
@@ -497,11 +524,12 @@ ChartMark = Annotated[
 
 _SPOT_FIELDS = frozenset({"path", "label", "quote", "prefix", "suffix", "detail"})
 #: What each kind may carry beyond ``kind`` and ``point``: only what its
-#: rendering reads, so nothing stored is left out of what the agent is shown.
+#: rendering reads, so nothing stored is left out of what the agent is shown,
+#: but for ``point`` and ``rect``, kept to draw the spot again.
 _KIND_FIELDS: dict[str, frozenset[str]] = {
     "element": _SPOT_FIELDS,
     "named": _SPOT_FIELDS,
-    "text": _SPOT_FIELDS | {"lines", "page"},
+    "text": _SPOT_FIELDS | {"lines", "page", "rect"},
     "area": _SPOT_FIELDS | {"elements", "count", "rect"},
     "block": frozenset({"lines", "label", "quote"}),
     "cells": frozenset({"sheet", "ranges"}),
@@ -666,7 +694,10 @@ class CommentResponse(BaseModel):
 
 
 class QueuedCommentResponse(CommentResponse):
+    """On a Drive file, ``path`` is its path in its space now."""
+
     workspace_id: str
+    entry_id: str | None = None
 
 
 class CommentListResponse(BaseModel):
@@ -703,24 +734,25 @@ class CreateCommentRequest(BaseModel):
 
     def check_against(self, kind: RecordKind) -> None:
         """Refuse an anchor of the other kind of record: a chart's marks find
-        nothing in a file, and a file's anchor nothing on a chart. Refused as
-        the body's own validation refuses, so a client reads one shape of 422."""
+        nothing in a file, and a file's anchor nothing on a chart. A box on a
+        Drive file names no picture: there is no workspace folder to keep it
+        in. Refused as the body's own validation refuses, so a client reads
+        one shape of 422."""
         if (self.anchor.kind == "chart") != (kind == "chart"):
             reason = (
                 "a chart takes a chart anchor"
                 if kind == "chart"
                 else "a file takes no chart anchor"
             )
-            raise RequestValidationError(
-                [
-                    {
-                        "type": "value_error",
-                        "loc": ("body", "anchor", "kind"),
-                        "msg": f"Value error, {reason}",
-                        "input": self.anchor.kind,
-                    }
-                ]
-            )
+            _refuse(("body", "anchor", "kind"), reason, self.anchor.kind)
+        if kind == "drive":
+            for at, box in enumerate(self.anchor.boxes or ()):
+                if box.picture is not None:
+                    _refuse(
+                        ("body", "anchor", "boxes", at, "picture"),
+                        "a box on a Drive file has no picture",
+                        box.picture,
+                    )
 
     def file_fields(self, kind: RecordKind) -> tuple[str | None, str | None]:
         """The ``file_sha256`` and ``title`` a comment keeps: none on a chart,
@@ -730,10 +762,27 @@ class CreateCommentRequest(BaseModel):
         return self.file_sha256, self.title
 
 
+def _refuse(loc: tuple[Any, ...], reason: str, value: Any) -> None:
+    raise RequestValidationError(
+        [
+            {
+                "type": "value_error",
+                "loc": loc,
+                "msg": f"Value error, {reason}",
+                "input": value,
+            }
+        ]
+    )
+
+
 class AddCommentMessageRequest(BaseModel):
     body: CommentText
     delivery: Literal["note", "queued"] | None = None
     thread_id: ThreadId | None = None
+
+
+class EditCommentMessageRequest(BaseModel):
+    body: CommentText
 
 
 class UpdateCommentRequest(BaseModel):

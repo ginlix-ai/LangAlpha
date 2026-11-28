@@ -20,7 +20,7 @@ function PopoverContent({
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal forceMount={props.forceMount}>
       <PopoverPrimitive.Content
         data-slot="popover"
         align={align}

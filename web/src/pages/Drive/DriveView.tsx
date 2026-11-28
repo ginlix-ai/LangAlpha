@@ -5,7 +5,6 @@ import { objectUrlAt } from '@/api/drive';
 import { apiErrorStatus } from '@/api/errors';
 import { useDriveChanges, useDriveEntryById, useDriveList } from '@/hooks/useDrive';
 import { usePageTabLeaveGuard } from '@/components/PageTabs/usePageTabLeaveGuard';
-import { isUnclaimedEscape } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 import { useLatestRef } from '@/hooks/useLatestRef';
 import { withFile, type DriveLocation, type ReadLocation } from '@/lib/driveLinks';
@@ -28,6 +27,7 @@ import { driveLinkPath, drivePathKey, followMove, isWithinKey, linkedFile, paren
 import { fileAddress } from './memoMarks';
 import { useDriveActions } from './useDriveActions';
 import { useDriveSpace, useOpenDriveFile } from './useOpenDriveFile';
+import { useEscapeClosesFile } from './useEscapeClosesFile';
 import { useDriveUpload } from './useDriveUpload';
 import './Drive.css';
 // After Drive.css: its memo rules override shared ones of the same weight.
@@ -129,24 +129,12 @@ export function DriveView({ loc, navigate, host, single, pageAction, stale = fal
   }, [editing]);
 
   // On the page, Escape puts an open file away, as it closes any other panel.
-  // Not while editing (the editor keeps its own keys), nor over a dialog or a
-  // menu, which Escape closes first. In the chat's panel Escape is the chat's.
+  // Not while editing (the editor keeps its own keys), nor just after an
+  // Escape the comment layer took (`useEscapeClosesFile`). In the chat's
+  // panel Escape is the chat's.
   const closeFile = () => go(loc.memos ? { memos: true } : { dir });
-  const onEscape = useEffectEvent(closeFile);
   const fileOpen = !loc.trash && !!file;
-  const escapes = host === 'page' && fileOpen && !editor.session;
-  useEffect(() => {
-    if (!escapes) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (!isUnclaimedEscape(e)) return;
-      const target = e.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"], .monaco-editor')) return;
-      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;
-      onEscape();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [escapes]);
+  useEscapeClosesFile(host === 'page' && fileOpen && !editor.session, closeFile);
 
   // Where the view is now, for what settles after a request: a move or a
   // trash follows the place it changed only while the view still shows it.
@@ -278,7 +266,7 @@ export function DriveView({ loc, navigate, host, single, pageAction, stale = fal
   const respelled = !!current && placeOf({}).space !== loc.space;
   const correction: DriveLocation | null = missing ? { space: null }
     : isFolder ? { dir: file }
-    : file && fileEntry && settled && !swapOpen && (differs || stale) ? { file, ...canonical }
+    : file && fileEntry && settled && !swapOpen && (differs || stale) ? { file, ...canonical, ask: loc.ask }
     : respelled ? { ...loc, space: undefined }
     : null;
   const correctionKey = correction ? JSON.stringify(placeOf(correction)) : null;
@@ -363,6 +351,9 @@ export function DriveView({ loc, navigate, host, single, pageAction, stale = fal
                 head={head}
                 imageLoader={imageLoader}
                 onOpenLink={onOpenLink}
+                commentAsk={loc.ask}
+                // Shown once: the place lets it go, so Back or a reload does not open it again.
+                onCommentAsked={() => correct(withFile(loc, file))}
               />
             )}
           </div>

@@ -22,6 +22,8 @@ export interface DestinationChoice {
   label: string;
   /** The default destination, which a comment takes unless another is picked. */
   isDefault: boolean;
+  /** What the menu says beside it in place of "default": why it is the default. */
+  tag?: string;
 }
 
 /**
@@ -117,33 +119,40 @@ export function commentDestinations(
       : { newThreadIn: destinations.default.workspace_id };
 
   const choices: DestinationChoice[] = [];
+  // A new thread in the owner's Home is a Chief of Staff chat: Home has no other kind.
+  const home = destinations?.home_workspace_id ?? null;
+  const newLabel = (workspaceId: string) =>
+    workspaceId === home ? 'pageViewer:comments.newChiefOfStaff' : 'pageViewer:comments.newThread';
   const nameOf = (target: CommentTarget, title: string | null = null): string =>
     choices.find((c) => c.key === targetKey(target))?.label
     ?? ('threadId' in target
       ? threadLabel(t, { thread_id: target.threadId, title }, besideThreadId)
-      : t(sameTarget(beside, target) ? 'pageViewer:comments.thisThread' : 'pageViewer:comments.newThread'));
+      : t(sameTarget(beside, target) ? 'pageViewer:comments.thisThread' : newLabel(target.newThreadIn)));
   if (destinations) {
-    const add = (target: CommentTarget, label: string, isDefault: boolean) => {
+    const add = (target: CommentTarget, label: string, isDefault: boolean, tag?: string) => {
       const key = targetKey(target);
-      if (!choices.some((c) => c.key === key)) choices.push({ key, target, label, isDefault });
+      if (!choices.some((c) => c.key === key)) choices.push({ key, target, label, isDefault, ...(tag ? { tag } : {}) });
     };
-    const addThread = (thread: ArtifactThread | null, isDefault = false) => {
-      if (thread?.usable) add({ threadId: thread.thread_id }, threadLabel(t, thread, besideThreadId), isDefault);
+    const addThread = (thread: ArtifactThread | null | undefined, isDefault = false, tag?: string) => {
+      if (thread?.usable) add({ threadId: thread.thread_id }, threadLabel(t, thread, besideThreadId), isDefault, tag);
     };
-    if (destinations.default.thread) addThread(destinations.default.thread, true);
-    else {
+    if (destinations.default.thread) {
+      // The chat that last worked on a Drive file says so, since nothing else on the Drive names it.
+      const worked = destinations.default.rule === 'worked' ? t('pageViewer:comments.workedTag') : undefined;
+      addThread(destinations.default.thread, true, worked);
+    } else {
       const fresh = { newThreadIn: destinations.default.workspace_id };
       add(fresh, nameOf(fresh), true);
     }
     addThread(destinations.beside);
     addThread(destinations.bound);
+    addThread(destinations.worked, false, t('pageViewer:comments.workedTag'));
     // A file's comment can also start a Chief of Staff chat, in the Home the
     // server names. Already there where the default is a new thread in Home;
     // beside a new Chief of Staff chat it is that chat's first message.
-    const home = destinations.home_workspace_id;
     if (home) {
       const chief = { newThreadIn: home };
-      add(chief, t(sameTarget(beside, chief) ? 'pageViewer:comments.thisThread' : 'pageViewer:comments.newChiefOfStaff'), false);
+      add(chief, nameOf(chief), false);
     }
   }
 

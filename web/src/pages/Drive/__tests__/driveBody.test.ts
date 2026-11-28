@@ -64,3 +64,64 @@ describe('readDriveBody: a PDF past the preview bound', () => {
     expect(readBytes).toHaveBeenCalled();
   });
 });
+
+describe('the head moving on', () => {
+  const at = (sha: string, id = 'e1'): DriveEntry => ({ ...file('notes.md', 10), id, sha256: sha });
+
+  it('keeps the bytes on screen, marked as the last head, until the new ones arrive', async () => {
+    let arrive: (content: string) => void = () => {};
+    vi.mocked(readText)
+      .mockResolvedValueOnce({ content: 'first', sha: 'a'.repeat(64) })
+      .mockImplementationOnce(() => new Promise((resolve) => { arrive = (content) => resolve({ content, sha: 'b'.repeat(64) }); }));
+    let entry = at('a'.repeat(64));
+    const { result, rerender } = renderHookWithProviders(() => useDriveBody('s', entry, null));
+    await waitFor(() => expect(result.current.data?.content).toBe('first'));
+
+    entry = at('b'.repeat(64));
+    rerender();
+
+    expect(result.current.isPending).toBe(false);
+    expect(result.current.isPlaceholderData).toBe(true);
+    expect(result.current.data?.content).toBe('first');
+    arrive('second');
+    await waitFor(() => expect(result.current.data?.content).toBe('second'));
+    expect(result.current.isPlaceholderData).toBe(false);
+  });
+
+  it('names the hash of bytes that carry none, so a comment made on the last head is stored with it', async () => {
+    let arrive: () => void = () => {};
+    const pdf = (sha: string): DriveEntry => ({ ...file('report.pdf', 10), sha256: sha });
+    vi.mocked(openRangedRead)
+      .mockResolvedValueOnce({ kind: 'bytes', buffer: new ArrayBuffer(4) } as never)
+      .mockImplementationOnce(() => new Promise((resolve) => { arrive = () => resolve({ kind: 'bytes', buffer: new ArrayBuffer(8) } as never); }));
+    let entry = pdf('a'.repeat(64));
+    const { result, rerender } = renderHookWithProviders(() => useDriveBody('s', entry, null));
+    await waitFor(() => expect(result.current.data?.version).toBe('a'.repeat(64)));
+
+    entry = pdf('b'.repeat(64));
+    rerender();
+    expect(result.current.isPlaceholderData).toBe(true);
+    expect(result.current.data?.version).toBe('a'.repeat(64));
+    arrive();
+    await waitFor(() => expect(result.current.data?.version).toBe('b'.repeat(64)));
+  });
+
+  it("never stands another file's bytes, or the head's, in for a file or a version still loading", async () => {
+    vi.mocked(readText)
+      .mockResolvedValueOnce({ content: 'first', sha: 'a'.repeat(64) })
+      .mockImplementation(() => new Promise(() => {}));
+    let entry = at('a'.repeat(64));
+    let version: { seq: number; sha: string } | null = null;
+    const { result, rerender } = renderHookWithProviders(() => useDriveBody('s', entry, version));
+    await waitFor(() => expect(result.current.data?.content).toBe('first'));
+
+    entry = at('c'.repeat(64), 'e2');
+    rerender();
+    expect(result.current.isPending).toBe(true);
+
+    entry = at('a'.repeat(64));
+    version = { seq: 1, sha: 'd'.repeat(64) };
+    rerender();
+    expect(result.current.isPending).toBe(true);
+  });
+});

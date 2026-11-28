@@ -3,6 +3,7 @@ import type { ArtifactComment } from '@/types/api';
 import type { FrameView } from '../BridgedFrame';
 import type { PageBridge } from '../usePageBridge';
 import type { BoxAction, BoxState } from './boxReducer';
+import { isParked } from '../../comments/pageAnchors';
 import { DRAFT_ID, type PinPlaces } from './pinPlaces';
 import type { CommentFocus } from './useCommentUi';
 import type { PageReports } from './usePageReports';
@@ -126,7 +127,10 @@ export function useBoxPlacement({
     if (open?.kind === 'draft') {
       if (carried !== doc || !fresh || !positions.has(DRAFT_ID)) return;
       const rect = positions.get(DRAFT_ID) ?? null;
-      if (rect === null && !settled) return;
+      // Not found yet, or found on a page not drawn yet (a PDF's): the page
+      // settles once the pages in view are drawn, and only then is a spot
+      // still missing or parked one that does not show here.
+      if ((rect === null || isParked(rect)) && !settled) return;
       if (rect && draftLanded()) dispatch({ type: 'placed' });
       else dispatch({ type: 'listDraft' });
       return;

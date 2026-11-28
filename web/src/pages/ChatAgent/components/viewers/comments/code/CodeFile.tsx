@@ -67,6 +67,7 @@ export function CodeFile({ content, language, lineRange, comments }: {
           strategy={strategy}
           target={comments}
           modeHint={t('pageViewer:comments.modeHintCode')}
+          touchHint={t('pageViewer:comments.modeHintCodeTouch')}
         />
       )}
     </>

@@ -25,10 +25,12 @@ import { useDriveContext } from '../driveContext';
 import { memoState } from '../memoMarks';
 import type { DriveDrop } from '../useDriveDrop';
 import { whoLabel } from '../who';
+import { CommentMarker } from './CommentMarker';
 import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
 import { EntryName } from './EntryName';
 import { MemoChip, MemoStatus } from './MemoBadges';
+import { RowOpener } from './RowOpener';
 
 /** Moves keyboard focus to the row before or after the one focused. */
 function stepFocus(from: HTMLElement, delta: number) {
@@ -63,6 +65,26 @@ export function DriveRow({ entry, compact, active, drop }: {
     ? drop.targetProps(entry.path, entry.path, 'rows-and-files')
     : { isDrop: false };
 
+  // Dragged, the row is what follows the pointer, not the empty button under it.
+  const source = drop.sourceProps(entry);
+  const dragSource = {
+    ...source,
+    onDragStart: (e: React.DragEvent<HTMLElement>) => {
+      source.onDragStart(e);
+      const row = e.currentTarget.closest<HTMLElement>('.drive-row');
+      if (row && typeof e.dataTransfer.setDragImage === 'function') {
+        const box = row.getBoundingClientRect();
+        e.dataTransfer.setDragImage(row, e.clientX - box.left, e.clientY - box.top);
+      }
+    },
+  };
+
+  const press = {
+    // A folder is read from the press, a click's length ahead of its open.
+    onPointerDown: folder && space ? (e: React.PointerEvent) => { if (e.button === 0) void prefetchList(space, entry.path); } : undefined,
+    ...dragSource,
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -85,21 +107,18 @@ export function DriveRow({ entry, compact, active, drop }: {
           data-testid={`drive-row-${entry.path}`}
           {...dropHandlers}
         >
-          <button
-            type="button"
-            data-drive-row
+          <RowOpener
             className="drive-row-main"
-            onClick={() => open(entry)}
-            onKeyDown={onKeyDown}
-            // A folder is read from the press, a click's length ahead of its open.
-            onPointerDown={folder && space ? (e) => { if (e.button === 0) void prefetchList(space, entry.path); } : undefined}
-            {...drop.sourceProps(entry)}
-            aria-current={active ? 'true' : undefined}
+            onOpen={() => open(entry)}
+            active={active}
+            button={{ 'data-drive-row': true, onKeyDown }}
+            press={press}
           >
             <EntryGlyph name={entry.name} folder={folder} className="drive-row-icon" />
             <span className="drive-row-text">
               <span className="drive-row-title">
                 <EntryName name={entry.name} folder={folder} className="drive-row-name" />
+                {!folder && <CommentMarker entry={entry} />}
                 {/* Beside a file the column is narrow: the memo's marks go under the name, which keeps the width. */}
                 {state.kind === 'memo' && !compact && (
                   <>
@@ -127,7 +146,7 @@ export function DriveRow({ entry, compact, active, drop }: {
                 <span className="drive-col drive-col-size">{size}</span>
               </>
             )}
-          </button>
+          </RowOpener>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button type="button" className="drive-row-kebab tap-target" aria-label={t('drive:actions.more', { name: entry.name })}>

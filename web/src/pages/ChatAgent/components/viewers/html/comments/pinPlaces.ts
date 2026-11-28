@@ -1,14 +1,12 @@
 import type { ArtifactComment, ArtifactCommentAnchor } from '@/types/api';
-import type { FrameRect } from '../pageProtocol';
+import { type FrameRect, PIN_SIZE, type Point, type SpotRect } from '../pageProtocol';
 import type { Draft } from './boxReducer';
+import { pinDefault } from '../../comments/pinRoom';
 
-export type Point = { x: number; y: number };
+export { PIN_SIZE, type Point };
 
 /** The anchor id the draft's spot is tracked under, never a comment's uuid. */
 export const DRAFT_ID = '__draft__';
-
-/** A pin's size in px: the bubble is this square, its tail one corner of it. */
-export const PIN_SIZE = 22;
 
 /** How far a pin sharing its spot with an earlier one is drawn to the right of it: a pin's width and a gap that clears the keylines. */
 export const FAN_STEP = PIN_SIZE + 4;
@@ -16,20 +14,17 @@ export const FAN_STEP = PIN_SIZE + 4;
 /**
  * Where a pin's tail sits for an anchor found at `rect`. The pin is a speech
  * bubble whose bottom-left corner is the spot, so its body sits up and to the
- * right and the words under the spot stay readable. A clicked element keeps
- * the point it was clicked at, so two comments on one chart do not stack, an
- * area the point its drag was let go at, mostly a corner, and words picked in
- * comment mode where the drag over them was let go or the word was clicked.
+ * right and the words under the spot stay readable. Where whoever found the
+ * spot placed the pin (`rect.pin`: the page, for every spot it reports, and a
+ * viewer's own finder, which places it here), it is there. Otherwise a
+ * clicked element keeps the point it was clicked at, so two comments on one
+ * chart do not stack, and an area the point its drag was let go at, mostly a
+ * corner; words carry a point only from before the page placed their pins.
  * Without one a selection's pin closes the selected words, at their end, and
  * any other bubble sits inside the top-right corner.
  */
-export function pinPoint(anchor: ArtifactCommentAnchor, rect: FrameRect): Point {
-  if (anchor.point) return { x: rect.x + anchor.point.x * rect.width, y: rect.y + anchor.point.y * rect.height };
-  if (anchor.kind === 'text') return { x: rect.x + rect.width, y: rect.y };
-  return {
-    x: rect.x + Math.max(0, rect.width - PIN_SIZE - 2),
-    y: rect.y + Math.min(rect.height, PIN_SIZE + 2),
-  };
+export function pinPoint(anchor: ArtifactCommentAnchor, rect: SpotRect): Point {
+  return rect.pin ?? pinDefault(anchor, rect);
 }
 
 /**
@@ -72,7 +67,7 @@ export interface PlacedPin {
 interface PinInput {
   comments: readonly ArtifactComment[];
   /** Where the page last said each spot is (`usePageReports`). */
-  positions: ReadonlyMap<string, FrameRect | null>;
+  positions: ReadonlyMap<string, SpotRect | null>;
   /** `positions` is the answer of the document on screen. */
   fresh: boolean;
   /** The document on screen finished building itself. */

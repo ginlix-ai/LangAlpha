@@ -127,18 +127,20 @@ async def test_a_chart_comment_waits_only_in_its_own_workspace(owner):
     assert (found.beside.usable, found.beside.home) == (False, True)
     assert found.default[0].thread_id == own
 
-    (queued,) = await artifacts.list_queued_comments(user_id=owner["user"], thread_id=own)
+    (queued,) = await artifacts.list_queued_comments(
+        user_id=owner["user"], thread_id=own, drive_on=True
+    )
     assert (queued.kind, queued.workspace_id) == ("chart", owner["ws"])
 
     # A send from Home carries nothing of it; a send from its workspace does.
-    assert await artifacts.claim_comments(
+    assert (await artifacts.claim_comments(
         user_id=owner["user"], thread_id=home, comment_ids=[comment.comment_id],
-        request_key=str(uuid.uuid4()), caller=owner["user"],
-    ) == []
-    (claimed,) = await artifacts.claim_comments(
+        request_key=str(uuid.uuid4()), caller=owner["user"], drive_on=True,
+    )).comments == []
+    (claimed,) = (await artifacts.claim_comments(
         user_id=owner["user"], thread_id=own, comment_ids=[comment.comment_id],
-        request_key=str(uuid.uuid4()), caller=owner["user"],
-    )
+        request_key=str(uuid.uuid4()), caller=owner["user"], drive_on=True,
+    )).comments
     assert (claimed.kind, claimed.path, claimed.anchor) == ("chart", "NVDA:1day", ANCHOR)
 
     reply = await artifacts.add_agent_reply(

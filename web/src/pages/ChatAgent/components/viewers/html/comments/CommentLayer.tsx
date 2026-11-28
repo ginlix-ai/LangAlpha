@@ -1,28 +1,28 @@
-import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useArtifactComments, useArtifactStatus, useCommentRecord, useMarkArtifactCommentsRead } from '@/hooks/useArtifact';
 import { unreadComments } from '@/lib/artifactCommentReads';
 import { targetFor } from '@/lib/artifactTarget';
 import { storageUser } from '@/lib/userStorage';
-import { AnimatePresence, motion } from '@/lib/framer';
+import { AnimatePresence } from '@/lib/framer';
 import { useStableHandler } from '@/hooks/useStableHandler';
-import { TWEEN } from '@/lib/motion';
 import type { ArtifactComment, ArtifactCommentAnchor, ArtifactTarget } from '@/types/api';
 import { basename } from '../../../../utils/fileRefResolver';
 import { useWorkspaceFolders } from '../../../../contexts/WorkspaceContext';
 import type { FrameView } from '../BridgedFrame';
 import type { PageAnchorItem, PagePick } from '../pageProtocol';
 import type { PageBridge } from '../usePageBridge';
-import { boxReducer, pressCloses, type BoxAction, type BoxOf } from './boxReducer';
+import { inHand, pressAnswer, type BoxOf } from './boxReducer';
 import { CommentCard, type CardPlace } from './CommentCard';
 import { CommentComposer, type ComposerMode } from './CommentComposer';
 import { CommentDestination } from './CommentDestination';
 import { CommentLayerContext } from './commentLayerContext';
+import { useCommentSurface } from './commentSurface';
 import { CommentList, DraftCard } from './CommentList';
 import { CommentPins } from './CommentPin';
 import { CommentPopover } from './CommentPopover';
 import { draftHeading, partEntries, partLabels } from '../../../artifactComments/anchorKinds';
-import { ADD_KEY_LABEL } from '../../comments/partModifier';
+import { ModeHintBar } from './ModeHintBar';
 import { PickOverlays } from './PickOverlays';
 import { DRAFT_ID, placePins } from './pinPlaces';
 import { spotOutlines } from './spotOutlines';
@@ -34,6 +34,7 @@ import { openingBox, useKeptDraft } from './useKeptDraft';
 import type { CommentUi } from './useCommentUi';
 import { useContentSize } from './useContentSize';
 import { useHeldModifier } from './useHeldModifier';
+import { useBoxMachine } from './useBoxMachine';
 import { useLayerSending } from './useLayerSending';
 import { useEachKeptWhileFading } from './useKeptWhileFading';
 import { useListView } from './useListView';
@@ -54,9 +55,6 @@ const NARROW = 560;
 const BOX_WIDTH = 352;
 const EMPTY: ArtifactComment[] = [];
 const OVER: CardPlace = { kind: 'over' };
-const HINT_HIDDEN = { opacity: 0, y: -4 };
-const HINT_SHOWN = { opacity: 1, y: 0, transition: TWEEN.quick };
-const HINT_GONE = { opacity: 0, y: -4, transition: TWEEN.exit };
 
 /** A box over the page, with what it is called and what it holds: kept as it was while it leaves. */
 interface Box {
@@ -69,8 +67,10 @@ export interface CommentLayerProps {
   tabId: string;
   workspaceId: string;
   /**
-   * What the frame was opened on, as the tab holds it: a file, which a link
-   * inside it can move the frame from (`bridge.path`), or a chart.
+   * What the frame was opened on, as the tab holds it: a workspace file,
+   * which a link inside it can move the frame from (`bridge.path`), or a
+   * chart or a Drive file, which stays the record opened. How its comments
+   * read is the surface's (`CommentSurface`).
    */
   target: ArtifactTarget;
   bridge: PageBridge;
@@ -80,6 +80,10 @@ export interface CommentLayerProps {
   ui: CommentUi;
   /** What a click picks in this viewer, said while the mode is on; left out, a page's. */
   modeHint?: string;
+  /** What a tap picks, said in its place on a touch screen; left out, a page's. */
+  touchHint?: string;
+  /** The viewer's scroll bars, which the hint at the pane's foot stays clear of; none over a framed page. */
+  insets?: { bottom: number; right: number } | null;
   /**
    * Words in a viewer drawn in the app as a pick, for the selection
    * toolbar's Comment (`ui.commentOnWords`); left out where the viewer takes
@@ -96,8 +100,15 @@ export interface CommentLayerProps {
    */
   beforeSave?: (anchor: ArtifactCommentAnchor) => Promise<ArtifactCommentAnchor>;
   /**
+   * The live file's hash where the surface already holds it (a Drive file's
+   * `sha256`), stored with a new comment on it. Left out, a workspace file's
+   * is read off its computer while a comment is written.
+   */
+  fileSha?: string | null;
+  /**
    * A comment's box opens over or under its spot rather than beside its pin,
-   * so what was boxed or selected stays in view. Left out, beside its pin.
+   * so what was boxed or selected stays in view, wherever the pane has the
+   * room. False opens it beside its pin.
    */
   keepSpotClear?: boolean;
   /**
@@ -124,28 +135,35 @@ export interface CommentLayerProps {
  * in the list moves through `boxReducer`.
  */
 export default function CommentLayer({
-  tabId, workspaceId, target, bridge, view, active, ui, modeHint, pickWords, holdsWords, beforeSave, keepSpotClear, openOther,
+  tabId, workspaceId, target, bridge, view, active, ui, modeHint, touchHint, insets, pickWords, holdsWords, beforeSave, fileSha, keepSpotClear = true, openOther,
 }: CommentLayerProps): React.ReactElement {
   const { t } = useTranslation();
+  const { readOnly, shows } = useCommentSurface();
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const size = useContentSize(root);
   const narrow = size.width > 0 && size.width < NARROW;
 
-  // The file the frame holds, as its hello named it; until it says, the one opened.
+  // The file the frame holds, as its hello named it; until it says, the one
+  // opened. Only a workspace file's frame moves between files: a Drive file or
+  // a chart is the record it was opened on, whatever its page says, since a
+  // page's script can send a hello of its own naming another record.
   const rootDir = useWorkspaceFolders()?.rootDir;
   const opened = targetFor(target.kind, target.path, rootDir).path;
-  const held = targetFor(target.kind, bridge.path ?? target.path, rootDir);
+  const held = targetFor(target.kind, (target.kind === 'file' ? bridge.path : null) ?? target.path, rootDir);
   const docPath = held.path;
   const { showDoc } = ui;
   useEffect(() => showDoc(tabId, opened, docPath), [showDoc, tabId, opened, docPath]);
-  const mode = ui.modeTab === tabId;
+  // Read only, there is no mode: nothing on the page is picked, and C does nothing.
+  const setMode = readOnly ? null : (on: boolean) => ui.setMode(tabId, on);
+  const mode = setMode !== null && ui.modeTab === tabId;
   // A chart is looked at far more often than commented on: its record is
   // made once comment mode is on, and only read until then.
   const record = useCommentRecord(workspaceId, held, { ensure: held.kind === 'file' || mode });
   const { artifact, loaded } = record;
   const artifactId = artifact?.artifact_id ?? null;
   const commentsQuery = useArtifactComments(artifactId);
-  const comments = commentsQuery.data ?? EMPTY;
+  const recorded = commentsQuery.data ?? EMPTY;
+  const comments = useMemo(() => (shows ? recorded.filter(shows) : recorded), [recorded, shows]);
   const byId = useMemo(() => new Map(comments.map((c) => [c.comment_id, c])), [comments]);
 
   const listOpen = ui.listTab === tabId;
@@ -153,37 +171,29 @@ export default function CommentLayer({
   // A comment the chat or the list asked to show on what the frame holds.
   const askedHere = ui.focus?.kind === held.kind && targetFor(ui.focus.kind, ui.focus.path, rootDir).path === docPath;
   const doc = `${bridge.session}:${view.key}`;
-  const shows = { workspaceId, kind: held.kind, path: docPath };
-  const [box, dispatchBox] = useReducer(boxReducer, { doc, listOpen }, (start) => openingBox(start, shows));
+  const place = { workspaceId, kind: held.kind, path: docPath };
+  // Words picked in comment mode stay selected in a page that cannot mark
+  // them, until their draft goes.
+  const { box, dispatch, dispatchBox } = useBoxMachine(() => openingBox({ doc, listOpen, mode }, place, readOnly), {
+    openList: () => ui.setList(tabId, true),
+    clearSelection: () => bridge.post({ type: 'page:clear-selection' }),
+  });
   if (box.doc !== doc) dispatchBox({ type: 'docChanged', doc });
   if (box.listOpen !== listOpen) dispatchBox({ type: 'listShown', open: listOpen, comments });
-  // A move that puts a card or the draft in the list opens it with the same
-  // update, so the list shows them in the commit that took them there. Opened
-  // from an effect, a commit later, the card would be open nowhere between,
-  // and its read asked again once it showed.
-  const dispatch = (action: BoxAction) => {
-    dispatchBox(action);
-    if (boxReducer(box, action).listWanted) ui.setList(tabId, true);
-  };
+  if (box.mode !== mode) dispatchBox({ type: 'modeShown', on: mode });
   const { open } = box;
   const boxDraft = open?.kind === 'draft' ? open.draft : null;
-  // Leaving the mode lets an empty draft over the page go with it; one with
-  // words stays open, its words the writer's to send or let go.
-  const [modeSeen, setModeSeen] = useState(mode);
-  if (modeSeen !== mode) {
-    setModeSeen(mode);
-    if (!mode && boxDraft && !box.text.trim()) dispatchBox({ type: 'endDraft', keepHover: false });
-  }
   // The comment being written, in its box over the page or waiting in the list.
   const draft = boxDraft ?? box.listed?.draft ?? null;
-  useKeptDraft({ ...shows, box, draft, dispatchBox, askedHere });
+  useKeptDraft({ ...place, box, draft, dispatchBox, askedHere });
   // The live file's hash, stored with a new comment. Read only once one is
   // being written: each read copies the file's whole list off the computer.
   const { data: status } = useArtifactStatus(artifact, { enabled: record.hashable && !!draft });
+  const draftTarget = useMemo(() => (draft ? { kind: held.kind, path: draft.path } : held), [draft, held]);
   const sending = useLayerSending({
     workspaceId,
     doc: held,
-    draft: draft ? { kind: held.kind, path: draft.path } : held,
+    draft: draftTarget,
     ui,
     to: box.to,
     onTo: (target) => dispatch({ type: 'to', target }),
@@ -215,6 +225,8 @@ export default function CommentLayer({
   // What `beforeSave` made of the draft's anchor: a retry after a failed save
   // sends it again rather than writing a second set of pictures.
   const prepared = useRef<{ from: ArtifactCommentAnchor; to: ArtifactCommentAnchor } | null>(null);
+  // Every new comment starts here: a pick (comment mode), the words chip and
+  // the selection toolbar, none of which a layer that only reads offers.
   const startDraft = (pick: PagePick, how: PickHow) => {
     if (!saving.current) dispatch({ type: 'pick', pick, path: docPath, ...how });
   };
@@ -222,14 +234,16 @@ export default function CommentLayer({
   const leaveDraft = () => dispatch({ type: 'leave' });
   const escapeDraft = () => dispatch({ type: 'escape' });
   const exitMode = () => ui.setMode(tabId, false);
+  const closeList = () => ui.setList(tabId, false);
   // Esc steps back one layer, wherever it was pressed (the page, the box,
   // the viewer): the draft over the page (or its question), then an open
-  // card, then the mode. A draft waiting in the list takes its own Esc
-  // (`DraftCard`), being where the key was pressed.
+  // card, then the mode, then the list. A draft waiting in the list takes its
+  // own Esc (`DraftCard`), being where the key was pressed.
   const escapeOneLayer = () => {
     if (boxDraft) escapeDraft();
     else if (open?.kind === 'card') closeBox(open);
     else if (mode) exitMode();
+    else if (listOpen) closeList();
   };
   const shownId = open?.kind === 'card' ? open.id : listOpen ? box.expandedId : null;
   const reports = usePageReports(bridge, view, mode, {
@@ -238,15 +252,14 @@ export default function CommentLayer({
     outlined: shownId,
     onHover: (hover) => dispatch({ type: 'hover', hover }),
     onPress: () => {
-      const closes = pressCloses(box);
       dispatch({ type: 'pressAway' });
-      return closes;
+      return pressAnswer(box);
     },
     onPick: startDraft,
     // The page's keys reach the viewer only when they would here: C toggles
     // the mode, Esc steps back one layer. Neither writes anything.
     onKey: (key) => {
-      if (key === 'c') ui.setMode(tabId, !mode);
+      if (key === 'c') setMode?.(!mode);
       else escapeOneLayer();
     },
   });
@@ -260,8 +273,8 @@ export default function CommentLayer({
   });
   const { registerWordsTaker, askInChat: toChat } = ui;
   useEffect(
-    () => (holdsWords ? registerWordsTaker(tabId, { holds: holdsWords, take: takeWords }) : undefined),
-    [holdsWords, registerWordsTaker, tabId, takeWords],
+    () => (holdsWords && !readOnly ? registerWordsTaker(tabId, { holds: holdsWords, take: takeWords }) : undefined),
+    [holdsWords, readOnly, registerWordsTaker, tabId, takeWords],
   );
 
   const askInChat = toChat ? (selection: PagePick) => {
@@ -277,16 +290,7 @@ export default function CommentLayer({
     // the only mark of what it quotes.
     reports.clearSelection();
   } : undefined;
-  useModeKeys(active, mode, (on) => ui.setMode(tabId, on), escapeOneLayer);
-
-  // Words picked in comment mode stay selected in a page that cannot mark
-  // them, until their draft goes.
-  const draftSelected = draft?.selected === true;
-  const heldSelection = useRef(false);
-  useEffect(() => {
-    if (heldSelection.current && !draftSelected) bridge.post({ type: 'page:clear-selection' });
-    heldSelection.current = draftSelected;
-  }, [bridge, draftSelected]);
+  useModeKeys(active, mode, setMode, escapeOneLayer, mode || listOpen);
 
   const places = placePins({
     comments,
@@ -320,7 +324,7 @@ export default function CommentLayer({
 
   const saveDraft = async (intent: CommentIntent) => {
     const route = sending.draftRoute(intent);
-    const serial = open?.kind === 'draft' ? open.serial : box.listed?.serial;
+    const serial = inHand(box)?.serial;
     if (!draft || !route || serial === undefined) return;
     // Where the draft is kept, as it is now: the layer may move to another
     // workspace, or the account change, before the save comes back.
@@ -338,7 +342,7 @@ export default function CommentLayer({
         anchor,
         body: box.text.trim(),
         route,
-        fileSha: draft.path === docPath ? (status?.live_sha256 ?? null) : null,
+        fileSha: draft.path === docPath ? (fileSha ?? status?.live_sha256 ?? null) : null,
         title: draft.title,
       });
     } finally {
@@ -352,7 +356,8 @@ export default function CommentLayer({
     if (draftRect) reports.placeSpot(comment.comment_id, draftRect);
     dispatch({ type: 'saved', id: comment.comment_id, serial });
     if (draft.anchor.kind === 'text') {
-      bridge.post({ type: 'page:clear-selection' });
+      // Words picked in comment mode are let go with their draft (`useBoxMachine`).
+      if (!draft.selected) bridge.post({ type: 'page:clear-selection' });
       reports.clearSelection();
     }
   };
@@ -436,6 +441,9 @@ export default function CommentLayer({
   const popoverWidth = Math.max(220, Math.min(BOX_WIDTH, size.width - 24));
   const clear = !keepSpotClear ? null : boxDraft ? draftRect : openComment ? (rectOf(openComment) ?? null) : null;
 
+  // The current box, which the mode's hint gives way to where it covers it.
+  const boxRef = useRef<HTMLDivElement>(null);
+
   // The words being written, in the draft's box or its card in the list: the
   // same words either way, and the field takes the focus wherever they go.
   // Over the page the composer is the box and names the spot; in the list
@@ -449,6 +457,7 @@ export default function CommentLayer({
       onKeepWriting: () => dispatch({ type: 'keepWriting' }),
       onDiscard: () => dispatch({ type: 'endDraft', keepHover: false }),
       onClose: leaveDraft,
+      takesFocus: inHand(box)?.takesFocus ?? true,
     };
     const as: ComposerMode = !inList && heading
       ? {
@@ -483,11 +492,16 @@ export default function CommentLayer({
 
   return (
     <CommentLayerContext value={sending.layer}>
-      <div ref={setRoot} className="page-comments" data-mode={mode || undefined} data-narrow={narrow || undefined}>
+      <div
+        ref={setRoot}
+        className="page-comments"
+        data-mode={mode || undefined}
+        data-narrow={narrow || undefined}
+      >
         <CommentPins
           pins={places.pins}
           shownId={shownId}
-          draftSerial={open?.kind === 'draft' ? open.serial : (box.listed?.serial ?? null)}
+          draftSerial={inHand(box)?.serial ?? null}
           pulse={pulse}
           madeId={box.madeId}
           size={size}
@@ -507,7 +521,7 @@ export default function CommentLayer({
           area={outlines.area}
           parts={outlines.parts}
           scrolling={reports.scrolling}
-          selection={boxDraft ? null : reports.selection}
+          selection={boxDraft || readOnly ? null : reports.selection}
           size={size}
           drafting={draft !== null}
           onComment={(selection) => startDraft(selection, { selected: false, extend: false })}
@@ -516,27 +530,17 @@ export default function CommentLayer({
 
         {/* Gone while the list is open: the drawer's title sits where the hint
             is centred, and the list already says the mode is on. */}
-        <AnimatePresence>
-          {mode && !listOpen && (
-            <motion.div key="hint" className="page-comments-hint-row" initial={HINT_HIDDEN} animate={HINT_SHOWN} exit={HINT_GONE}>
-              <div className="page-comments-hint">
-                <span className="page-comments-hint-text" role="status">
-                  <ModeHint takesParts={takesParts} adding={adding} hint={modeHint} />
-                </span>
-                <button
-                  type="button"
-                  className="page-comments-hint-exit tap-target"
-                  onClick={exitMode}
-                  aria-label={t('pageViewer:comments.exitModeLabel')}
-                  aria-keyshortcuts="Escape"
-                >
-                  {t('pageViewer:comments.exitMode')}
-                  <kbd aria-hidden>Esc</kbd>
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <ModeHintBar
+          shown={mode && !listOpen}
+          takesParts={takesParts}
+          adding={adding}
+          hint={modeHint}
+          touchHint={touchHint}
+          insets={insets}
+          box={{ ref: boxRef, at: open && currentPoint ? `${open.kind}:${Math.round(currentPoint.x)}:${Math.round(currentPoint.y)}` : null }}
+          size={size}
+          onExit={exitMode}
+        />
 
         <AnimatePresence initial={false}>
           {listOpen && (
@@ -586,7 +590,8 @@ export default function CommentLayer({
               boundary={root}
               width={popoverWidth}
               label={item.label}
-              focusSelf={item.of.kind === 'card'}
+              boxRef={isCurrent ? boxRef : undefined}
+              focus={item.of.kind === 'card' ? 'self' : open?.kind === 'draft' && !open.takesFocus ? 'none' : 'field'}
               arrival={isCurrent && openComment !== null && box.arrivalId === openComment.comment_id}
               replaced={current !== null}
               draft={isCurrent && boxDraft ? { words: !!box.text.trim() } : null}
@@ -608,22 +613,3 @@ export default function CommentLayer({
   );
 }
 
-/**
- * What a click in comment mode does. While a draft takes parts a modifier
- * click adds one; a touch screen has no modifier, so its box offers "Add a
- * part" instead, and says so once pressed.
- */
-function ModeHint({ takesParts, adding, hint }: { takesParts: boolean; adding: boolean; hint?: string }): React.ReactElement {
-  const { t } = useTranslation();
-  const plain = hint ?? t('pageViewer:comments.modeHint');
-  if (!takesParts) return <>{plain}</>;
-  if (adding) return <>{t('pageViewer:comments.modeHintAdding')}</>;
-  return (
-    <>
-      <span className="pointer-coarse:hidden">
-        {t('pageViewer:comments.modeHintParts', { key: ADD_KEY_LABEL })}
-      </span>
-      <span className="hidden pointer-coarse:inline">{plain}</span>
-    </>
-  );
-}

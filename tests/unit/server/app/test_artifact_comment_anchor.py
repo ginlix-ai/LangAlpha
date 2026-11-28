@@ -495,3 +495,44 @@ async def test_a_raw_non_finite_number_is_a_422_not_a_500(raw, loc):
             "input": None,
         }
     ]
+
+
+_PDF_WORDS = {
+    "kind": "text",
+    "page": 3,
+    "quote": "revenue growth",
+    "prefix": "Lorem ipsum",
+    "suffix": "margins valuation",
+    "point": {"x": 1.0, "y": 0.5},
+    "rect": {"x": 0.12, "y": 0.41, "w": 0.2, "h": 0.018},
+}
+
+
+def test_words_on_a_pdf_page_keep_where_they_sat():
+    anchor = CommentAnchor.model_validate(_PDF_WORDS)
+    assert anchor.model_dump(exclude_none=True) == _PDF_WORDS
+    # Saved before words kept it: found as they always were.
+    assert CommentAnchor.model_validate({**_PDF_WORDS, "rect": None}).rect is None
+
+
+@pytest.mark.parametrize(
+    "rect",
+    [
+        {"x": 1.5, "y": 0, "w": 0.1, "h": 0.1},
+        {"x": 0, "y": 0, "w": -0.1, "h": 0.1},
+        {"x": 0, "y": 0, "w": 0.1},
+    ],
+)
+def test_words_out_of_their_page_are_refused(rect):
+    with pytest.raises(ValidationError):
+        CommentAnchor.model_validate({**_PDF_WORDS, "rect": rect})
+
+
+def test_only_an_area_or_words_keep_a_rect():
+    rect = _PDF_WORDS["rect"]
+    with pytest.raises(ValidationError):
+        CommentAnchor.model_validate({"kind": "element", "path": "#a", "rect": rect})
+    with pytest.raises(ValidationError):
+        CommentAnchor.model_validate(
+            {"kind": "block", "lines": "7", "quote": "x", "rect": rect}
+        )

@@ -155,6 +155,7 @@ async def test_an_agent_reply_is_locked_first_and_leaves_the_cursor_alone(mock_c
             "path": "report.html",
             "workspace_id": _W,
             "kind": "file",
+            "place": "report.html",
         },
         {"seq": 2},
     ]

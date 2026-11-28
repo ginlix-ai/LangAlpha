@@ -551,6 +551,13 @@ DEFAULT_LAYOUT: SandboxLayout = SandboxLayout.default()
 # space, not a place on the computer, so it is no part of the layout.
 DRIVE_PERSONAL: str = "personal"
 
+
+def drive_file_path(path: str) -> str:
+    """A file's path in the user's own Drive space as the agent's file tools
+    take it: the same in every workspace folder and in Home, so no turn needs
+    a prefix or a computer to name it."""
+    return f"{SandboxLayout.DRIVE_DIR}/{DRIVE_PERSONAL}/{path}"
+
 # Agent infrastructure is toggleable in listings but hidden in completions.
 AGENT_SYSTEM_DIRS: frozenset[str] = frozenset({
     SandboxLayout.SYSTEM_DIR,

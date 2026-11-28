@@ -87,7 +87,11 @@ body.drive-resizing iframe { pointer-events: none; }
 .drive-pane-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* The title, the view switch and the actions each keep their own width;
+     where the list is too narrow for all three, the actions go to a row of
+     their own under them, kept to the right edge, rather than over the tabs. */
+  flex-wrap: wrap;
+  gap: 6px 8px;
   min-height: 32px;
 }
 .drive-title {
@@ -105,13 +109,14 @@ body.drive-resizing iframe { pointer-events: none; }
   display: flex;
   gap: 2px;
   margin-right: auto;
-  min-width: 0;
+  flex-shrink: 0;
 }
 .drive-views .drive-tab { padding: 4px 6px 5px; }
 .drive-pane-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-left: auto;
 }
 /* One height for the row's actions: an icon alone is shorter than a label,
    so a button that drops its label would stand 4px under its neighbour. */
@@ -237,7 +242,18 @@ body.drive-resizing iframe { pointer-events: none; }
   border-radius: inherit;
   font-size: 0.8125rem;
 }
-.drive-row-main:focus-visible {
+/* A row's button: the whole row, under its content (`RowOpener`), which is
+   drawn over it and takes its presses as its own. */
+.drive-row-hit {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.drive-row-body {
+  position: relative;
+  cursor: default;
+}
+.drive-row-hit:focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: -2px;
 }
@@ -307,6 +323,8 @@ body.drive-resizing iframe { pointer-events: none; }
   font-variant-numeric: tabular-nums;
 }
 .drive-row-kebab {
+  /* Above the row's button, which lies under the whole row. */
+  position: relative;
   flex-shrink: 0;
   width: 28px;
   height: 28px;
@@ -519,6 +537,8 @@ body.drive-resizing iframe { pointer-events: none; }
 .drive-file-top {
   flex-shrink: 0;
   border-bottom: 1px solid var(--color-border-muted);
+  /* The head's row answers the pane's width, not the window's: a pane beside the list can be narrow too. */
+  container: drive-file-top / inline-size;
 }
 .drive-file-head {
   display: flex;
@@ -558,6 +578,16 @@ body.drive-resizing iframe { pointer-events: none; }
   gap: 6px;
   flex-shrink: 0;
 }
+/*
+ * A narrow pane keeps the name readable: where the actions leave it too
+ * little room they wrap onto a row of their own under it, kept to the right
+ * edge.
+ */
+@container drive-file-top (max-width: 560px) {
+  .drive-file-head { flex-wrap: wrap; row-gap: 6px; }
+  .drive-file-title { flex: 1 1 10rem; }
+  .drive-file-actions { margin-left: auto; }
+}
 .drive-save-note {
   height: 28px;
   width: 200px;
@@ -589,6 +619,8 @@ body.drive-resizing iframe { pointer-events: none; }
   flex: 1;
   min-height: 0;
   display: flex;
+  /* The comment layer over a file covers its scroll box from here, the box's parent. */
+  position: relative;
 }
 .drive-file-main {
   flex: 1;
@@ -687,6 +719,11 @@ body.drive-resizing iframe { pointer-events: none; }
   visibility: hidden;
 }
 .drive-html-frame.is-shown { visibility: visible; }
+/* A page drawn with its bridge: the frame and the comment layer over it.
+   Until its document has loaded it paints nothing, as the plain frame does;
+   shown, it takes the bridged frame's own ground (BridgedFrame.css), the
+   page's or the theme's, which is what the bridge set its text against. */
+.drive-html-page:not(.is-shown) { background-color: transparent; }
 .drive-file-empty {
   display: flex;
   flex-direction: column;
@@ -720,6 +757,42 @@ body.drive-resizing iframe { pointer-events: none; }
 
 /* A memo's status beside a row's name; the memo rules are in Memo.css. */
 .drive-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* A file's comments beside its name: the open count in the row's quiet ink,
+   and the accent only on the dot of an answer not yet read. */
+.drive-comment-marker {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 4px;
+}
+.drive-comment-marker:hover { background-color: var(--color-border-muted); }
+.drive-comment-marker:hover .drive-comment-marker-glyph { color: var(--color-text-secondary); }
+.drive-comment-marker:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 0; }
+.drive-comment-marker-glyph {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.drive-comment-marker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background-color: var(--color-accent-primary);
+}
+
+/* A past version's comments: which version the header's counts are of. */
+.drive-comments-scope {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
 
 /* A link in running text: a thread, a version, the undo. */
 .drive-link-button {

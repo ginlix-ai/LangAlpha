@@ -33,12 +33,18 @@
   --pin-ground: var(--color-bg-popover);
 }
 
-.page-comment-card-toggle {
+/* The writer and time, as the toggle in the list and as a plain row over a
+   pin. Unclipped, so the badge's keyline shows; the outdated note beside it
+   gives way first (see below). */
+.page-comment-card-toggle,
+.page-comment-card-who {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
   align-items: center;
   gap: 7px;
   min-width: 0;
+}
+.page-comment-card-toggle {
   border-radius: 4px;
   text-align: left;
   cursor: pointer;
@@ -137,7 +143,35 @@
   font-size: 10.5px;
   line-height: 16px;
   color: var(--color-text-secondary);
+  white-space: nowrap;
 }
+/* The pill and the version link: a box of their own beside the writer row.
+   It starts as wide as the wider of the two, the link under the pill, and
+   takes the room the row has left until both fit on one line. Growing from
+   its least rather than shrinking from its most, it takes nothing from the
+   writer row: a share of a shrink, however small, cut "You" to "Y...". */
+.page-comment-outdated-note {
+  display: flex;
+  flex: 1000 0 min-content;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px 8px;
+  max-width: max-content;
+}
+/* Beside the Outdated pill: the version the comment can be seen on as made. */
+.page-comment-see-version {
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--color-text-secondary);
+  text-decoration: underline;
+  text-decoration-color: var(--color-border-default);
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.page-comment-see-version:hover { color: var(--color-text-primary); text-decoration-color: currentColor; }
+.page-comment-see-version:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 1px; }
 
 /* The parts a new comment is on, where it lists every one: one quiet chip
    each, in the quote's ground, wrapping and scrolling past about three rows.

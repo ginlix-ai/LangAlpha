@@ -10,20 +10,28 @@ function ownsKeys(target: EventTarget | null): boolean {
 }
 
 /**
- * C turns comment mode on and off and Esc steps back one layer while the
- * mode is on (`onEscape`), wherever the focus is that is not someone writing,
- * on the tab in front (`active`). An open box takes Esc first and marks it
- * taken (`CommentPopover`). Inside the frame the page's bridge reports them
- * instead, and only while the mode is on.
+ * C turns comment mode on and off (`setMode`, null where the layer has no
+ * mode), and Esc steps back one layer (`onEscape`) while there is one to step
+ * back from (`escapes`: the mode, or the list), wherever the focus is that is
+ * not someone writing, on the tab in front (`active`). Each Esc taken is
+ * marked taken, as an open box marks the one it takes (`CommentPopover`), so
+ * what listens after it (the Drive's close) lets it be. Inside the frame the
+ * page's bridge reports them instead, and only while the mode is on.
  */
-export function useModeKeys(active: boolean, mode: boolean, setMode: (on: boolean) => void, onEscape: () => void): void {
+export function useModeKeys(
+  active: boolean,
+  mode: boolean,
+  setMode: ((on: boolean) => void) | null,
+  onEscape: () => void,
+  escapes: boolean,
+): void {
   const onKey = useEffectEvent((e: KeyboardEvent) => {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isImeComposing(e) || ownsKeys(e.target)) return;
     if (e.key === 'c' || e.key === 'C') {
-      if (e.repeat) return;
+      if (e.repeat || !setMode) return;
       e.preventDefault();
       setMode(!mode);
-    } else if (e.key === 'Escape' && mode) {
+    } else if (e.key === 'Escape' && escapes) {
       // Marked taken, as an open box marks the Esc it takes: one Esc steps
       // back one layer.
       e.preventDefault();

@@ -21,6 +21,7 @@ import { flattenMarkdown } from '@/lib/plainLine';
 import { useMotionSafe } from '@/lib/reducedMotion';
 import { cn } from '@/lib/utils';
 import { useWorkspaceId } from '../../contexts/WorkspaceContext';
+import { useCommentOpener } from './driveCommentOpener';
 import { commentFileTitle } from './artifactCommentSend';
 import { groupCommentReplies, readArtifactCommentReply, type ArtifactCommentReply } from './artifactCommentReply';
 import type { InlineCardProps } from '../charts/cardReaders';
@@ -207,9 +208,10 @@ function ReplyExcerpt({ reply, label, onOpen }: {
 }
 
 function ReplyLine({ group }: { group: readonly CommentReplyMember[] }): React.ReactElement {
+  const { t } = useTranslation();
   const first = group[0].reply;
   // A line names one file's comments, or one chart's.
-  const onOpenArtifactComment = useMessageActions().onOpenArtifactComment?.[first.kind];
+  const onOpenArtifactComment = useCommentOpener(useMessageActions().onOpenArtifactComment, first.kind);
   // Only the owner can read the file's comments; a shared chat names the file
   // by its path and marks nothing unread.
   const owner = !!useWorkspaceId();
@@ -219,16 +221,17 @@ function ReplyLine({ group }: { group: readonly CommentReplyMember[] }): React.R
   // Null until the comments are read, so a dot already there when they
   // arrive is drawn rather than played in.
   const unread = comments ? new Set(commentIds) : null;
-  const named = comments?.find((c) => c.comment_id === first.commentId)?.title ?? null;
-  const title = commentFileTitle({ title: named, path: first.path, kind: first.kind });
+  const firstComment = comments?.find((c) => c.comment_id === first.commentId);
+  const named = firstComment?.title ?? null;
+  // A reply names a Drive file by its entry id alone; the comment holds the
+  // path it had. Until the comment is read, or where it cannot be (the file
+  // purged), there is no name to show but that it is a Drive file.
+  const path = first.kind === 'drive' ? firstComment?.path ?? null : first.path;
+  const title = path === null && !named?.trim()
+    ? t('chat.artifactComments.driveFile')
+    : commentFileTitle({ title: named, path: path ?? '', kind: first.kind });
   const openMember = onOpenArtifactComment
-    ? (member: CommentReplyMember) => onOpenArtifactComment({
-      artifactId: member.reply.artifactId,
-      workspaceId: member.reply.workspaceId,
-      kind: member.reply.kind,
-      path: member.reply.path,
-      commentId: member.reply.commentId,
-    })
+    ? (member: CommentReplyMember) => onOpenArtifactComment(member.reply)
     : group.every((member) => member.openCall)
       ? (member: CommentReplyMember) => member.openCall?.()
       : null;

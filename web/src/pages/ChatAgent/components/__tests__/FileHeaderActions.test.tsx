@@ -1,5 +1,6 @@
 import type React from 'react';
 import { describe, it, expect, vi } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
@@ -72,9 +73,11 @@ function answerFor(bound: boolean): ArtifactDestinations {
 /** The header beside a chat on thread `th-1`. */
 function besideChat(ui: React.ReactElement): React.ReactElement {
   return (
-    <ArtifactCommentSendContext value={{ beside: { threadId: 'th-1' }, running: false, send: vi.fn() }}>
-      {ui}
-    </ArtifactCommentSendContext>
+    <QueryClientProvider client={new QueryClient()}>
+      <ArtifactCommentSendContext value={{ beside: { threadId: 'th-1' }, running: false, send: vi.fn() }}>
+        {ui}
+      </ArtifactCommentSendContext>
+    </QueryClientProvider>
   );
 }
 vi.mock('@/hooks/usePreferences', () => ({
