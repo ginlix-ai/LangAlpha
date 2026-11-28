@@ -54,6 +54,7 @@ class ThirteenFFiling:
     value_unit: UnitResolution
     checks: tuple[str, ...]
     has_information_table: bool = True
+    confidential_omitted: bool | None = None
 
     @property
     def is_amendment(self) -> bool:

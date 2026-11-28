@@ -56,7 +56,8 @@ def parse_13f(submission: bytes | str, *, accession: str | None = None) -> Thirt
     Holdings are every information-table row as filed, in document order; has_information_table is False when
     the submission carries no complete, well-formed table. value is as filed; value_unit says whether that is
     dollars or thousands (edgartools' resolver over the rows, schema and period), and checks lists generic sanity
-    flags: nil_table, declared_entries_mismatch, declared_value_mismatch.
+    flags: nil_table, declared_entries_mismatch, declared_value_mismatch. confidential_omitted is the summary page's
+    isConfidentialOmitted: True when the manager left holdings out under confidential treatment, None when unstated.
     """
     text = decode(submission)
     head = header(text)
@@ -88,7 +89,8 @@ def parse_13f(submission: bytes | str, *, accession: str | None = None) -> Thirt
         declared_entries=declared_entries, declared_value=declared_value,
         holdings=tuple(holdings), value_unit=unit,
         checks=_checks(holdings, declared_entries, declared_value),
-        has_information_table=info is not None)
+        has_information_table=info is not None,
+        confidential_omitted=_xml.flag(_xml.text(summary, "isConfidentialOmitted")))
 
 
 _LINE_FIELDS = tuple(f.name for f in fields(Holding13F))

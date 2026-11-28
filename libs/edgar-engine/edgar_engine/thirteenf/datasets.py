@@ -25,7 +25,7 @@ DOLLAR_SCHEMA = "X0202"
 DOLLAR_SCHEMA_FROM = "2023-01-03"
 
 FILING_COLUMNS = ("accession", "filer_cik", "filer_name", "form", "period", "filed", "report_type", "amendment_no",
-                  "amendment_type", "declared_entries", "declared_value")
+                  "amendment_type", "declared_entries", "declared_value", "confidential_omitted")
 
 _CODES = pa.dictionary(pa.int32(), pa.string())
 _NUMBER = "number"  # a number column: integers, floats when a cell is empty
@@ -139,6 +139,8 @@ def read_13f_dataset_table(path: str | Path, period: str | None = None) -> tuple
         "amendment_type": _upper(x.AMENDMENTTYPE),
         "declared_entries": pd.to_numeric(x.TABLEENTRYTOTAL, errors="coerce").astype("Int64"),
         "declared_value": number(x.TABLEVALUETOTAL),
+        "confidential_omitted": _upper(x.get("ISCONFIDENTIALOMITTED", pd.Series(index=x.index, dtype=object)))
+        .map({"Y": True, "N": False}).astype("boolean"),
     })
     filings = filings[filings.form.isin(["13F-HR", "13F-HR/A"])]
     if period:

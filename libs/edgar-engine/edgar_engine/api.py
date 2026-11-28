@@ -3,7 +3,7 @@ and cache."""
 from __future__ import annotations
 
 import warnings
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pandas as pd
@@ -11,9 +11,10 @@ import pandas as pd
 from .amendments import amended_sections, merge, nth_amendment, read
 from .cache import SectionsCache, SubmissionCache
 from .filings import _company, list_filings, pick_ref, select_filing
-from .ownership import OwnershipFiling, belongs_to_issuer, parse_ownership
+from .ownership import Form144Filing, OwnershipFiling, belongs_to_issuer, parse_form144, parse_ownership
+from .ownership.form144 import FORM144_FORMS
 from .sections.model import FilingSections, View
-from .submission import fetch_submission
+from .submission import decode, fetch_submission, header
 from .thirteenf import ThirteenFFiling, holding_rows, parse_13f, resolve_amendments
 
 OWNERSHIP_XML_FROM = "2003-06-30"
@@ -90,40 +91,108 @@ def get_insider_filings(company: Any, *, start: str | None = None, end: str | No
     return sorted(out, key=lambda f: (f.filed or "", accepted.get(f.accession, ""), f.accession or ""), reverse=True)
 
 
-def get_13f_holdings(filer: Any, period: str, *, submissions: SubmissionCache | None = None) -> list[ThirteenFFiling]:
+@dataclass(frozen=True)
+class ThirteenFReports:
+    """The reports that make up a filer's holdings for a period (filer_cik's), and the reports left out: unreadable,
+    those listed for the period whose document or information table could not be read (one that declares zero
+    entries is read), and other_filer, (accession, CIK) for those filed under another filer's CIK."""
+    filer_cik: int
+    reports: tuple[ThirteenFFiling, ...]
+    unreadable: tuple[str, ...]
+    other_filer: tuple[tuple[str, int], ...]
+
+
+def get_13f_reports(filer: Any, period: str, *, submissions: SubmissionCache | None = None) -> ThirteenFReports:
     """The reports that make up one filer's holdings for a period (YYYY-MM-DD), after amendment resolution, in
-    filing order. Each report costs one request, or none when submissions holds it. A report whose information
-    table is missing or unreadable (and that does not declare zero entries) is left out with a warning, so it can
-    never replace a readable one. A report EDGAR serves cut short twice raises TruncatedSubmission, since resolving
-    amendments without it could return the wrong holdings."""
+    filing order, with the reports left out and why. Each report costs one request, or none when submissions holds
+    it. A report with no readable 13F document is placed by its header's period of report, and counts for the period
+    asked when that is missing too. An unreadable report never replaces a readable one, but the holdings may be incomplete when it is not
+    superseded, so a caller decides what to do with unreadable. A report EDGAR serves cut short twice raises
+    TruncatedSubmission, since resolving amendments without it could return the wrong holdings."""
     company = _company(filer)
     listed = company.get_filings(form=["13F-HR", "13F-HR/A"])
     if listed is None:
-        return []
-    reports = []
+        return ThirteenFReports(int(company.cik), (), (), ())
+    reports, unreadable, other_filer = [], [], []
     for row in listed.data.to_pylist():
         if str(row.get("reportDate") or "")[:10] not in ("", period):
             continue
         accession = row["accession_number"]
-        f = parse_13f(fetch_submission(company.cik, accession, submissions), accession=accession)
-        if f is None:
-            warnings.warn(f"{accession}: no readable 13F document", stacklevel=2)
+        body = fetch_submission(company.cik, accession, submissions)
+        f = parse_13f(body, accession=accession)
+        if (f.period if f is not None else header(decode(body)).get("period") or period) != period:
             continue
-        if f.period != period:
-            continue
-        if not f.has_information_table and f.declared_entries != 0:
-            warnings.warn(f"{accession}: no readable information table", stacklevel=2)
-            continue
-        if f.filer_cik is not None and f.filer_cik != int(company.cik):
-            warnings.warn(f"{accession}: filed under CIK {f.filer_cik}, not {int(company.cik)}", stacklevel=2)
-            continue
-        reports.append(replace(f, filer_cik=int(company.cik)))
+        if f is None or (not f.has_information_table and f.declared_entries != 0):
+            unreadable.append(accession)
+        elif f.filer_cik is not None and f.filer_cik != int(company.cik):
+            other_filer.append((accession, f.filer_cik))
+        else:
+            reports.append(replace(f, filer_cik=int(company.cik)))
     if not reports:
-        return []
+        return ThirteenFReports(int(company.cik), (), tuple(unreadable), tuple(other_filer))
     filings = pd.DataFrame([{"accession": f.accession, "filer_cik": f.filer_cik, "period": f.period, "form": f.form,
                              "filed": f.filed, "amendment_type": f.amendment_type, "amendment_no": f.amendment_no}
                             for f in reports])
     rows = pd.DataFrame([r for f in reports for r in holding_rows(f)])
     order = {a: i for i, a in enumerate(resolve_amendments(filings, rows if len(rows) else None))}
-    return sorted((f for f in reports if f.accession in order), key=lambda f: order[f.accession])
+    kept = sorted((f for f in reports if f.accession in order), key=lambda f: order[f.accession])
+    return ThirteenFReports(int(company.cik), tuple(kept), tuple(unreadable), tuple(other_filer))
 
+
+def get_13f_holdings(filer: Any, period: str, *, submissions: SubmissionCache | None = None) -> list[ThirteenFFiling]:
+    """The reports of get_13f_reports, with a warning naming each report it left out: one whose document or
+    information table is missing or unreadable (and that does not declare zero entries), or one filed under another
+    CIK. Use get_13f_reports to act on those instead."""
+    got = get_13f_reports(filer, period, submissions=submissions)
+    for accession in got.unreadable:
+        warnings.warn(f"{accession}: no readable 13F document or information table", stacklevel=2)
+    for accession, cik in got.other_filer:
+        warnings.warn(f"{accession}: filed under CIK {cik}, not {got.filer_cik}", stacklevel=2)
+    return list(got.reports)
+
+
+@dataclass(frozen=True)
+class Form144Page:
+    """One page of an issuer's Form 144 notices: the notices read, how many the issuer's list holds, the offset the
+    page starts at, and where the next page starts (None after the last)."""
+    notices: tuple[Form144Filing, ...]
+    total: int
+    offset: int
+    next_offset: int | None
+
+
+def get_form144_notices(company: Any, *, limit: int = 50, offset: int = 0,
+                        submissions: SubmissionCache | None = None) -> Form144Page:
+    """A page of a company's Form 144 and 144/A notices as issuer, newest filed first (accession descending among
+    notices filed the same day), at most limit of them, read from position offset of the list EDGAR gives for the
+    company.
+
+    That list also holds notices the company filed as the seller of another issuer's securities, which are known
+    only once read: the page skips each of those, and any notice with no readable Form 144, with a warning naming
+    it, and reads on until it holds limit notices, has read 2 * limit of them, or the list ends. So a page may hold
+    fewer than limit notices, none even, while next_offset still names the next page. total counts the whole list
+    and next_offset is the position after the last notice read (None at the end of the list), so pages of an
+    unchanged list never overlap or skip. Each notice read costs one request (its .txt), or none when submissions
+    holds it, so a page costs at most 2 * limit requests, and notices before offset are never read.
+    EDGAR's XML Form 144 starts on 2023-04-13, the first notice any list holds. A notice EDGAR serves cut short
+    twice raises TruncatedSubmission.
+    """
+    if limit < 1 or offset < 0:
+        raise ValueError("limit must be at least 1 and offset at least 0")
+    company = _company(company)
+    listed = company.get_filings(form=list(FORM144_FORMS))
+    rows = [] if listed is None else [r for r in listed.data.to_pylist() if r["form"] in FORM144_FORMS]
+    rows.sort(key=lambda r: (str(r["filing_date"]), r["accession_number"]), reverse=True)
+    notices, end, stop = [], offset, min(len(rows), offset + 2 * limit)
+    while end < stop and len(notices) < limit:
+        accession = rows[end]["accession_number"]
+        end += 1
+        filing = parse_form144(fetch_submission(company.cik, accession, submissions), accession=accession)
+        if filing is None:
+            warnings.warn(f"{accession}: no readable Form 144", stacklevel=2)
+        elif filing.issuer_cik != int(company.cik):
+            warnings.warn(f"{accession}: a Form 144 for issuer CIK {filing.issuer_cik}, not {int(company.cik)}",
+                          stacklevel=2)
+        else:
+            notices.append(filing)
+    return Form144Page(tuple(notices), len(rows), offset, end if end < len(rows) else None)

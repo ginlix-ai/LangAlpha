@@ -305,3 +305,102 @@ def test_a_quoted_cell_holding_a_line_break_and_blank_lines_read_as_rows(tmp_pat
     t = read_table(path, "NONDERIV_TRANS")
     assert t.SECURITY_TITLE.tolist() == ["Common\nStock", "Preferred Stock"]
     assert t.SHARES.tolist() == ["10", "20"]
+
+
+def test_a_chunked_read_unquotes_cells_as_read_table_does(tmp_path, monkeypatch):
+    import pyarrow.compute as pc
+    from edgar_engine import _datasets
+    from edgar_engine._datasets import read_table, read_table_chunks
+
+    (tmp_path / "T.tsv").write_text(
+        "A\tNAME\tB\n"
+        '1\t"PJSC ""LUKOIL"""\tx\n'
+        '2\t"tab\tinside"\ty\n'
+        '3\t"line\nbreak"\t\n'
+        '4\t5" Notes due 2030\tz\n',
+        encoding="utf-8")
+    monkeypatch.setattr(_datasets, "CHUNK_BYTES", 64)
+    chunked = read_table_chunks(tmp_path, "T", lambda b: pc.is_valid(b["A"])).to_pylist()
+    whole = read_table(tmp_path, "T")
+    assert chunked == whole.astype(object).where(whole.notna(), None).to_dict("records")
+    assert [r["NAME"] for r in chunked] == ['PJSC "LUKOIL"', "tab\tinside", "line\nbreak", '5" Notes due 2030']
+
+
+@pytest.mark.parametrize("zipped", [False, True])
+def test_a_chunked_read_raises_on_a_cell_that_opens_a_quote_it_never_closes(tmp_path, zipped):
+    import pyarrow.compute as pc
+    from edgar_engine._datasets import read_table_chunks
+
+    path = _table(tmp_path, zipped, '0000000001-26-000001\t"Common Stock\t10\n'
+                                    "0000000001-26-000002\tPreferred Stock\t20\n"
+                                    '0000000001-26-000003\t5" Notes due 2030\t30\n'
+                                    '0000000001-26-000004\t"Stock\tClass"\t40\n')
+    with pytest.raises(ValueError, match="never closes"):
+        read_table_chunks(path, "NONDERIV_TRANS", lambda b: pc.is_valid(b["SHARES"]))
+
+
+@pytest.mark.parametrize("cell", ['"20', '"20\n', '"20\r\n', '"20\n\n', '"20\tx', '"20\nmore', '"20\n""x', '"'])
+def test_a_chunked_read_raises_on_a_quote_left_open_at_the_end(tmp_path, cell):
+    import pyarrow.compute as pc
+    from edgar_engine._datasets import read_table, read_table_chunks
+
+    path = _table(tmp_path, False, "0000000001-26-000001\tCommon Stock\t10\n"
+                                   "0000000001-26-000002\tPreferred Stock\t" + cell)
+    with pytest.raises(pd.errors.ParserError):  # read_table fails too, in pandas' words
+        read_table(path, "NONDERIV_TRANS")
+    with pytest.raises(ValueError, match="never closes"):
+        read_table_chunks(path, "NONDERIV_TRANS", lambda b: pc.is_valid(b["SHARES"]))
+
+
+@pytest.mark.parametrize("cell", ['"two\n"', '"two\n"\n', '"two\n"\r\n', '"two\n"\n\n', '"two\n\n""x"',
+                                  '"two\n\n"""\n', '"\n"\n', '"\r\n"\r\n', '""', '""\n', '"x"""'])
+def test_a_chunked_read_takes_a_last_cell_quoted_over_lines_as_read_table_does(tmp_path, cell):
+    import pyarrow.compute as pc
+    from edgar_engine._datasets import read_table, read_table_chunks
+
+    path = _table(tmp_path, False, "0000000001-26-000001\tCommon Stock\t10\n"
+                                   "0000000001-26-000002\tPreferred Stock\t" + cell)
+    t = read_table_chunks(path, "NONDERIV_TRANS", lambda b: pc.is_valid(b["ACCESSION_NUMBER"]))
+    assert t["SHARES"].to_pandas().fillna("").tolist() == read_table(path, "NONDERIV_TRANS").SHARES.fillna("").tolist()
+
+
+@pytest.mark.parametrize("blank", [False, True])
+@pytest.mark.parametrize("bom", ["", "\ufeff"])
+@pytest.mark.parametrize("eol", ["\n", "\r\n", "\r"])
+def test_a_chunked_read_takes_a_quoted_header_as_read_table_does(tmp_path, bom, eol, blank):
+    import pyarrow.compute as pc
+    from edgar_engine._datasets import read_table, read_table_chunks
+
+    (tmp_path / "NONDERIV_TRANS.tsv").write_bytes(eol.join([bom + (eol if blank else "")
+                                                            + '"SHARES"\tACCESSION_NUMBER\tSECURITY_TITLE',
+                                                            "10\t0000000001-26-000001\tCommon Stock",
+                                                            "20\t0000000001-26-000002\tPreferred Stock", ""]).encode())
+    t = read_table_chunks(tmp_path, "NONDERIV_TRANS", lambda b: pc.is_valid(b["SHARES"]))
+    assert t["SHARES"].to_pylist() == read_table(tmp_path, "NONDERIV_TRANS").SHARES.tolist() == ["10", "20"]
+
+
+def test_a_chunked_read_of_an_empty_table_raises_as_arrow_does(tmp_path):
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    from edgar_engine._datasets import read_table_chunks
+
+    (tmp_path / "NONDERIV_TRANS.tsv").write_bytes(b"")
+    with pytest.raises(pa.ArrowInvalid):
+        read_table_chunks(tmp_path, "NONDERIV_TRANS", lambda b: pc.is_valid(b["SHARES"]))
+
+
+def test_a_chunked_read_takes_quoted_line_breaks_and_inch_marks_as_cells(tmp_path, monkeypatch):
+    import pyarrow.compute as pc
+    from edgar_engine import _datasets
+    from edgar_engine._datasets import read_table_chunks
+
+    filler = "".join(f"0000000001-26-1{i:05d}\tCommon Stock\t{i}\n" for i in range(20))
+    path = _table(tmp_path, False, filler + '0000000001-26-000001\t"Common\nStock"\t10\n'
+                                   '0000000001-26-000002\t5" Notes due 2030\t20\n'
+                                   '0000000001-26-000003\t"Stock\tClass"\t"30"')
+    monkeypatch.setattr(_datasets, "CHUNK_BYTES", 256)
+    batches = []
+    t = read_table_chunks(path, "NONDERIV_TRANS", lambda b: batches.append(b) or pc.is_valid(b["SHARES"]))
+    assert len(batches) > 1
+    assert t["SECURITY_TITLE"].to_pylist()[-3:] == ["Common\nStock", '5" Notes due 2030', "Stock\tClass"]
+    assert t["SHARES"].to_pylist()[-3:] == ["10", "20", "30"]

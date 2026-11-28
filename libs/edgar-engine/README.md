@@ -187,7 +187,69 @@ end of its range is partial.
 **Data sets.** `read_insider_dataset` reads SEC's quarterly Insider Transactions Data Set into the same columns.
 It is SEC's own extraction of the same documents, rounded to 2 decimals, and in multi-line filings it sometimes
 puts a line's nature of ownership (rarely a price or a holding) on a neighbouring line; the filing is right.
-Footnote ids come from its per-field footnote columns.
+Footnote ids come from its per-field footnote columns. The commonest case is a table whose natures the data set
+packed onto its first lines, skipping the lines with none, so a direct line carries an indirect line's nature: a
+table showing that (a direct line with a nature, every nature ahead of every line without one, one nature per
+indirect line) gets its natures, with their footnotes, put back on its indirect lines in order. `read_insider_holdings` and `read_insider_owners` read its
+holdings tables and reporting owners into the columns of `holding_rows` and `owner_rows`.
+
+**Roster.** `insider_roster(rows, holdings, owners, since=...)` gives one row per issuer and owner: the owner's
+name and relationship from their latest filing, their common shares held directly and indirectly (each position
+from the latest report that states it), the indirect positions by nature, and their latest transaction.
+
+```python
+from edgar_engine.ownership import holding_rows, insider_roster, owner_rows
+
+holdings = pd.DataFrame([r for f in filings for r in holding_rows(f)])
+owners = pd.DataFrame([r for f in filings for r in owner_rows(f)])
+roster = insider_roster(rows, holdings, owners, since="2024-11-26")
+```
+
+A position is one class of common stock held directly or by one nature of indirect ownership (natures compared
+without case, footnote references or a leading "by"; American depositary shares and non-voting shares are classes
+of their own; a title
+that drops or adds its class letter is the same position unless a filing of the issuer names both). A filing
+restates only the lines it touches, so each position takes the latest report stating it, dated by its last
+transaction (none dated after the filing) or its period if later, then filing date. An amendment belongs to the
+report it amends and replaces only the titles whose amounts it corrects or adds to. Within the report each title
+(restricted and performance shares apart from the plain ones) has its latest-dated transaction line as its balance,
+each holdings line is a holding of its own except one that repeats that balance, and the position is the
+sum. Table II (options, RSUs) and titles that are not common stock (preferred, preferred depositary shares, notes,
+warrants, stock units, dividend equivalents) are not shares. No filing reliably marks an exit (filers tick the "no
+longer subject to Section 16" box while still in office, so `owner_rows` keeps that mark as data), and `since` keeps
+the owners whose latest filing is on or after it. A joint filing's lines belong to every owner it names. `insider_shares(roster,
+roster_positions(rows, holdings), definition)` sums an issuer's insider shares: directors' and officers' direct
+positions (A), plus their indirect ones (B), plus 10% owners' with equal blocks counted once (C); a block in one
+joint filing counts once.
+
+## Form 144 notices of proposed sale
+
+`edgar_engine.ownership.form144` reads a Form 144 or 144/A, the notice an affiliate files when placing an order to
+sell restricted or control securities. EDGAR has required the XML form since 2023-04-13; earlier notices were paper.
+
+```python
+from edgar_engine import get_form144_notices
+from edgar_engine.ownership import notice_rows
+
+page = get_form144_notices("AAPL", limit=20)        # newest filed first; page.total, page.next_offset
+rows = [r for n in page.notices for r in notice_rows(n)]
+more = get_form144_notices("AAPL", limit=20, offset=page.next_offset) if page.next_offset is not None else None
+```
+
+**A page costs the notices it reads.** `get_form144_notices` lists the company's notices from EDGAR's submissions,
+orders them newest filed first (accession descending within a day) and fetches only the notices the page reads, one
+request a notice or none from a `SubmissionCache`. The list also holds notices the company filed as a seller of
+another issuer's securities, known only once read: the page skips each with a warning and reads on until it holds
+`limit` notices or has read `2 * limit`, so a page may come back short while `next_offset`, the list position after
+the last notice read, still names the next one; `total` counts the whole list.
+
+**Rows.** `notice_rows` gives one row per security class: blocks naming the same class (one per broker) are summed,
+with the earliest approximate sale date. The acquisition and past-sale blocks go to their class's row, or to the
+first row when they name no class of the notice (filers often title them with the issuer's name). `relationship`
+normalizes the free-text relationship entries to `director`, `officer`, `ten_percent_owner` and `other` (a
+former officer or director is `other`, and so is a former relationship in parentheses, as in `Director (Former
+Officer)`, which reads `director` and `other`), and `seller_cik` is the CIK the notice was filed under, None when that is
+the issuer's own. A 144/A is a whole notice again and names the one it amends in `previous_accession`.
 
 ## 13F holdings
 
@@ -214,7 +276,9 @@ prices, schema, period); `check_units` takes a period's rows from every filer an
 share with the median price the other filers imply for the same CUSIP (one vote per filer, never the report's
 own), and flags a report 100x or more away; a report whose rows split between scales reads `mixed`, since one
 multiplier would break its correct rows.
-Each catches errors the other misses, so `unit_flags` takes either. `checks` adds generic summary-page checks: a
+Each catches errors the other misses, so `unit_flags` takes either. `value_multiplier` turns a report's unit into
+the factor for whole dollars: 1000 (status `rescaled`) when its schema and period say thousands or its own rows'
+implied prices say so unambiguously, else 1 (`as_filed`). `checks` adds generic summary-page checks: a
 row count or value total that disagrees with the summary page (another manager's table attached, a truncated or
 transposed table) and nil tables.
 
@@ -223,7 +287,18 @@ RESTATEMENT is the base, and a NEW HOLDINGS amendment filed on or after it adds 
 most of its rows repeat a row held so far (CUSIP, shares, type and put or call) and those repeats cover most of the
 holdings (some filers mark a full re-filing as NEW HOLDINGS). Reports filed the same day go original first, then
 by amendment number. `get_13f_holdings` leaves out, with a warning, a report whose information table is missing
-or unreadable, so it can never replace a readable one.
+or unreadable, so it can never replace a readable one. `get_13f_reports` returns the same reports with the
+accessions it left out (`unreadable`, `other_filer`) and warns about none, for a caller that acts on them.
+
+**Confidential omissions.** A manager may leave holdings out of a report while it asks the SEC to keep them
+confidential, and says so on the summary page (`isConfidentialOmitted`). Each report's `confidential_omitted`, and
+the same column of `read_13f_dataset`, carries that flag; `portfolio(..., omits_confidential=True)` then leaves
+`change` unknown and lists no `sold_out` rows, since a position missing from the report may still be held.
+
+**Periods.** `edgar_engine.periods` (also exported by `edgar_engine.thirteenf`, and importable without edgartools):
+`period_deadline` gives the day every 13F-HR for a quarter is due (45 days after it, rolled to a
+business day) and `expected_period(today)` the latest quarter whose deadline is `SETTLE_DAYS` (3) behind, since late
+filings keep landing for a few days.
 
 **Tickers.** `ticker_for_cusip` looks a CUSIP up in edgartools' bundled CUSIP snapshot. A CUSIP whose check digit
 fails (a typo, an option series' pseudo-CUSIP) maps to nothing, and class tickers come back in exchange form
@@ -241,6 +316,41 @@ edgartools' identity, rate limit and retries. A body without its `</SEC-DOCUMENT
 it is fetched once more past edgartools' HTTP cache, then raises and is never cached. The parsers are strict: an XML document cut short or not well formed reads as no
 document, never as a partial one.
 
+
+## N-PORT fund holdings
+
+`edgar_engine.nport` reads Form N-PORT (NPORT-P and NPORT-P/A), the portfolio report every registered fund other than a
+money market fund files; a fund's report for the last month of each fiscal quarter turns public 60 days after it.
+
+```python
+from edgar_engine.nport import EQUITY, holding_rows, latest_positions, parse_nport, read_nport_dataset
+
+report = parse_nport(submission)              # one series' report: fund fields and every investment, as filed
+rows = holding_rows(report, EQUITY)           # flat rows of its common and preferred equity
+filings, holdings = read_nport_dataset("2026q3_nport.zip", EQUITY)   # SEC's quarterly data set, same columns
+positions = latest_positions(filings, holdings)   # each fund's positions as of its latest report
+```
+
+**Reports.** `parse_nport` reads the fund (registrant, series and class ids, report date, fiscal year end, assets and
+net assets, whether it is the final filing) and every investment of Part C in document order: name, LEI, title,
+CUSIP, ISIN, ticker and other identifiers, balance and its units (`NS` shares, `PA` principal, `NC` contracts, `OU`
+other), currency and exchange rate, value in US dollars, percent of net assets, payoff profile, asset and issuer
+category (an "other" category keeps its description), country, restricted flag, fair value level and derivative
+category. Codes stay as filed; identifiers keep their inner spaces (an option symbol's padding).
+
+**Data sets.** `read_nport_dataset` reads SEC's Form N-PORT Data Sets (one zip per filing quarter, about 450 MB) into
+the same columns. The holdings table runs to millions of rows, mostly debt, so it is streamed in blocks and cut to the
+asset categories asked for as it is read: a quarter's equity (about 1.9 million rows) reads in about 20 seconds with
+under 2 GB resident. The data sets name no class ids, and `seq` follows their holding key, which follows document
+order.
+
+**Holders.** `latest_positions` turns reports into who holds what. A fund is its EDGAR series, or the registrant when
+it names none (a closed-end fund, a unit investment trust). One report stands per fund and report date: a later
+filing for the date (an NPORT-P/A restates the whole report) replaces the earlier one. Each fund counts as of its
+latest report, a fund whose latest report is its final filing is left out, and the report before gives
+`shares_prior`. A share position is long equity counted in shares; its security is the CUSIP as filed, or the CUSIP
+inside a US or Canadian ISIN when the filed one fails its check digit (many funds file `N/A` beside an ISIN).
+
 ## Filings and cache
 
 `edgar_engine.filings.select_filing(company, form, fiscal_year=..., fiscal_period=..., period_end=...)` picks an
@@ -249,7 +359,10 @@ labels come from the filer's own XBRL facts where they exist, and otherwise from
 year end, moved to the filer's XBRL convention (a January year end is the prior fiscal year for some filers and
 the same one for others). `edgar_engine.cache` keys parsed sections and raw
 submissions by accession over a small `Store` interface; `LocalDirStore` (a directory, `EDGAR_ENGINE_CACHE` or
-`~/.cache/edgar-engine`) is the default, and object storage plugs in by implementing `get`, `put` and `delete`.
+`~/.cache/edgar-engine`, whose cache folders are held under 2 GiB by deleting their least recently used files,
+leaving anything else in the directory alone; `max_bytes=` or
+`EDGAR_ENGINE_CACHE_MAX_BYTES` sets another cap, and 0 removes it) is the default, and object storage plugs in by
+implementing `get`, `put` and `delete`.
 `S3Store` does so over any S3-compatible client with boto3's call shape, which you pass in, so the library
 depends on no S3 package: `SectionsCache(S3Store(boto3.client("s3", endpoint_url=...), "bucket", prefix="edgar/"))`.
 A missing object reads as absent; any other client error propagates.
