@@ -23,6 +23,12 @@
     "noImplicitThis": true
   },
   "include": [
-    "*.js"
+    "*.js",
+    "comments-shared.generated.d.ts"
+  ],
+  // Its source is type-checked in web; the other parts are checked against
+  // the declarations generated beside it.
+  "exclude": [
+    "comments-shared.generated.js"
   ]
 }
