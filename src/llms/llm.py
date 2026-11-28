@@ -520,10 +520,6 @@ _UNSET = object()  # Sentinel to distinguish "no override" from "override to Non
 # rather than the full count (``is_stalled_stream``).
 STREAM_CHUNK_TIMEOUT_S = 600.0
 
-# Header spellings the first-party codex clients send — codex-rs:
-# session-id/thread-id, opencode/hermes: session_id.
-_CODEX_SESSION_HEADERS = ("session-id", "thread-id", "session_id")
-
 
 def _derive_codex_affinity(cache_key: str) -> str:
     """UUID-normalize a cache key for a session header (codex's, or one a
@@ -1138,57 +1134,18 @@ class LLM:
         return ChatDashScope(**self._build_openai_params(cache_key))
 
     def _get_codex_llm(self, cache_key: str | None = None):
-        """Get Codex OAuth LLM (store=false, stateless)."""
-        from src.llms.extension.codex import ChatCodexOpenAI, codex_identity_headers
+        """Get Codex OAuth LLM (store=false, stateless): the OpenAI client's
+        params, streamed, under the headers codex-rs sends."""
+        from src.llms.extension.codex import ChatCodexOpenAI, codex_request_headers
 
-        params = {
-            "model": self.model,
-            "api_key": self._resolve_api_key(),
-            "streaming": True,
-            "stream_usage": True,
-            "max_retries": 5,
-            "timeout": 600.0,
-            "stream_chunk_timeout": STREAM_CHUNK_TIMEOUT_S,
-        }
-        params.update(self._resolve_base_url("base_url"))
-
-        if self.use_response_api:
-            params["output_version"] = "responses/v1"
-
-        params.update(self.parameters)
-
-        # First-party identity (see ``codex_identity_headers``). Built after the
-        # parameters merge so a parameters["default_headers"] entry augments the
-        # mapping instead of clobbering it.
-        params["default_headers"] = _merged_default_headers(
-            params,
-            codex_identity_headers(),
-            self.default_headers,
-        )
-
-        # Cache affinity: the codex backend routes its prompt cache by session
-        # headers, not by prompt_cache_key (wire-tested ~3× fewer warm-chain
-        # misses). Pinned headers win over the derived value, checked
-        # case-insensitively so a differently-cased pin can't end up
-        # contradicting a derived duplicate on the wire.
-        if cache_key:
-            affinity = _derive_codex_affinity(cache_key)
-            present = {k.lower() for k in params["default_headers"]}
-            for header in _CODEX_SESSION_HEADERS:
-                if header not in present:
-                    params["default_headers"][header] = affinity
-
-        # The codex backend 400s on explicit-caching params — never forward the opt-in.
+        params = self._build_openai_params(cache_key)
+        params.setdefault("streaming", True)
+        # The codex backend 400s on explicit-caching params: never forward the opt-in.
         params.pop("prompt_cache_options", None)
-
-        if self.extra_body:
-            params["extra_body"] = self.extra_body
-
-        if cache_key:
-            existing_mk = params.get("model_kwargs") or {}
-            params["model_kwargs"] = {**existing_mk, "prompt_cache_key": cache_key}
-
-        self._hold_params_to_egress(params, "openai")
+        params["default_headers"] = codex_request_headers(
+            params.get("default_headers") or {},
+            _derive_codex_affinity(cache_key) if cache_key else None,
+        )
         return ChatCodexOpenAI(**params)
 
     def _get_deepseek_llm(self):
