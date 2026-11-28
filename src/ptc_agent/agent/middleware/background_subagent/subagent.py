@@ -49,7 +49,7 @@ from ptc_agent.agent.middleware.runtime_context.turn import (
     TURN_TIME_LIMIT_KEY,
 )
 from ptc_agent.agent.state import DeltaAgentState
-from ptc_agent.config.agent import Admitted, RunOn, SubagentModel, TaskModel
+from ptc_agent.config.agent import Admitted, RunOn, RunModel, TaskModel
 from src.llms.claude_code import ClaudeCodeTarget
 from src.llms.llm import narrow_prompt_cache_key
 from src.llms.reasoning import DelegatedEffort
@@ -299,7 +299,7 @@ def run_on_by_type(
     specs: Iterable[SubAgent | CompiledSubAgent],
     *,
     default_model: Any,
-    models: Mapping[str, SubagentModel],
+    models: Mapping[str, RunModel],
     claude_code: Admitted | None,
 ) -> dict[str, RunOn]:
     """What each type's runs are admitted on: the model ``models`` gives it,

@@ -54,10 +54,12 @@ No cross-lane total order is promised. The promised causal chain per task run:
 2. `lane_open{task_run_id, task_id, cause, launch_tool_call_id?, description,
    subagent_type, model?}` becomes visible. It carries enough to create the card, because the
    Task result artifact may legitimately trail early task output. `launch_tool_call_id`
-   is nullable (a HITL continuation has no fresh Task call). `model` (`{id, provider}`)
-   is present only when the run uses a model other than its launcher's; it is the same
-   value admission writes to the row's `replay_facts.model`, which replay stamps on the
-   task artifact and `/tasks/{id}/status` returns.
+   is nullable (a HITL continuation has no fresh Task call). `model` (`{id, provider,
+   effort?}`, `effort` the level the run sends, absent for a model with no levels) is
+   present for every run whose model a catalog provider serves, its launcher's model
+   included; it is the same value admission writes to the row's `replay_facts.model`,
+   which replay stamps on the task artifact and `/tasks/{id}/status` returns. A row
+   admitted before every run recorded its model has none.
 3. Task content begins.
 4. The terminal CAS commits (ledger).
 5. Cursor-bearing `run_end{outcome, finished?}` is appended. A task run's writer adds

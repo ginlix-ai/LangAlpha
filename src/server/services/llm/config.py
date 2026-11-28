@@ -63,6 +63,7 @@ from .subagents import (
     pins_claude_code,
     read_user_subagents,
     resolve_user_subagents,
+    card_model,
     subagent_models,
     subagent_roles,
 )
@@ -902,6 +903,7 @@ async def resolve_llm_config(
         policy=policy,
     )
     demote_clientless(config)
+    config.runs_on = card_model(model_pref, config.llm_client, selection.effective_model)
     if slot == "primary":
         config.subagent_models = subagent_models(
             config, model_pref, selection.effective_model, role=role,

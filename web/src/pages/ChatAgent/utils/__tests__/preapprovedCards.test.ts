@@ -145,6 +145,17 @@ describe('preapprovedCard', () => {
     expect(preapprovedCard('delegate_to_analyst', { question: 'Q' }, failed)?.proposal).not.toHaveProperty('steer_id');
   });
 
+  it('takes the model and effort the hand-off\'s run went out on from the artifact', () => {
+    const runsOn = { id: 'claude-opus-5-5', provider: 'anthropic', effort: 'max' };
+    const tool = (content: string) => ({ content, artifact: { runs_on: runsOn } });
+    expect(preapprovedCard('delegate_to_analyst', { question: 'Q' }, tool(ptcResult({ run_id: 'run-1' })))?.proposal)
+      .toMatchObject({ runs_on: runsOn });
+    expect(preapprovedCard('delegate_to_analyst', { question: 'Q' }, tool(ptcResult({ success: false })))?.proposal)
+      .not.toHaveProperty('runs_on');
+    expect(preapprovedCard('delegate_to_analyst', { question: 'Q' }, ptcTool({ runs_on: runsOn }))?.proposal)
+      .not.toHaveProperty('runs_on');
+  });
+
   it('reads the call id off the tool call it draws from', () => {
     const card = preapprovedCardOf({
       toolName: 'delegate_to_analyst',

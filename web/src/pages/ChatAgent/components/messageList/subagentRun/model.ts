@@ -7,12 +7,10 @@
  * server kept them has no start or finish, and then shows no elapsed rather
  * than a guess.
  */
-import type { SubagentTaskRecord } from '@/types/chat';
+import type { RunModel, SubagentTaskRecord } from '@/types/chat';
 import { CREDIT_STOP_ERROR_TYPE } from '@/types/sse';
-import { llmProviderArt } from '@/lib/providerArt';
 import { formatClock, formatTook, type TFn } from '@/lib/elapsed';
 import type { SubagentTelemetry } from '../../../session/subagents/resolveSubagentTelemetry';
-import type { SubagentModel } from '../../../session/subagents/taskRuns';
 import { getActiveLabel } from '../../toolDisplayConfig';
 import { SUBAGENT_ROW_UI, type SubagentRowKind } from '../../taskStatusUi';
 import type { RunGlyphKind, RunGroupPart } from '../runCard';
@@ -25,6 +23,19 @@ export interface SubagentRunMember {
   toolCallProcess?: ToolCallProcessRecord;
 }
 
+/** A row's second line after its status and model. */
+export interface RowDetail {
+  /** What it is doing now, what it returned, or why it stopped; empty when
+   *  there is nothing to add to the status beside the title. */
+  text: string;
+  /** It names no call but what the run does between calls ("Thinking",
+   *  "Writing"), which takes the line only once that lasts, so a quick turn
+   *  between two calls never shows it. */
+  between?: true;
+  /** Calls running beside the one `text` names. */
+  others?: number;
+}
+
 export interface SubagentRowView {
   id: string;
   type: string;
@@ -34,19 +45,16 @@ export interface SubagentRowView {
   title: string;
   /** The description uncut, for the tooltip a cut title needs. */
   fullTitle: string;
-  /** What it is doing now, what it returned, or why it stopped; empty when
-   *  there is nothing to add to the status beside the title. */
-  detail: string;
+  detail: RowDetail;
   startMs?: number;
   /** When a settled run finished; a live one runs to now. */
   endMs?: number;
   /** Whether its run goes on: a launch's while it runs, a resume's while the
    *  run it started does. */
   live: boolean;
-  /** The model it ran on, only when that differs from its launcher's and its
-   *  provider has a mark we ship: shown as a badge, and one with no picture
-   *  says nothing. */
-  model?: SubagentModel;
+  /** The model it ran on and its effort, for a run of its own; absent on a
+   *  run from before the server sent it. */
+  model?: RunModel;
   /** What opening the row opens; absent when there is nothing to open. */
   openInfo?: SubagentInfo;
 }
@@ -114,32 +122,36 @@ function memberDetail(
   telemetry: SubagentTelemetry | undefined,
   root: string | null | undefined,
   t: TFn,
-): string {
+): RowDetail {
   switch (kind) {
     case 'working':
     case 'pausing': {
       const call = telemetry?.currentToolCall;
-      return call ? getActiveLabel(call.toolName, { args: call.args }, t, root) : '';
+      if (call) {
+        const others = (telemetry.runningCalls ?? 1) - 1;
+        return { text: getActiveLabel(call.toolName, { args: call.args }, t, root), ...(others ? { others } : {}) };
+      }
+      const between = telemetry?.between;
+      if (!between) return { text: '' };
+      return { text: t(between === 'writing' ? 'chat.subagentRun.writing' : 'chat.subagentRun.thinking'), between: true };
     }
     case 'done':
-      return resultLine(telemetry?.lastText);
+      return { text: resultLine(telemetry?.lastText) };
     case 'failed':
     case 'stopped': {
       // A credit stop is told by the notice at the foot of the message;
       // saying it here too would make the notice look optional.
       const reason = telemetry?.stopReason;
-      return reason && telemetry?.stopReasonType !== CREDIT_STOP_ERROR_TYPE
-        ? clampReason(reason)
-        : '';
+      return { text: reason && telemetry?.stopReasonType !== CREDIT_STOP_ERROR_TYPE ? clampReason(reason) : '' };
     }
     case 'refused': {
-      if (task.launchRefusal === 'subagents_off') return t('chat.subagentRun.subagentsOff');
+      if (task.launchRefusal === 'subagents_off') return { text: t('chat.subagentRun.subagentsOff') };
       // Cut from mid-sentence, so it starts lower case; here it starts a line.
       const reason = refusalReason(task.result);
-      return reason.charAt(0).toUpperCase() + reason.slice(1);
+      return { text: reason.charAt(0).toUpperCase() + reason.slice(1) };
     }
     default:
-      return '';
+      return { text: '' };
   }
 }
 
@@ -182,7 +194,7 @@ export function describeMember(
     startMs,
     endMs: ran && !live ? telemetry?.finishedAtMs : undefined,
     live,
-    model: model && llmProviderArt(model.provider) ? model : undefined,
+    model,
     // A launch that never ran has nothing to open: opening it would mint a tab
     // and a sidebar row for a subagent that does not exist. A refused
     // follow-up still names the task it was aimed at, which does.

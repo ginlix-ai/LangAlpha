@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ptc_agent.agent.middleware.background_subagent.registry import TaskRunRejected
-from ptc_agent.config.agent import SubagentModel
+from ptc_agent.config.agent import RunModel
 
 from src.server.contracts.run_times import epoch_ms
 from src.server.contracts.status import REPORT_BACK_STATUSES
@@ -96,7 +96,7 @@ class SubagentRunCoordinator:
         subagent_type: str = "general-purpose",
         parent_run_id: Optional[str] = None,
         launch_tool_call_id: Optional[str] = None,
-        model: Optional[SubagentModel] = None,
+        model: Optional[RunModel] = None,
         claude_code: bool = False,
         stored_token: bool = False,
         claude_code_model: Optional[str] = None,
@@ -106,9 +106,9 @@ class SubagentRunCoordinator:
         effort_override: Optional[str] = None,
     ) -> str:
         """Bear the run row (in_progress) and open its v2 stream; returns the
-        new task_run_id. ``model`` is the model the run will use, given only
-        when it is not its launcher's; the row and ``lane_open`` both carry
-        it, so a live card and a replayed one agree. ``model_override`` is
+        new task_run_id. ``model`` is the model and level the run will use,
+        its launcher's included; the row and ``lane_open`` both carry it, so
+        a live card and a replayed one agree. ``model_override`` is
         the catalog name its Task named in place of its subagent's own, which
         the row keeps for a resume that names none, the subagent's own
         model included, so the resume stays on it once that moves;

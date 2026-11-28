@@ -5,10 +5,11 @@
  * which has no other source).
  */
 import type { PTCAgentProposalState } from '@/types/chat';
+import { parseRunModel } from './runModel';
 
 export type DispatchResultFields = Pick<
   PTCAgentProposalState,
-  'thread_id' | 'workspace_id' | 'run_id' | 'steer_id' | 'report_back' | 'dispatch_failed' | 'dispatch_unknown'
+  'thread_id' | 'workspace_id' | 'run_id' | 'steer_id' | 'runs_on' | 'report_back' | 'dispatch_failed' | 'dispatch_unknown'
 >;
 
 /** The JSON object a tool result is, else null. The leading-brace test keeps
@@ -40,7 +41,8 @@ const id = (value: unknown): string | undefined => (typeof value === 'string' &&
  * changed agents, or the tool errored. The run the dispatch started is the
  * hand-off's own, which the card reads by id. A hand-off steered into a run
  * already going also names its steer, in the result's artifact rather than
- * its content, which the model reads.
+ * its content, which the model reads; one that started its own run names the
+ * model and effort that run went out on there (`runs_on`).
  */
 export function dispatchResultFields(tool: ToolResultLike): DispatchResultFields {
   const result = jsonObjectOf(tool.content);
@@ -51,14 +53,17 @@ export function dispatchResultFields(tool: ToolResultLike): DispatchResultFields
   const threadId = id(result.thread_id);
   const workspaceId = id(result.workspace_id);
   const runId = failed ? undefined : id(result.run_id);
-  const { artifact } = tool;
-  const steer = artifact && typeof artifact === 'object' && 'steer_id' in artifact ? artifact.steer_id : undefined;
-  const steerId = failed ? undefined : id(steer);
+  const artifact = tool.artifact && typeof tool.artifact === 'object'
+    ? (tool.artifact as { steer_id?: unknown; runs_on?: unknown })
+    : undefined;
+  const steerId = failed ? undefined : id(artifact?.steer_id);
+  const runsOn = failed ? undefined : parseRunModel(artifact?.runs_on);
   return {
     ...(threadId ? { thread_id: threadId } : {}),
     ...(workspaceId ? { workspace_id: workspaceId } : {}),
     ...(runId ? { run_id: runId } : {}),
     ...(steerId ? { steer_id: steerId } : {}),
+    ...(runsOn ? { runs_on: runsOn } : {}),
     // Whether a report-back is actually wired, which the card's switch only asked for.
     ...(typeof result.report_back === 'boolean' ? { report_back: result.report_back } : {}),
     ...(failed ? { dispatch_failed: true } : {}),

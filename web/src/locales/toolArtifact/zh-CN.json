@@ -407,6 +407,9 @@
     "edit": "正在编辑",
     "write": "正在写入"
   },
+  "moreRunning": "另有 {{count}} 个正在运行",
+  "moreRunning_other": "另有 {{count}} 个正在运行",
+  "moreRunningShort": "+{{count}}",
   "a11y": {
     "toolCallFailed": "工具调用失败",
     "openInTab": "在 {{tab}} 中打开",

@@ -398,7 +398,7 @@ class TestRunTimes:
     STARTED = datetime(2026, 1, 5, 14, 40, tzinfo=timezone.utc)
     SETTLED = datetime(2026, 1, 5, 14, 42, tzinfo=timezone.utc)
     RESUMED = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
-    MODEL = {"id": "glm-5.3-cn", "provider": "z-ai-cn"}
+    MODEL = {"id": "glm-5.3-cn", "provider": "z-ai-cn", "effort": "high"}
 
     def _ledger(self, latest: dict, runs: dict):
         return (
@@ -449,7 +449,7 @@ class TestRunTimes:
         assert first["finished_ms"] == self.SETTLED.timestamp() * 1000
         assert first["model"] == self.MODEL
         assert resumed["started_ms"] == self.RESUMED.timestamp() * 1000
-        # Still running: no finish. On its launcher's model: no model at all.
+        # Still running: no finish. A row that recorded none: no model at all.
         assert "finished_ms" not in resumed
         assert "model" not in resumed
 

@@ -200,6 +200,17 @@
   border-radius: 2px;
 }
 
+/* The status line's "+N", the other steps in flight beside the one it names:
+ * quieter than the label, and whole while the label truncates. Its line box
+ * stays inside the title's, so the row is the same height with or without it. */
+.titem-more {
+  flex-shrink: 0;
+  color: var(--Labels-Tertiary);
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .titem-pill-wrap {
   display: inline-flex;
   min-width: 0;

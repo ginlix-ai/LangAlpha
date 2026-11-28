@@ -17,6 +17,8 @@ from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
+from ptc_agent.config.agent import RunModel
+
 from src.tools.secretary._commands import (
     decline_handoff_command,
     error_command,
@@ -125,10 +127,13 @@ def _unknown_dispatch_command(
 
 class _RunsAt(NamedTuple):
     """The model a dispatched turn resolved to and the level it sends, None
-    for a model with no levels, as the endpoint's reply names them."""
+    for a model with no levels, as the endpoint's reply names them.
+    ``card`` is the turn's model as a subagent run's card names it, for the
+    view."""
 
     model: str | None
     effort: str | None
+    card: RunModel | None
 
     @classmethod
     def of_reply(cls, body: dict) -> "_RunsAt | None":
@@ -137,7 +142,12 @@ class _RunsAt(NamedTuple):
         # and then nothing is known.
         if "reasoning_effort" not in body:
             return None
-        return cls(body.get("llm_model"), body.get("reasoning_effort"))
+        card = body.get("runs_on")
+        return cls(
+            body.get("llm_model"),
+            body.get("reasoning_effort"),
+            card if isinstance(card, dict) else None,
+        )
 
 
 def _effort_result(asked: str, runs_at: _RunsAt | None) -> dict:
@@ -404,10 +414,15 @@ async def dispatch(
             if preapproved:
                 result["preapproved"] = True
             # The steer's row names the run that takes the hand-off in if
-            # ``run_id`` ends before reading it. The view reads it from the
-            # artifact, which the model never sees.
-            artifact = {"steer_id": steer_id} if steer_id else None
-            return success_command(result, tool_call_id, artifact=artifact)
+            # ``run_id`` ends before reading it, and ``runs_on`` the model
+            # and level the turn it started runs on. The view reads them from
+            # the artifact, which the model never sees.
+            artifact: dict = {}
+            if steer_id:
+                artifact["steer_id"] = steer_id
+            if runs_at and runs_at.card:
+                artifact["runs_on"] = runs_at.card
+            return success_command(result, tool_call_id, artifact=artifact or None)
 
         # Cap rejection or a fail-closed origin write — abort (reserve rolls back).
         if slot.error is not None:

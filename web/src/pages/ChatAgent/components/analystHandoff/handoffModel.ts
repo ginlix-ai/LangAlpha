@@ -7,7 +7,7 @@
  */
 import { formatRunLength, runLengthMs, type TFn } from '@/lib/elapsed';
 import { flattenInline, flattenMarkdown } from '@/lib/plainLine';
-import type { PTCAgentProposalState } from '@/types/chat';
+import type { PTCAgentProposalState, RunModel } from '@/types/chat';
 import type {
   DispatchPin,
   DispatchReadStatus,
@@ -181,6 +181,9 @@ export interface HandoffState {
   workspaceName: string;
   /** Sent into a run of the analyst's already going, not one of its own. */
   steered: boolean;
+  /** The model and effort its own run went out on; absent for a steer, a
+   *  lost reply and a hand-off from before the server said. */
+  runsOn?: RunModel;
   startedAt?: number;
   finishedAt?: number;
   /** The report row that answers this run, once the run is over and the row
@@ -211,6 +214,7 @@ export function describeHandoff(proposal: ProposalData, place: HandoffPlace, run
     workspaceName: run.workspaceName || proposal.workspace_name?.trim() || '',
     // A steer no run took in was sent into nothing.
     steered: !!proposal.steer_id && phase !== 'not_started',
+    ...(proposal.runs_on && phase !== 'not_started' ? { runsOn: proposal.runs_on } : {}),
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     // A report is the answer to a run that ended, however it ended.

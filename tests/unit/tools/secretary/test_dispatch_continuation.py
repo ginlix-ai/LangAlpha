@@ -454,3 +454,23 @@ async def test_continuation_non_uuid_thread_id_short_circuits():
 @pytest.fixture(autouse=True)
 def _internal_service_token(monkeypatch):
     monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "test-internal-service-token")
+
+
+@pytest.mark.asyncio
+async def test_a_started_hand_off_names_what_its_turn_runs_on_only_in_the_artifact():
+    """The model and level the analyst's turn resolved to, as a subagent
+    run's card names them; the model's result is the same without it. A
+    reply that started no turn of its own names none."""
+    runs_on = {"id": "gpt-6.1-terra", "provider": "openai", "effort": "high"}
+    started = {
+        "status": "dispatched", "run_id": "run-new", "thread_id": PTC_THREAD_ID,
+        "llm_model": "gpt-6.1-terra", "reasoning_effort": "high",
+    }
+
+    named = await _continue_into({**started, "runs_on": runs_on})
+    unnamed = await _continue_into(started)
+    adopted = await _continue_into({"status": "dispatched", "run_id": "run-new", "runs_on": runs_on})
+
+    assert named.artifact == {"runs_on": runs_on}
+    assert named.content == unnamed.content
+    assert unnamed.artifact is None and adopted.artifact is None

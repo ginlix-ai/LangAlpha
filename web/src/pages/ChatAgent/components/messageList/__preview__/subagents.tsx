@@ -1,8 +1,8 @@
 /* eslint-disable react-refresh/only-export-components -- entry file, not a module */
-import React, { StrictMode, useEffect } from 'react';
+import React, { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import i18n, { initI18n } from '@/i18n';
+import i18n, { initI18n, loadCopy } from '@/i18n';
 import { queryKeys } from '@/lib/queryKeys';
 import { switchLocale } from '@/lib/locale';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
@@ -38,10 +38,16 @@ const knobs = {
   only: params.get('only'),
 } as const;
 
-const BEGUN = { tokenUsage: { input: 9_000, output: 1_200, total: 10_200 } };
+/** What each run went out on, named from the catalog below. A user's own
+ *  endpoint has no mark; a model without levels no effort. */
+const ON_CLAUDE = { model: { id: 'claude-sonnet-4-6', provider: 'anthropic', effort: 'high' } };
+const ON_OPUS = { model: { id: 'claude-opus-5-5', provider: 'anthropic', effort: 'max' } };
+const ON_SOL = { model: { id: 'gpt-6.2-sol', provider: 'openai', effort: 'xhigh' } };
+const ON_OWN = { model: { id: 'qwen-local', provider: 'my-endpoint', effort: 'medium' } };
+const ON_FLASH = { model: { id: 'deepseek-v5-flash', provider: 'deepseek' } };
 
-/** A subagent on a model other than its launcher's, so its tile is badged. */
-const ON_CLAUDE = { model: { id: 'claude-sonnet-4-6', provider: 'anthropic' } };
+/** A run under way, on the model most fixtures share. */
+const BEGUN = { tokenUsage: { input: 9_000, output: 1_200, total: 10_200 }, ...ON_CLAUDE };
 
 interface Fixture {
   task: Partial<SubagentTaskRecord>;
@@ -94,12 +100,12 @@ const SINGLES: { id: string; label: string; fixture: Fixture; pausing?: boolean;
   },
   {
     id: 'working-model',
-    label: 'Working, on a model other than the thread\'s',
+    label: 'Working, on Opus at Max',
     fixture: {
       task: { description: 'Compare services gross margin across the last eight quarters', type: 'equity-analyst' },
       telemetry: {
         ...BEGUN,
-        ...ON_CLAUDE,
+        ...ON_OPUS,
         startedAtMs: T - 2 * M - 14 * S,
         currentToolCall: { toolName: 'get_financial_statements', args: { symbol: 'AAPL' } },
       },
@@ -121,6 +127,7 @@ const SINGLES: { id: string; label: string; fixture: Fixture; pausing?: boolean;
       task: { description: 'Hyperscaler capex guidance for 2027', status: 'completed' },
       telemetry: {
         ...BEGUN,
+        ...ON_OWN,
         startedAtMs: T - 9 * M,
         finishedAtMs: T - 9 * M + 3 * M + 40 * S,
         lastText: '## Summary\n\nReturned 2027 guidance for all four, with sources.',
@@ -129,10 +136,10 @@ const SINGLES: { id: string; label: string; fixture: Fixture; pausing?: boolean;
   },
   {
     id: 'done-untimed',
-    label: 'Done, from before times were kept',
+    label: 'Done, from before times and models were kept',
     fixture: {
       task: { description: 'Draft the sector one-pager', type: 'report-builder', status: 'completed' },
-      telemetry: { ...BEGUN },
+      telemetry: { ...BEGUN, model: undefined },
     },
   },
   {
@@ -140,7 +147,7 @@ const SINGLES: { id: string; label: string; fixture: Fixture; pausing?: boolean;
     label: 'Failed',
     fixture: {
       task: { description: 'Marvell custom-silicon backlog', type: 'general-purpose', status: 'error' },
-      telemetry: { ...BEGUN, startedAtMs: T - 5 * M, finishedAtMs: T - 5 * M + 43 * S, stopReason: 'The source refused the request (403)' },
+      telemetry: { ...BEGUN, ...ON_FLASH, startedAtMs: T - 5 * M, finishedAtMs: T - 5 * M + 43 * S, stopReason: 'The source refused the request (403)' },
     },
   },
   {
@@ -209,7 +216,7 @@ const SIX: Fixture[] = [
     task: { description: 'Survey analyst notes on cloud margins', type: 'research' },
     telemetry: {
       ...BEGUN,
-      ...ON_CLAUDE,
+      ...ON_SOL,
       startedAtMs: T - 219 * S,
       currentToolCall: { toolName: 'WebSearch', args: { query: 'cloud gross margin 2026' } },
     },
@@ -234,8 +241,20 @@ const SIX: Fixture[] = [
 
 const GROUP6_LIVE = members('g6', SIX);
 
-/** Option C from the mockup: one member on another model. */
-const GROUP3_BADGE = members('g3', [SIX[0], SIX[1], SIX[3]]);
+/** Three models side by side. */
+const GROUP3_MODELS = members('g3', [SIX[0], SIX[1], { ...SIX[3], telemetry: { ...SIX[3].telemetry, ...ON_OWN } }]);
+
+/** One maker's model on each route the composer offers it, and the
+ *  deployment's default: each wears the mark the model menu gives its row. */
+const ROUTES = members('routes', ([
+  ['Claude Opus 5.5 on its API', 'claude-opus-5-5', 'anthropic', 'high'],
+  ['Claude Opus 5.5 on a Claude subscription', 'claude-opus-5-5-oauth', 'claude-oauth', 'high'],
+  ['Claude Opus 5.5 on Claude Code', 'claude-opus-5-5-code', 'claude-code', 'max'],
+  ['DeepSeek, the built-in default', 'deepseek-flash', 'deepseek', 'high'],
+] as const).map(([description, id, provider, effort]) => ({
+  task: { description, type: 'research', status: 'completed' },
+  telemetry: { ...BEGUN, model: { id, provider, effort }, startedAtMs: T - 90 * S, finishedAtMs: T - 30 * S, lastText: 'Margins held inside the guided range.' },
+})));
 
 const GROUP2_LIVE = members('g2', [
   {
@@ -271,18 +290,28 @@ const GROUP6_SETTLED = members('g6s', [
   },
 })));
 
+const OLD = { ...BEGUN, model: undefined };
 const GROUP_UNTIMED = members('gu', [
-  { task: { description: 'Summarize the Fed minutes', status: 'completed' }, telemetry: { ...BEGUN, lastText: 'Two members wanted a pause in December.' } },
-  { task: { description: 'Pull treasury yields', type: 'data-prep', status: 'completed' }, telemetry: { ...BEGUN } },
-  { task: { description: 'Chart the curve', type: 'report-builder' }, telemetry: { ...BEGUN } },
+  { task: { description: 'Summarize the Fed minutes', status: 'completed' }, telemetry: { ...OLD, lastText: 'Two members wanted a pause in December.' } },
+  { task: { description: 'Pull treasury yields', type: 'data-prep', status: 'completed' }, telemetry: { ...OLD } },
+  { task: { description: 'Chart the curve', type: 'report-builder' }, telemetry: { ...OLD } },
 ]);
 
 const SINGLE_MEMBERS = SINGLES.map((s) => ({ ...s, members: members(s.id, [s.fixture]) }));
 
-/** The catalog the composer would have loaded, so a badge names its model. */
+/** The catalog the composer would have loaded, so a row names its model. */
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 queryClient.setQueryData(queryKeys.models.all, {
-  model_metadata: { 'claude-sonnet-4-6': { display_name: 'Claude Sonnet 4.6', provider: 'anthropic' } },
+  model_metadata: {
+    'claude-sonnet-4-6': { display_name: 'Claude Sonnet 4.6', provider: 'anthropic' },
+    'claude-opus-5-5': { display_name: 'Claude Opus 5.5', provider: 'anthropic' },
+    'gpt-6.2-sol': { display_name: 'GPT-6.2 Sol', provider: 'openai' },
+    'qwen-local': { display_name: 'Qwen 4 Local', provider: 'my-endpoint' },
+    'deepseek-v5-flash': { display_name: 'DeepSeek V5 Flash', provider: 'deepseek' },
+    'claude-opus-5-5-oauth': { display_name: 'Claude Opus 5.5', provider: 'claude-oauth' },
+    'claude-opus-5-5-code': { display_name: 'Claude Opus 5.5', provider: 'claude-code' },
+    'deepseek-flash': { display_name: 'DeepSeek-V4.1-Flash', provider: 'deepseek' },
+  },
 });
 
 function opened(info: SubagentInfo): void {
@@ -314,6 +343,84 @@ const TASK_REPORTS: Array<{ label: string; report: TaskReport }> = [
 
 const REPORT_ACTIONS = { onOpenSubagentTask: opened };
 
+
+/** Calls as a run makes them, looped: long ones, gaps while the model thinks
+ *  or writes, bursts that return in a fifth of a second, and a batch run in
+ *  parallel, as recorded on a real run. Each step is what the telemetry says
+ *  for that long. */
+type ScriptStep = [Pick<SubagentTelemetry, 'currentToolCall' | 'runningCalls' | 'between'>, number];
+const CALL = (toolName: string, args: Record<string, unknown>, runningCalls?: number) => ({
+  currentToolCall: { toolName, args }, ...(runningCalls ? { runningCalls } : {}),
+});
+const THINKING = { between: 'thinking' } as const;
+const WRITING = { between: 'writing' } as const;
+const SCRIPTS: ScriptStep[][] = [
+  [
+    [CALL('WebSearch', { query: 'Kessler BIS testimony H200 China shipments' }), 4200],
+    [THINKING, 900],
+    [CALL('Bash', { command: 'ls data/' }), 200],
+    [THINKING, 400],
+    [CALL('WebFetch', { url: 'https://mp.weixin.qq.com/s/abc' }), 150],
+    [CALL('WebFetch', { url: 'https://arxiv.org/abs/2511.01234' }), 300],
+    [THINKING, 2600],
+    [WRITING, 2200],
+  ],
+  [
+    [CALL('WebFetch', { url: 'https://mp.weixin.qq.com/s/xyz' }, 3), 2500],
+    [CALL('WebFetch', { url: 'https://mp.weixin.qq.com/s/xyz' }, 2), 1800],
+    [CALL('WebFetch', { url: 'https://mp.weixin.qq.com/s/xyz' }), 1700],
+    [THINKING, 3000],
+    [CALL('ExecuteCode', {}), 250],
+    [CALL('Read', { file_path: 'notes/h200.md' }), 180],
+    [CALL('Bash', { command: 'python parse.py' }), 2400],
+  ],
+];
+
+function cycling(prefix: string): { members: SubagentRunMember[]; ids: string[] } {
+  const m = members(prefix, SCRIPTS.map((_, i) => ({
+    task: { description: i === 0 ? 'Export-control timeline gaps + China-side actions' : "Chinese labs' training hardware (Blackwell vs Hopper)", status: 'running' },
+    telemetry: { ...BEGUN, startedAtMs: T },
+  })));
+  return { members: m, ids: m.map((x) => x.subagentId) };
+}
+const CYCLING = cycling('cycling');
+
+/** Steps each script on its own clock and hands the rows a new source per
+ *  step, as the live stream does. */
+function CyclingRun(): React.ReactElement {
+  const [at, setAt] = useState(() => SCRIPTS.map(() => 0));
+  useEffect(() => {
+    const timers = SCRIPTS.map((script, i) => {
+      let step = 0;
+      let timer: ReturnType<typeof setTimeout>;
+      const next = () => {
+        timer = setTimeout(() => {
+          step = (step + 1) % script.length;
+          setAt((prev) => prev.map((v, j) => (j === i ? step : v)));
+          next();
+        }, script[step][1]);
+      };
+      next();
+      return () => clearTimeout(timer);
+    });
+    return () => timers.forEach((stop) => stop());
+  }, []);
+  const source = useMemo(() => ({
+    followsRuns: true,
+    resolve: (id: string) => {
+      const i = CYCLING.ids.indexOf(id);
+      const base = TELEMETRY.get(id);
+      if (i < 0 || !base) return base;
+      return { ...base, ...SCRIPTS[i][at[i]][0] };
+    },
+  }), [at]);
+  return (
+    <SubagentTelemetryContext.Provider value={source}>
+      <SubagentRun members={CYCLING.members} onOpen={opened} />
+    </SubagentTelemetryContext.Provider>
+  );
+}
+
 function Section({ id, label, children }: { id: string; label: string; children: React.ReactNode }): React.ReactElement | null {
   if (knobs.only && knobs.only !== id) return null;
   return (
@@ -336,14 +443,20 @@ function Preview(): React.ReactElement {
       <SubagentTelemetryContext.Provider value={TELEMETRY_SOURCE}>
         <main className="font-content min-h-screen bg-(--color-bg-page) px-4 py-8 text-(--color-text-primary)">
           <div className="mx-auto w-full max-w-3xl space-y-6">
-            <Section id="group6-live" label="6 subagents, live (one on another model)">
+            <Section id="cycling" label="2 subagents, calls as they come">
+              <CyclingRun />
+            </Section>
+            <Section id="routes" label="One model on each route, and the built-in default">
+              <SubagentRun members={ROUTES} onOpen={opened} />
+            </Section>
+            <Section id="group6-live" label="6 subagents, live">
               <SubagentRun members={GROUP6_LIVE} onOpen={opened} />
             </Section>
             <Section id="group6-settled" label="6 subagents, settled (mounts folded)">
               <SubagentRun members={GROUP6_SETTLED} onOpen={opened} />
             </Section>
-            <Section id="group3-badge" label="3 subagents, option C">
-              <SubagentRun members={GROUP3_BADGE} onOpen={opened} />
+            <Section id="group3-badge" label="3 subagents, three models">
+              <SubagentRun members={GROUP3_MODELS} onOpen={opened} />
             </Section>
             <Section id="group2-live" label="2 subagents, live">
               <SubagentRun members={GROUP2_LIVE} onOpen={opened} />
@@ -382,7 +495,8 @@ function Preview(): React.ReactElement {
   );
 }
 
-void initI18n().then(() =>
+// The tool labels a working row names live in the chat page's lazy copy.
+void initI18n().then(() => loadCopy(['toolArtifact'])).then(() =>
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <ThemeProvider>

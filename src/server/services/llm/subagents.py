@@ -21,9 +21,10 @@ from ptc_agent.agent.subagents.merge import (
     turn_roster,
 )
 from ptc_agent.agent.roles import AgentRole
-from ptc_agent.config.agent import SubagentModel, SubagentsConfig
+from ptc_agent.config.agent import RunModel, SubagentsConfig
 from src.llms.claude_code import is_claude_code_model
-from src.llms.model_identity import catalog_model
+from src.llms.llm import LLM
+from src.llms.model_identity import catalog_model, client_effort
 from src.llms.preferences import resolve_tuning
 
 from . import logger, user_models
@@ -288,44 +289,57 @@ def demote_clientless(config: Any) -> None:
 
 def subagent_models(
     config: Any, model_pref: dict, turn_model: str, *, role: AgentRole = "analyst",
-) -> dict[str, SubagentModel]:
-    """Each subagent that runs a model other than the turn's, by name.
+) -> dict[str, RunModel]:
+    """The model each subagent runs and the level it sends, by name.
 
     Read off the client the compiler will hand the subagent, not off its pin:
     a pinned role with no key of its own runs a copy of the main client, and
-    an effort with no pin runs the turn's model at that effort. Two catalog
-    names for one API model (a model and its subscription twin) count as the
-    same, since the user picked that model either way.
+    an effort with no pin runs the turn's model at that effort. A role with no
+    client of its own runs the turn's (``demote_clientless`` has already
+    unpinned one whose client could not be built), as ``config.runs_on``
+    names it.
     """
-    models: dict[str, SubagentModel] = {}
+    models: dict[str, RunModel] = {}
     for defn in turn_roster(config.subagents).for_role(role):
         client = config.subsidiary_llm_clients.get(f"subagent:{defn.name}")
-        runs = catalog_model(client) if client is not None else defn.model
-        if model := card_model(model_pref, runs, turn_model):
+        model = (
+            card_model(model_pref, client, defn.model or turn_model)
+            if client is not None
+            else config.runs_on
+        )
+        if model:
             models[defn.name] = model
     return models
 
 
-def card_model(model_pref: dict, runs: str | None, turn_model: str) -> SubagentModel | None:
-    """What a run's card names for a run on the catalog model ``runs``: None
-    where that is the turn's own API model, since the user picked that model
-    under either name, and where no catalog provider serves it."""
-    if not runs or _api_model_id(model_pref, runs) == _api_model_id(model_pref, turn_model):
-        return None
+def run_effort(client: Any, name: str) -> str | None:
+    """The level a run on ``client`` sends, None for a model with no levels.
+
+    No client yet is the turn's own, built later from the manifest by name
+    with no level asked (``AgentConfig.get_llm_client``), so it sends that
+    model's default.
+    """
+    if client is not None:
+        return client_effort(client)
+    return LLM.get_model_config().get_reasoning_effort_default(name)
+
+
+def card_model(model_pref: dict, client: Any, name: str) -> RunModel | None:
+    """What a card names for a run on ``client``: the catalog model it runs
+    (``name`` for a client the factory never built, or none built yet), the
+    provider serving it, and the level it sends. None where no catalog
+    provider serves it, since there is no mark to show."""
+    runs = catalog_model(client) or name
     provider = _serving_provider(model_pref, runs)
-    return {"id": runs, "provider": provider} if provider else None
-
-
-def _api_model_id(model_pref: dict, name: str) -> str:
-    entry = user_models.model_entry(model_pref, name) or {}
-    return entry.get("model_id") or name
+    if not provider:
+        return None
+    effort = run_effort(client, runs)
+    return {"id": runs, "provider": provider, **({"effort": effort} if effort else {})}
 
 
 def _serving_provider(model_pref: dict, name: str) -> str | None:
     """The catalog provider serving ``name``. A user's own provider is a
     variant of a catalog one, which is the one with a mark to show."""
     provider = (user_models.model_entry(model_pref, name) or {}).get("provider")
-    for custom in model_pref.get("custom_providers") or []:
-        if custom.get("name") == provider:
-            return custom.get("parent_provider") or provider
-    return provider
+    custom = user_models.custom_provider(model_pref, provider)
+    return (custom or {}).get("parent_provider") or provider

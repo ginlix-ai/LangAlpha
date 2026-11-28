@@ -8,7 +8,7 @@ import { completedToolTitle, completedToolSummary, liveToolLabel } from './activ
 import { filePathOf } from './groupFileToolRuns';
 import { AGENT_PATH_TRAITS } from '../../utils/agentPathTraits';
 import { classifyAgentPath } from '../../utils/agentPaths';
-import { RunningTitle, RowIcon, FailedIconBadge } from './ActivityRowParts';
+import { RunningTitle, RowIcon, FailedIconBadge, MoreInFlight } from './ActivityRowParts';
 import { SwapCell } from '@/components/ui/crossfade';
 import type { ToolActivityItem, PreparingCall } from './activityTypes';
 import { ToolCallCommandState } from '../commands/CommandState';
@@ -61,6 +61,7 @@ export function PreparingTimelineRow({ tc }: { tc: PreparingCall }): React.React
         <div className="titem-line">
           <RunningTitle label={displayName} />
           <span className="truncate" style={{ fontSize: '0.75rem', opacity: 0.55 }}>{prepText}</span>
+          <MoreInFlight />
         </div>
       </div>
     </div>
@@ -124,7 +125,10 @@ export const ToolCallRow = memo(function ToolCallRow({ item, onClick, running = 
             tense and its pill in, in one cell, so the row holds still. */}
         <SwapCell swapKey={running ? 'running' : 'settled'} layerClassName="titem-line">
           {running ? (
-            <RunningLine item={item} onOpenPill={onClick} />
+            <>
+              <RunningLine item={item} onOpenPill={onClick} />
+              <MoreInFlight />
+            </>
           ) : (
             <>
               {titleNode}
@@ -140,6 +144,7 @@ export const ToolCallRow = memo(function ToolCallRow({ item, onClick, running = 
                   </button>
                 </span>
               )}
+              <MoreInFlight />
               {/* A call that moved to the background returned before its
                   command ended; the row follows the command from there. */}
               {isCommandTool(toolName) && <ToolCallCommandState toolCallId={item.toolCallId} />}

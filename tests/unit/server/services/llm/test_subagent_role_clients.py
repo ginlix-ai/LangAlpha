@@ -238,8 +238,13 @@ _ENTRIES = {
 }
 
 
-def _client(manifest_model: str) -> SimpleNamespace:
-    return SimpleNamespace(metadata={"manifest_model": manifest_model})
+_TURN = {"id": MAIN, "provider": "deepseek", "effort": "max"}
+
+
+def _client(manifest_model: str, effort: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(metadata={
+        "manifest_model": manifest_model, **({"reasoning_effort": effort} if effort else {}),
+    })
 
 
 @pytest.fixture
@@ -254,21 +259,21 @@ def entries(monkeypatch):
 @pytest.mark.parametrize(
     ("pin", "client", "expected"),
     [
-        # Its own client on another model: news.
-        ("sub-model", _client("sub-model"), {"id": "sub-model", "provider": "z-ai-cn"}),
+        # Its own client on another model, at the level it sends.
+        ("sub-model", _client("sub-model", "high"), {"id": "sub-model", "provider": "z-ai-cn", "effort": "high"}),
         # A pin with no key of its own runs a copy of the main client.
-        ("sub-model", _client(MAIN), None),
+        ("sub-model", _client(MAIN), {"id": MAIN, "provider": "deepseek"}),
         # An effort alone is the turn's model at that effort.
-        (None, _client(MAIN), None),
-        # The turn's model on another route is still the model the user picked.
-        ("main-model-oauth", _client("main-model-oauth"), None),
-        # No client: the compiler hands the pin over by name.
-        ("sub-model", None, {"id": "sub-model", "provider": "z-ai-cn"}),
-        # Inherit: the main agent's own model.
-        (None, None, None),
+        (None, _client(MAIN, "low"), {"id": MAIN, "provider": "deepseek", "effort": "low"}),
+        # The turn's model on another route, named as the route it runs.
+        ("main-model-oauth", _client("main-model-oauth"), {"id": "main-model-oauth", "provider": "claude-oauth"}),
+        # Inherit: the turn's own, as its card names it.
+        (None, None, _TURN),
+        # A model no catalog provider serves has no mark to show.
+        ("unlisted", _client("unlisted"), None),
     ],
 )
-def test_a_subagent_records_its_model_only_when_it_is_not_the_turns(pin, client, expected):
+def test_every_subagent_records_the_model_and_level_it_runs(pin, client, expected):
     from src.server.services.llm.subagents import subagent_models
 
     defn = SubagentDefinition(name="desk", description="", model=pin)
@@ -277,6 +282,7 @@ def test_a_subagent_records_its_model_only_when_it_is_not_the_turns(pin, client,
             resolved=ResolvedSubagents(definitions={"desk": defn}, enabled=("desk",))
         ),
         subsidiary_llm_clients={"subagent:desk": client} if client else {},
+        runs_on=_TURN,
     )
 
     models = subagent_models(config, {}, MAIN)
@@ -294,9 +300,25 @@ def test_a_users_own_provider_records_the_catalog_provider_it_is_a_variant_of():
             resolved=ResolvedSubagents(definitions={"desk": defn}, enabled=("desk",))
         ),
         subsidiary_llm_clients={"subagent:desk": _client("my-proxy-model")},
+        runs_on=_TURN,
     )
     pref = {"custom_providers": [{"name": "my-proxy", "parent_provider": "openai"}]}
 
     assert subagent_models(config, pref, MAIN) == {
         "desk": {"id": "my-proxy-model", "provider": "openai"}
     }
+
+
+@pytest.mark.usefixtures("entries")
+def test_a_turn_client_built_later_is_named_at_the_level_its_model_sends_unasked(monkeypatch):
+    """A turn with no level asked and no key of its own builds its client from
+    the manifest by name after admission, so it sends the manifest's default."""
+    from src.llms.llm import LLM
+    from src.server.services.llm.subagents import card_model
+
+    monkeypatch.setattr(LLM, "get_model_config", classmethod(lambda cls: SimpleNamespace(
+        get_reasoning_effort_default=lambda name: "high" if name == MAIN else None,
+    )))
+
+    assert card_model({}, None, MAIN) == {"id": MAIN, "provider": "deepseek", "effort": "high"}
+    assert card_model({}, _client(MAIN, "low"), MAIN)["effort"] == "low"

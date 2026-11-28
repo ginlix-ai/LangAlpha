@@ -53,8 +53,7 @@ async def get_subagent_task_status(
         "run_id": detail.get("latest_run_id"),
         "started_ms": run.get("started_ms"),
         "finished_ms": run.get("finished_ms"),
-        # Absent, not null, for a run on its launcher's model: the field is
-        # only ever news.
+        # Absent, not null, for a run whose row recorded none.
         **({"model": run["model"]} if run.get("model") else {}),
     }
 

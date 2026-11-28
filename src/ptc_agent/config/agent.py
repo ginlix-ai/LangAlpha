@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -34,12 +34,14 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 
-class SubagentModel(TypedDict):
-    """The model a subagent runs when it is not its launcher's: the catalog
-    name and the provider serving it."""
+class RunModel(TypedDict):
+    """The model a run is on, as its card names it: the catalog name, the
+    provider serving it, and the level it sends (absent for a model with no
+    levels). Named for every run, its launcher's model included."""
 
     id: str
     provider: str
+    effort: NotRequired[str]
 
 
 class CredentialSource(StrEnum):
@@ -413,14 +415,15 @@ class RunOn:
     """What one subagent run is admitted on: its subagent type's, or the
     model its Task named (``TaskModel.run_on``).
 
-    ``model`` is what the run's card shows, None on its launcher's model.
+    ``model`` is what the run's card shows, None where no catalog provider
+    serves it.
     ``claude_code`` is where admission placed its CLI, set only for a run on
     a Claude Code row, and ``claude_code_model`` the model that CLI runs.
     ``ask`` is what the Task named, which the run's row keeps for a resume
     that names none.
     """
 
-    model: SubagentModel | None = None
+    model: RunModel | None = None
     claude_code: Admitted | None = None
     claude_code_model: str | None = None
     ask: TaskAsk = TaskAsk()
@@ -445,7 +448,7 @@ class TaskModel:
 
     ``name`` is the catalog name and ``effort`` the level the client was
     asked for, which it may send stepped down (``client_effort``). ``model``
-    is what the run's card shows, None where it is the turn's own model.
+    is what the run's card shows, with the level the client sends.
     ``claude_code`` is what admission let the run's CLI run on, set only for
     a Claude Code row.
     """
@@ -454,7 +457,7 @@ class TaskModel:
     display_name: str
     client: Any
     guidance: str
-    model: SubagentModel | None = None
+    model: RunModel | None = None
     claude_code: Admitted | None = None
     effort: str | None = None
 
@@ -574,12 +577,15 @@ class AgentConfig(BaseModel):
     # Written alongside the clients above, because a role without a client of
     # its own still runs a model: by name, or by inheriting the main one.
     role_prompt_guidance: dict[str, str] = Field(default_factory=dict, exclude=True)
-    # Each subagent whose clients above run a model other than the turn's.
+    # The model and level each subagent's runs use, the turn's own included.
     # Admission records it on the run, because nothing downstream of the
     # build can still tell which model a run used.
-    subagent_models: dict[str, SubagentModel] = Field(
+    subagent_models: dict[str, RunModel] = Field(
         default_factory=dict, exclude=True
     )
+    # The turn's own model and level, as a card names a run's; a dispatched
+    # turn's reply carries it to the Chief of Staff's hand-off card.
+    runs_on: RunModel | None = Field(default=None, exclude=True)
     # Whether admission let the turn run on Claude Code, which its run's row
     # is stamped with, so its computer counts its CLI.
     claude_code: bool = Field(default=False, exclude=True)

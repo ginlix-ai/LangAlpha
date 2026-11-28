@@ -4,10 +4,11 @@ import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import i18n, { initI18n } from '@/i18n';
+import { queryKeys } from '@/lib/queryKeys';
 import { switchLocale } from '@/lib/locale';
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext';
 import '@/index.css';
-import type { MessageProvenance } from '@/types/chat';
+import type { MessageProvenance, RunModel } from '@/types/chat';
 import { DispatchStatusProvider } from '@/pages/ChatAgent/hooks/usePTCDispatchStatus';
 import type { DispatchLiveness, DispatchRunLiveness } from '@/pages/ChatAgent/utils/api';
 import { HandoffApproval } from '../../analystHandoff/HandoffApproval';
@@ -66,6 +67,21 @@ const seeGalleryReport = () => {
   revealMessage(GALLERY_REPORT);
 };
 
+// What each run went out on: the catalog below names them as the composer
+// would. A user's own endpoint has no mark; a model without levels no effort.
+const OPUS: RunModel = { id: 'claude-opus-5-5', provider: 'anthropic', effort: 'max' };
+const SOL: RunModel = { id: 'gpt-6.2-sol', provider: 'openai', effort: 'xhigh' };
+const OWN: RunModel = { id: 'qwen-local', provider: 'my-endpoint', effort: 'medium' };
+const FLASH: RunModel = { id: 'deepseek-v5-flash', provider: 'deepseek' };
+const CATALOG = {
+  model_metadata: {
+    'claude-opus-5-5': { display_name: 'Claude Opus 5.5', provider: 'anthropic' },
+    'gpt-6.2-sol': { display_name: 'GPT-6.2 Sol', provider: 'openai' },
+    'qwen-local': { display_name: 'Qwen 4 Local', provider: 'my-endpoint' },
+    'deepseek-v5-flash': { display_name: 'DeepSeek V5 Flash', provider: 'deepseek' },
+  },
+};
+
 function view(phase: HandoffPhase, over: Partial<HandoffView> = {}): HandoffView {
   return {
     id: `${phase}:${over.task ?? ''}`,
@@ -73,6 +89,7 @@ function view(phase: HandoffPhase, over: Partial<HandoffView> = {}): HandoffView
     task: 'NVDA DCF refresh after Q3 data-center margin',
     workspaceName: 'NVDA Deep Dive',
     steered: false,
+    runsOn: OPUS,
     read: true,
     onOpen: noop,
     ...over,
@@ -82,6 +99,8 @@ function view(phase: HandoffPhase, over: Partial<HandoffView> = {}): HandoffView
 const SLIPS: Array<{ label: string; view: HandoffView }> = [
   { label: 'starting', view: view('starting') },
   { label: 'working', view: view('working', { startedAt: NOW - 4 * MIN - 12_000 }) },
+  { label: 'working, on a user\'s own endpoint (no mark)', view: view('working', { startedAt: NOW - 3 * MIN, runsOn: OWN, workspaceName: 'Semis Comps' }) },
+  { label: 'working, a model without levels', view: view('working', { startedAt: NOW - 2 * MIN, runsOn: FLASH }) },
   {
     label: 'working, a task too long for the line',
     view: view('working', {
@@ -89,7 +108,7 @@ const SLIPS: Array<{ label: string; view: HandoffView }> = [
       task: 'Rebuild the NVDA discounted cash flow model with the Q3 FY2027 results and bridge the per-share value from the last version',
     }),
   },
-  { label: 'steered into a run already going', view: view('working', { startedAt: NOW - 6 * MIN, steered: true }) },
+  { label: 'steered into a run already going', view: view('working', { startedAt: NOW - 6 * MIN, steered: true, runsOn: undefined }) },
   { label: 'needs your answer', view: view('needs_input', { task: 'Which peer set should the comps use?', workspaceName: 'Semis Comps' }) },
   {
     label: 'finished, reported back',
@@ -100,17 +119,18 @@ const SLIPS: Array<{ label: string; view: HandoffView }> = [
       onSeeReport: seeGalleryReport,
     }),
   },
-  { label: 'finished, no report', view: view('finished', { startedAt: NOW - 12 * MIN, finishedAt: NOW - MIN }) },
+  { label: 'finished, no report', view: view('finished', { startedAt: NOW - 12 * MIN, finishedAt: NOW - MIN, runsOn: SOL }) },
+  { label: 'finished, from before the model was kept', view: view('finished', { startedAt: NOW - 12 * MIN, finishedAt: NOW - MIN, runsOn: undefined }) },
   { label: "couldn't finish", view: view('failed', { workspaceName: 'Macro Rates', task: 'Rebuild the rates curve from the Fed dot plot' }) },
   { label: 'stopped', view: view('stopped', { startedAt: NOW - 7 * MIN, finishedAt: NOW - MIN }) },
-  { label: "couldn't start", view: view('not_started', { onOpen: undefined, task: 'Screen small-cap biotech for upcoming PDUFA dates', workspaceName: 'Biotech Catalysts' }) },
+  { label: "couldn't start", view: view('not_started', { onOpen: undefined, runsOn: undefined, task: 'Screen small-cap biotech for upcoming PDUFA dates', workspaceName: 'Biotech Catalysts' }) },
 ];
 
 // The finished run's report is in, but a group links its reports only once
 // every run has one, so it waits on the other two.
 const GROUP: HandoffView[] = [
   view('working', { task: 'NVDA DCF refresh after Q3 data-center margin', workspaceName: 'NVDA Deep Dive', startedAt: NOW - 4 * MIN - 12_000 }),
-  view('working', { task: 'AMD vs NVDA accelerator share, 2025 to 2027', workspaceName: 'Semis Comps', startedAt: NOW - 2 * MIN - 40_000, steered: true }),
+  view('working', { task: 'AMD vs NVDA accelerator share, 2025 to 2027', workspaceName: 'Semis Comps', startedAt: NOW - 2 * MIN - 40_000, steered: true, runsOn: undefined }),
   view('finished', {
     task: 'TSMC CoWoS capacity and what it caps',
     workspaceName: 'Supply Chain',
@@ -123,7 +143,7 @@ const GROUP: HandoffView[] = [
 // Where a group comes to rest, and so how it reads most often.
 const SETTLED_GROUP: HandoffView[] = [
   view('finished', { startedAt: NOW - 18 * MIN, finishedAt: NOW - MIN }),
-  view('finished', { task: 'AMD vs NVDA accelerator share, 2025 to 2027', workspaceName: 'Semis Comps', startedAt: NOW - 9 * MIN, finishedAt: NOW - MIN }),
+  view('finished', { task: 'AMD vs NVDA accelerator share, 2025 to 2027', workspaceName: 'Semis Comps', startedAt: NOW - 9 * MIN, finishedAt: NOW - MIN, runsOn: SOL }),
   view('finished', { task: 'TSMC CoWoS capacity and what it caps', workspaceName: 'Supply Chain', startedAt: NOW - 25 * MIN, finishedAt: NOW - MIN }),
 ];
 
@@ -139,7 +159,7 @@ const MIXED_GROUP: HandoffView[] = [
 
 // What a narrow column (a side panel open, a phone) keeps of each.
 const NARROW = SLIPS.filter((s) =>
-  ['working, a task too long for the line', 'needs your answer', 'reported back', "couldn't finish", 'stopped'].includes(s.label),
+  ['working, a task too long for the line', 'needs your answer', 'finished, reported back', 'finished, no report', "couldn't finish", 'stopped'].includes(s.label),
 );
 
 const PENDING_LONG: ProposalData = { status: 'pending', question: BRIEF_LONG, workspace_name: 'NVDA Deep Dive', report_back: true };
@@ -223,16 +243,16 @@ const approved = (key: string, threadId: string | undefined, workspace: string, 
 });
 
 const RUN_GROUP: AnalystHandoffMember[] = [
-  approved('a', 'th-a', 'NVDA Deep Dive'),
-  approved('b', 'th-b', 'Semis Comps'),
-  approved('c', 'th-c', 'Supply Chain'),
+  approved('a', 'th-a', 'NVDA Deep Dive', { runs_on: OPUS }),
+  approved('b', 'th-b', 'Semis Comps', { runs_on: SOL }),
+  approved('c', 'th-c', 'Supply Chain', { runs_on: OWN }),
   {
     key: 'p',
     proposalId: 'p-p',
     proposal: { status: 'pending', question: BRIEF_LONG, workspace_name: 'Macro Rates', report_back: true, interruptId: 'i-p' },
   },
 ];
-const RUN_SINGLE: AnalystHandoffMember[] = [approved('d', 'th-d', 'Semis Comps')];
+const RUN_SINGLE: AnalystHandoffMember[] = [approved('d', 'th-d', 'Semis Comps', { runs_on: SOL })];
 const RUN_FAILED: AnalystHandoffMember[] = [approved('x', undefined, 'Biotech Catalysts', { dispatch_failed: true })];
 // Two hand-offs to one thread: each slip reads its own run, not the latest.
 const RUN_PINNED: AnalystHandoffMember[] = [
@@ -490,7 +510,11 @@ function Landed() {
 
 function Preview() {
   const [knobs, setKnobs] = useState(readKnobs);
-  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }));
+  const [client] = useState(() => {
+    const c = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
+    c.setQueryData(queryKeys.models.all, CATALOG);
+    return c;
+  });
   const { setTheme } = useTheme();
   useEffect(() => setTheme(knobs.theme), [knobs.theme, setTheme]);
   useEffect(() => {

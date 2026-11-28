@@ -1,9 +1,10 @@
 /**
  * Subagents in a reply: a lone one as a row, two or more as a group whose
  * header folds a row each. Pins what each state says, what opens what, the
- * fold rule, the model badge, and how the run reads while the server's times
+ * fold rule, the model it ran on, and how the run reads while the server's times
  * are absent.
  */
+import { llmProviderArt } from '@/lib/providerArt';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
@@ -103,6 +104,22 @@ describe('a lone subagent', () => {
     expect(detail()).not.toBe('');
     expect(detail()).not.toBe('Running');
     expect(elapsed()).toBe('1:05');
+  });
+
+  it('says the run is thinking, or writing, between calls', () => {
+    const { unmount } = render(ui([member('a')], { a: { ...BEGUN, between: 'thinking' } }));
+    expect(detail()).toBe('Thinking');
+    unmount();
+    render(ui([member('a')], { a: { ...BEGUN, between: 'writing' } }));
+    expect(detail()).toBe('Writing');
+  });
+
+  it('names the newest of the calls running at once, and counts the rest', () => {
+    render(ui([member('a')], {
+      a: { ...BEGUN, runningCalls: 3, currentToolCall: { toolName: 'WebSearch', args: { query: 'AAPL margins' } } },
+    }));
+    expect(screen.getByTestId('subagent-row-more').textContent).toBe('+2');
+    expect(screen.getByText(/and 2 more running/)).toBeInTheDocument();
   });
 
   it('leaves the second line to the status when the current call is not known', () => {
@@ -234,29 +251,52 @@ describe('a lone subagent', () => {
   });
 });
 
-describe('a subagent on another model', () => {
+describe('the model a subagent ran on', () => {
   const withCatalog = (node: React.ReactElement): React.ReactElement => {
     const client = new QueryClient();
     client.setQueryData(queryKeys.models.all, {
-      model_metadata: { 'claude-sonnet-4-6': { display_name: 'Claude Sonnet 4.6' } },
+      model_metadata: {
+        'claude-sonnet-4-6': { display_name: 'Claude Sonnet 4.6' },
+        'qwen-local': { display_name: 'Qwen Local' },
+        'claude-opus-5-5-code': { display_name: 'Claude Opus 5.5', provider: 'claude-code' },
+      },
     });
     return <QueryClientProvider client={client}>{node}</QueryClientProvider>;
   };
+  const shown = (): string => screen.getByTestId('run-model').textContent ?? '';
 
-  it('badges its tile with the provider, and says the model in words', () => {
+  it('shows the short name and the effort before the detail, and says them in full', () => {
     render(withCatalog(ui([member('a', { status: 'completed' })], {
-      a: { ...BEGUN, lastText: 'Margins held.', model: { id: 'claude-sonnet-4-6', provider: 'anthropic' } },
+      a: { ...BEGUN, lastText: 'Margins held.', model: { id: 'claude-sonnet-4-6', provider: 'anthropic', effort: 'high' } },
     }, { onOpen: vi.fn() })));
-    expect(screen.getByTestId('subagent-model-badge')).toHaveAttribute('title', 'Claude Sonnet 4.6');
+    expect(within(screen.getByTestId('run-model')).getByText('Sonnet 4.6')).toBeInTheDocument();
+    expect(within(screen.getByTestId('run-model')).getByText('High')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open subagent: Research a' }))
-      .toHaveAccessibleDescription('Finished Margins held. Model: Claude Sonnet 4.6');
+      .toHaveAccessibleDescription('Finished Claude Sonnet 4.6, High effort Margins held.');
   });
 
-  it('draws no badge, and says nothing of it, for a provider whose mark we do not ship', () => {
+  it('keeps the whole name for a provider we ship no mark for, with no effort for a model without levels', () => {
     render(withCatalog(ui([member('a', { status: 'completed' })], {
-      a: { ...BEGUN, lastText: 'Margins held.', model: { id: 'x-1', provider: 'nobody' } },
+      a: { ...BEGUN, lastText: 'Margins held.', model: { id: 'qwen-local', provider: 'my-endpoint' } },
     }, { onOpen: vi.fn() })));
-    expect(screen.queryByTestId('subagent-model-badge')).toBeNull();
+    expect(shown()).toBe('Qwen Local');
+    expect(screen.getByRole('button')).toHaveAccessibleDescription('Finished Qwen Local Margins held.');
+  });
+
+  it("draws the mark the model menu draws, from the catalog's provider over the run's", () => {
+    render(withCatalog(ui([member('a', { status: 'completed' })], {
+      a: { ...BEGUN, lastText: 'Margins held.', model: { id: 'claude-opus-5-5-code', provider: 'anthropic', effort: 'max' } },
+    }, { onOpen: vi.fn() })));
+    const mark = screen.getByTestId('run-model').querySelector('img');
+    expect(mark?.getAttribute('src')).toBe(llmProviderArt('claude-code')?.src);
+    expect(mark?.getAttribute('src')).not.toBe(llmProviderArt('anthropic')?.src);
+  });
+
+  it('shows nothing for a run whose model is not known', () => {
+    render(withCatalog(ui([member('a', { status: 'completed' })], {
+      a: { ...BEGUN, lastText: 'Margins held.' },
+    }, { onOpen: vi.fn() })));
+    expect(screen.queryByTestId('run-model')).toBeNull();
     expect(screen.getByRole('button')).toHaveAccessibleDescription('Finished Margins held.');
   });
 });

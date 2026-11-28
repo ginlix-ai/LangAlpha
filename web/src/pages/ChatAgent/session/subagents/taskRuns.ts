@@ -11,22 +11,8 @@
  * a run heard of before its task has a card loses nothing.
  */
 
-/** A model as a run used it: its id, and the provider id that served it
- *  (the keys of `llmProviderArt`). */
-export interface SubagentModel {
-  id: string;
-  provider: string;
-}
-
-/** A model as the wire carries it (`{id, provider}`), or undefined for
- *  anything else: the field is absent whenever the model is not news. */
-export function parseSubagentModel(value: unknown): SubagentModel | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const { id, provider } = value as { id?: unknown; provider?: unknown };
-  return typeof id === 'string' && id && typeof provider === 'string' && provider
-    ? { id, provider }
-    : undefined;
-}
+import type { RunModel } from '@/types/chat';
+import { parseRunModel } from '../../utils/runModel';
 
 /** One run of a task, as far as it is known. */
 export interface TaskRun {
@@ -38,8 +24,8 @@ export interface TaskRun {
   /** The ledger's bounds (epoch ms); no finish while it runs. */
   startedAtMs?: number;
   finishedAtMs?: number;
-  /** Present only when it was not its launcher's model. */
-  model?: SubagentModel;
+  /** The model it ran on; absent on a run from before the server sent it. */
+  model?: RunModel;
 }
 
 /** What a writer learned of a run, its task aside. */
@@ -50,7 +36,7 @@ export type TaskRunIndex = ReadonlyMap<string, TaskRun>;
 /** The facts the server stamps on a launch's artifact and the status route
  *  (`started_ms`, `finished_ms`, `model`), each only when present. */
 export function taskRunFromWire(p: { started_ms?: unknown; finished_ms?: unknown; model?: unknown }): TaskRunFacts {
-  const model = parseSubagentModel(p.model);
+  const model = parseRunModel(p.model);
   return {
     ...(typeof p.started_ms === 'number' ? { startedAtMs: p.started_ms } : {}),
     ...(typeof p.finished_ms === 'number' ? { finishedAtMs: p.finished_ms } : {}),
@@ -60,8 +46,8 @@ export function taskRunFromWire(p: { started_ms?: unknown; finished_ms?: unknown
 
 const FACT_KEYS = ['launchToolCallId', 'startedAtMs', 'finishedAtMs', 'model'] as const;
 
-const sameModel = (a: SubagentModel | undefined, b: SubagentModel | undefined): boolean =>
-  a === b || (!!a && !!b && a.id === b.id && a.provider === b.provider);
+const sameModel = (a: RunModel | undefined, b: RunModel | undefined): boolean =>
+  a === b || (!!a && !!b && a.id === b.id && a.provider === b.provider && a.effort === b.effort);
 
 /**
  * `index` with `patch` filed under `runId`: each fact the patch defines fills

@@ -10,8 +10,9 @@ import asyncio
 from fastapi import Depends, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ptc_agent.config.agent import RunModel
 from src.config.settings import get_sse_keepalive_interval
-from src.llms.model_identity import client_effort
+from src.server.services.llm.subagents import run_effort
 from src.server.utils.api import (
     CurrentUserId,
     database_unavailable,
@@ -741,7 +742,8 @@ async def _handle_send_message(
         user_id=user_id,
         workspace_id=workspace_id,
         model=_model,
-        effort=client_effort(getattr(config, "llm_client", None)),
+        effort=run_effort(config.llm_client, _model),
+        runs_on=config.runs_on,
     )
 
 
@@ -756,11 +758,13 @@ async def _prime_dispatch(
     workspace_id: str,
     model: str,
     effort: str | None,
+    runs_on: RunModel | None,
 ) -> JSONResponse:
     """Drive a background dispatch's turn to its START, answer with the run,
     the workspace, the model and the level it sends that the turn resolved
     to (None for a model with no levels: the ladder may have stepped a named
-    effort down), then drain ``gen`` in the background.
+    effort down), then drain ``gen`` in the background. ``runs_on`` is the
+    turn's model as a run's card names it, for the hand-off's card.
 
     Every exit that does not hand ``gen`` to that drain releases ``scope``'s
     slot.
@@ -957,6 +961,7 @@ async def _prime_dispatch(
         "workspace_id": workspace_id,
         "llm_model": model,
         "reasoning_effort": effort,
+        "runs_on": runs_on,
     })
 
 

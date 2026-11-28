@@ -3,12 +3,20 @@ import { type ActivityItem, type PreparingCall, isRunning } from './activityType
 import { isOpenThought, type LineStep, type Step } from './activityLayout';
 import { STATUS_HOLD_MS } from './liveZoneTiming';
 
+const NONE: readonly string[] = [];
+
 /**
  * Which step the status line names: the newest step in flight, held on the
  * line once it lands until a newer one takes its place. A newer step waits out
  * STATUS_HOLD_MS before it does, so a call that returns at once never flashes
  * past. Only steps a block has to keep track of count as in flight; an open
  * thought keeps its own row.
+ *
+ * `othersInFlight` is the steps in flight other than the one the line names,
+ * by row key: the line's "+N" beside a batch of parallel calls. The step
+ * waiting out its hold to take the line is not one of them: counted, it put a
+ * "+1" on the line for the length of the hold at every step, and took it off
+ * as the step arrived.
  */
 export function useStatusLineStep(
   timeline: ActivityItem[],
@@ -16,7 +24,7 @@ export function useStatusLineStep(
   keys: { forItem: (item: ActivityItem) => string; forCall: (call: PreparingCall) => string },
   liveReasoningOpen: boolean,
   enabled: boolean,
-): { line: LineStep | null; inFlight: boolean } {
+): { line: LineStep | null; inFlight: boolean; othersInFlight: readonly string[] } {
   const steps = new Map<string, Step>();
   const inFlight: string[] = [];
   for (const item of timeline) {
@@ -55,5 +63,6 @@ export function useStatusLineStep(
   return {
     line: lineKey !== null && step ? { key: lineKey, step, running: inFlight.includes(lineKey) } : null,
     inFlight: inFlight.length > 0,
+    othersInFlight: lineKey === null ? NONE : inFlight.filter((key) => key !== lineKey && key !== swapTo),
   };
 }

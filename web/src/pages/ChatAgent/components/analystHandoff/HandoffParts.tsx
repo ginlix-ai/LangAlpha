@@ -2,7 +2,9 @@ import type { ReactNode } from 'react';
 import { Folder } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import type { RunModel } from '@/types/chat';
 import { SteeredMark } from '../messageList/MessageProvenance';
+import { RunModelPart } from '../messageList/RunModelPart';
 import {
   ElapsedClock, RUN_DETAIL, RUN_OPEN_BUTTON as STRETCHED_BUTTON, RUN_TITLE, RunPart, RunStatus, StatusSpeech,
 } from '../messageList/runCard';
@@ -25,14 +27,17 @@ export function WorkspaceName({ name, className }: { name: string; className?: s
 }
 
 /**
- * The line under a hand-off's task: where it stands, then who works on it and
- * where. Who is left out when narrow, so the workspace keeps its room, and in
- * a group, whose header says each of its rows is an analyst's.
+ * The line under a hand-off's task: where it stands, then who works on it,
+ * where, and on what model. Who is left out when narrow, so the workspace
+ * keeps its room, and in a group, whose header says each of its rows is an
+ * analyst's. There the model gives way too, to its mark: the workspace is
+ * what says which analyst it is.
  */
 export function HandoffMetaLine({
   status,
   workspaceName,
   steered = false,
+  runsOn,
   namesAnalyst = true,
   id,
   className,
@@ -42,6 +47,8 @@ export function HandoffMetaLine({
   workspaceName?: string;
   /** Sent into a run already going, which the line says last. */
   steered?: boolean;
+  /** The model and effort its own run went out on. */
+  runsOn?: RunModel;
   namesAnalyst?: boolean;
   id?: string;
   className?: string;
@@ -52,6 +59,7 @@ export function HandoffMetaLine({
       {status}
       {namesAnalyst && <RunPart className="@max-md:hidden"><span className="shrink-0">{t('agents.analyst')}</span></RunPart>}
       {workspaceName && <RunPart><WorkspaceName name={workspaceName} /></RunPart>}
+      {runsOn && <RunModelPart model={runsOn} yields />}
       {steered && <RunPart><SteeredMark className="gap-[5px]" /></RunPart>}
     </span>
   );

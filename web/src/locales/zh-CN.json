@@ -1303,6 +1303,9 @@
       "titleFallback": "子 Agent 任务"
     },
     "subagentRun": {
+      "stepWithMore": "{{step}}，另有 {{count}} 个正在运行",
+      "thinking": "思考中",
+      "writing": "正在撰写",
       "starting": "正在启动",
       "couldntStart": "未能启动",
       "subagentsOff": "此对话已关闭子 Agent",
@@ -1318,8 +1321,10 @@
         "resumed": "{{count}} 已恢复"
       },
       "finishedIn": "已完成，用时 {{duration}}",
-      "finished": "已完成",
-      "model": "模型：{{model}}"
+      "finished": "已完成"
+    },
+    "runModel": {
+      "withEffort": "{{model}}，推理强度：{{effort}}"
     },
     "subagentBar": {
       "completedWithTools_one": "已完成（{{count}} 次工具调用）",

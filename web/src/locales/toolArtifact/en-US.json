@@ -423,6 +423,9 @@
     "edit": "Editing",
     "write": "Writing"
   },
+  "moreRunning": "and {{count}} more running",
+  "moreRunning_other": "and {{count}} more running",
+  "moreRunningShort": "+{{count}}",
   "a11y": {
     "toolCallFailed": "Tool call failed",
     "openInTab": "Open in {{tab}}",
