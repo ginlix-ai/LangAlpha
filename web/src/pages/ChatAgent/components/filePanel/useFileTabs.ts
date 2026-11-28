@@ -98,6 +98,11 @@ export function isOnLoan(tab: FileTab): tab is Extract<FileTab, { preview: boole
   return (tab.kind === 'file' || tab.kind === 'tool' || tab.kind === 'sources') && tab.preview;
 }
 
+/** `tab` kept: a tab on loan taken off it, any other as it is. */
+function kept(tab: FileTab): FileTab {
+  return isOnLoan(tab) ? { ...tab, preview: false } : tab;
+}
+
 export interface OpenFileOptions {
   /** Open as a kept tab rather than the reused preview one. */
   pin?: boolean;
@@ -420,9 +425,13 @@ function stepIn(state: TabsState, id: string, dir: HistoryDirection): TabsState 
   const ahead = steps.slice(0, at);
   const behind = [...history[dir === 'back' ? 'forward' : 'back'], bodyOf(tab)].slice(-MAX_HISTORY);
   const fresh = newId();
+  // Kept is the tab's, not the step's: a step recorded while the tab was on
+  // loan comes back kept once the reader kept the tab, so the next link never
+  // takes what they were reading.
+  const step: FileTab = { ...steps[at], id: fresh };
   return {
     ...state,
-    tabs: state.tabs.map((t) => (t.id === id ? { ...steps[at], id: fresh } : t)),
+    tabs: state.tabs.map((t) => (t.id === id ? (isOnLoan(tab) ? step : kept(step)) : t)),
     activeId: state.activeId === id ? fresh : state.activeId,
     history: { ...rest, [fresh]: dir === 'back' ? { back: ahead, forward: behind } : { back: behind, forward: ahead } },
   };
@@ -735,7 +744,7 @@ export function useFileTabs(
   }, []);
 
   const pinTab = useCallback((id: string) => {
-    patchTab(id, (t) => (isOnLoan(t) ? { ...t, preview: false } : t));
+    patchTab(id, kept);
   }, [patchTab]);
 
   const closeTab = useCallback((id: string) => setState((prev) => closeIn(prev, id)), []);

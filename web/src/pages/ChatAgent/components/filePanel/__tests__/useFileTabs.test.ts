@@ -994,6 +994,16 @@ describe('useFileTabs history', () => {
     return seen;
   };
 
+  it('keeps a kept tab kept on a step back to what it showed on loan', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openFile('a.md'));
+    act(() => result.current.openFile('b.md'));
+    act(() => result.current.pinTab(result.current.activeId));
+    step(result, 'back');
+
+    expect(result.current.activeTab).toMatchObject({ kind: 'file', path: 'a.md', preview: false });
+  });
+
   it('steps a tab back through what the tree put in it, and forward again', () => {
     const { result } = renderHook(() => useFileTabs('ws'));
     act(() => result.current.openFile('a.md'));
