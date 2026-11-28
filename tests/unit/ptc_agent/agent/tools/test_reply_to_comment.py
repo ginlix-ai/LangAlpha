@@ -30,7 +30,8 @@ def _reply(**over) -> AgentReply:
         artifact_id="a1", workspace_id="w1", path="NVDA:1day", number=3,
         resolved=False, kept_open=False, kind="chart",
     )
-    return AgentReply(**{**fields, **over})
+    fields.update(over)
+    return AgentReply(**{"place": fields["path"], **fields})
 
 
 @pytest.mark.asyncio
@@ -54,6 +55,18 @@ def _reply(**over) -> AgentReply:
             False,
             "Replied to comment 3 on reports/q3.html.",
         ),
+        # A Drive file by the path its comment named it at, its record by its
+        # entry, as the feed names it.
+        (
+            _reply(
+                path="00000000-0000-0000-0000-0000000000d0",
+                kind="drive",
+                place="notes/q3.md",
+                workspace_id="home",
+            ),
+            False,
+            "Replied to comment 3 on .agents/drive/personal/notes/q3.md.",
+        ),
     ],
 )
 async def test_the_reply_names_what_the_comment_is_on(monkeypatch, reply, resolve, content):
@@ -66,3 +79,4 @@ async def test_the_reply_names_what_the_comment_is_on(monkeypatch, reply, resolv
     assert msg.content == content
     assert (msg.artifact["kind"], msg.artifact["path"]) == (reply.kind, reply.path)
     assert published.await_args.kwargs["kind"] == reply.kind
+    assert published.await_args.kwargs["path"] == reply.path

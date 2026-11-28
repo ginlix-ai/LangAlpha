@@ -199,7 +199,12 @@ async def test_a_stop_tells_other_tabs_which_comments_it_gave_back(monkeypatch):
     monkeypatch.setattr(
         "src.server.database.conversation.get_thread_auth_meta", meta
     )
-    chip = {"artifact_id": "a1", "workspace_id": "w", "path": "r.html"}
+    # The event names each record as it is now, read by id: a Drive file's
+    # chip names where the file was, not the record's key.
+    record = SimpleNamespace(workspace_id="w", path="r.html", kind="file")
+    read = AsyncMock(return_value=record)
+    monkeypatch.setattr(comments.artifacts_db, "get_artifact", read)
+    chip = {"artifact_id": "a1", "workspace_id": "w", "path": "then.md"}
 
     await comments.publish_returned_comments(
         "t",
@@ -225,6 +230,7 @@ async def test_a_stop_tells_other_tabs_which_comments_it_gave_back(monkeypatch):
         thread_id="t",
         comment_ids=["c1", "c2"],
     )
+    read.assert_awaited_once_with("a1", user_id="u")
 
 
 @pytest.mark.asyncio

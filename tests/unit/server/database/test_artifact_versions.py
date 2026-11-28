@@ -551,7 +551,7 @@ async def test_a_deleted_workspaces_comments_stop_waiting_for_a_send(mock_cursor
     """A send cannot claim them, so the composer must not offer them."""
     mock_cursor.fetchall.return_value = []
 
-    await artifacts.list_queued_comments(user_id=_U, thread_id="t")
+    await artifacts.list_queued_comments(user_id=_U, thread_id="t", drive_on=True)
 
     assert "w.status <> 'deleted'" in _sql(mock_cursor)[0]
 
@@ -580,7 +580,10 @@ _CLAIMABLE = {
     "path": "r.html",
     "workspace_id": "w",
     "kind": "file",
+    "place": "r.html",
     "recorded_at": _NOW,
+    "sendable": True,
+    "trashed": False,
 }
 
 
@@ -596,9 +599,12 @@ async def test_a_retransmit_carries_what_its_first_copy_did_and_not_words_added_
         AsyncMock(return_value=_said(("m1", "user", "k"), ("m2", "user", None))),
     )
 
-    (claimed,) = await artifacts.claim_comments(
-        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k", caller=_U
-    )
+    (claimed,) = (
+        await artifacts.claim_comments(
+            user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k",
+            caller=_U, drive_on=True,
+        )
+    ).comments
 
     assert claimed.message_ids == ["m1"]
     assert claimed.delivered == ["m1"]
@@ -618,9 +624,12 @@ async def test_a_new_send_takes_every_unsent_word(mock_cursor, monkeypatch):
         ),
     )
 
-    (claimed,) = await artifacts.claim_comments(
-        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k", caller=_U
-    )
+    (claimed,) = (
+        await artifacts.claim_comments(
+            user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k",
+            caller=_U, drive_on=True,
+        )
+    ).comments
 
     assert claimed.message_ids == ["m2"]
     assert claimed.earlier == [("user", "m1"), ("agent", "r1")]
@@ -636,7 +645,8 @@ async def test_a_member_s_send_leaves_out_a_comment_for_a_thread_they_do_not_rea
     mock_cursor.fetchall.return_value = []
 
     await artifacts.claim_comments(
-        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k", caller="lee"
+        user_id=_U, thread_id="t", comment_ids=["c1"], request_key="k", caller="lee",
+        drive_on=True,
     )
 
     (sql,) = _sql(mock_cursor)
