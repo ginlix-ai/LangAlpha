@@ -165,6 +165,7 @@ class TestModelKwargsInjection:
         llm.base_url = None
         llm.default_headers = None
         llm.use_response_api = True
+        llm.use_previous_response_id = False
         llm.parameters = {}
         llm.extra_body = {}
         llm.profile_overrides = {}

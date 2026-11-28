@@ -44,6 +44,26 @@ def codex_identity_headers() -> dict[str, str]:
     return {"originator": CODEX_ORIGINATOR, "User-Agent": f"{CODEX_ORIGINATOR}/{codex_client_version()}"}
 
 
+# Header spellings the first-party codex clients send the session in: codex-rs
+# session-id/thread-id, opencode/hermes session_id.
+_SESSION_HEADERS = ("session-id", "thread-id", "session_id")
+
+
+def codex_request_headers(pinned: dict[str, str], session_id: str | None) -> dict[str, str]:
+    """The headers codex-rs sends, under the ones a model's config pins.
+
+    A pin wins over a default of the same name in any case, so the two never
+    contradict each other on the wire. The session headers are the cache
+    affinity: the backend routes its prompt cache by them, not by
+    ``prompt_cache_key`` (wire-tested ~3x fewer warm-chain misses).
+    """
+    defaults = codex_identity_headers()
+    if session_id:
+        defaults |= dict.fromkeys(_SESSION_HEADERS, session_id)
+    taken = {name.lower() for name in pinned}
+    return {**{name: value for name, value in defaults.items() if name.lower() not in taken}, **pinned}
+
+
 class ChatCodexOpenAI(ScopedResponsesStream):
     """ChatOpenAI for Codex store=false backends.
 
