@@ -66,13 +66,33 @@ function directive(sources: readonly string[]): string {
 
 /**
  * The app document's policy. `'self'` is the frame host and the API routes on
- * the app's own origin; an absolute API base adds that origin. Nothing known
- * only at runtime belongs here: a meta policy can be added to but never
- * widened, so a frame on such an origin goes through the frame host instead.
+ * the app's own origin; an absolute API base adds that origin, and
+ * `extraOrigins` the other origins the build config names (the account
+ * portal's). Nothing known only at runtime belongs here: a meta policy can be
+ * added to but never widened, so a frame on such an origin goes through the
+ * frame host instead.
  */
-export function appFrameSrc(apiBase?: string | null): string {
+export function appFrameSrc(apiBase?: string | null, extraOrigins: readonly string[] = []): string {
   const api = apiBase && /^https?:\/\//i.test(apiBase) ? originOf(apiBase) : null;
-  return directive(["'self'", ...(api ? [api] : []), ...EMBED_FRAME_ORIGINS, ...FRAME_SCHEMES]);
+  return directive(["'self'", ...(api ? [api] : []), ...extraOrigins, ...EMBED_FRAME_ORIGINS, ...FRAME_SCHEMES]);
+}
+
+/**
+ * The account portal's origin, whose pages the app frames in Settings. It comes
+ * from build config, so it joins the policy directly. Null outside platform
+ * mode and where the portal is a path on the app's own origin, which `'self'`
+ * covers. An absolute value that is not one http(s) origin fails the build
+ * rather than leaving a tab that can never load.
+ */
+export function accountPortalOrigin(hostMode: string | undefined, portalUrl: string | undefined): string | null {
+  if (hostMode !== 'platform' || !portalUrl) return null;
+  // `//host`, and `\\host` or `/\host` which a browser reads the same, read
+  // as a path below, so the policy would leave their origin out.
+  if (/^[\\/]{2}/.test(portalUrl)) throw new Error(`the account portal needs its scheme, got ${JSON.stringify(portalUrl)}`);
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(portalUrl)) return null;
+  const origin = originOf(portalUrl);
+  if (!origin || origin.includes('*')) throw new Error(`the account portal must be a path or one http(s) origin, got ${JSON.stringify(portalUrl)}`);
+  return origin;
 }
 
 /** A frame host's policy: the one origin it was set up to frame. */

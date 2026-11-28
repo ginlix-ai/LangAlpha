@@ -148,13 +148,6 @@
   display: flex;
   flex-direction: column;
   gap: 28px;
-  /* `backwards`, not `both`: a fill that outlives the fade keeps this a
-     stacking context for good, and dialogs render inside it. */
-  animation: settings-section-in var(--motion-quick) var(--ease-out) backwards;
-}
-@keyframes settings-section-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 /* ---------- Groups and rows ---------- */
@@ -450,10 +443,6 @@ label.settings-row-label { cursor: pointer; }
 .settings-card > :first-child[data-found] { border-top-left-radius: inherit; border-top-right-radius: inherit; }
 .settings-card > :last-child[data-found] { border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; }
 
-@media (prefers-reduced-motion: reduce) {
-  .settings-content { animation: none; }
-}
-
 @media (max-width: 1199px) {
   .settings-column { padding-left: 28px; padding-right: 28px; }
 }
@@ -505,4 +494,48 @@ label.settings-row-label { cursor: pointer; }
   .settings-group-head { margin: 0 4px 6px; }
   .settings-row { min-height: 48px; padding: 9px 12px; }
   .settings-card-body { padding: 12px; }
+}
+
+/* The account portal's sections (components/AccountPortal/PortalHost): the frame takes the
+   whole scroll port and scrolls itself, and the portal draws its own head. */
+.settings-scroll--portal {
+  position: relative;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
+/* Where the portal's frame is laid (components/AccountPortal/PortalHost):
+   the whole scroll port. The frame sits on the body, over this, and scrolls
+   itself; what is drawn here shows only until the portal is ready. */
+.settings-portal-slot {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.settings-portal-probe {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0;
+  visibility: hidden;
+}
+
+.settings-portal-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.settings-portal-status a {
+  color: var(--color-accent-light);
+  text-decoration: underline;
+  font-weight: 500;
 }

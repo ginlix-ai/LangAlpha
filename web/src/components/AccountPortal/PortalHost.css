@@ -1,0 +1,10 @@
+/* The account portal's frame, laid over the slot Settings leaves for it
+   (PortalHost). Above the page it covers, under every overlay the app opens:
+   menus and dialogs, and the hidden sidebar's peek. */
+.portal-frame {
+  position: fixed;
+  z-index: 1;
+  display: block;
+  border: 0;
+  background: transparent;
+}

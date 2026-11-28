@@ -22,6 +22,7 @@ import { useLocale } from '@/hooks/useLocale';
 import type { ReportSubject } from '@/components/report/ReportDialog';
 import { useReportsEnabled } from '@/hooks/useReportsEnabled';
 import { MountOnceOpen } from '@/components/MountOnceOpen';
+import { usePortalHost } from '@/components/AccountPortal/PortalHost';
 
 // Lazy: the menu is on every page and the report form opens from it rarely.
 const ReportDialog = lazy(() => import('@/components/report/ReportDialog'));
@@ -53,6 +54,13 @@ const AccountMenu: React.FC = () => {
   const { t } = useTranslation();
   const locale = useLocale();
   const [open, setOpen] = useState(false);
+  // The menu leads to the account portal, so opening it starts the portal
+  // loading: by the time a page of it is picked, it is usually ready.
+  const want = usePortalHost()?.want;
+  const onOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) want?.();
+  };
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const reportsEnabled = useReportsEnabled();
@@ -104,7 +112,7 @@ const AccountMenu: React.FC = () => {
 
   return (
     <>
-      <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
+      <DropdownMenu open={open} onOpenChange={onOpenChange} modal={false}>
         <DropdownMenuTrigger asChild>
           {/* No aria-label here: this row spells the account out, so a fixed
               label would replace what is on screen with something less (WCAG

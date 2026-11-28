@@ -83,7 +83,12 @@ html.desktop-mac .app-topbar-corner .sidebar-brand {
   position: relative;
   display: flex;
   align-items: center;
-  flex: 0 1 220px;
+  /* A width, not a flex basis: the list takes its size from what its tabs
+     contribute, which a basis is not, so with a basis the list shrank to the
+     tabs' labels and cut them off with the strip half empty. The tabs then
+     share the shrinking evenly once the strip runs short. */
+  flex: 0 1 auto;
+  width: 220px;
   min-width: 72px;
   height: 28px;
   box-sizing: border-box;

@@ -10,6 +10,7 @@ import { SidebarRevealContext } from './components/Sidebar/sidebarRevealContext'
 import { useSidebarShortcut } from './components/Sidebar/sidebarShortcut';
 import { PageTabsProvider } from './components/PageTabs/PageTabsProvider';
 import { usePageTabsOn } from './components/PageTabs/usePageTabsOn';
+import { PortalHostProvider } from './components/AccountPortal/PortalHost';
 import { useResumeTab } from './components/PageTabs/useResumeTab';
 import { cn } from '@/lib/utils';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './components/Sidebar/sidebarWidth';
@@ -433,6 +434,7 @@ function AuthenticatedShell() {
       ) : (
         <CreateWorkspaceHost>
           <PageTabsProvider>
+          <PortalHostProvider>
           <CommandPaletteProvider>
             {/* The width again on the layout itself, so the sidebar, the top bar
                 and the column have it on their first frame: the root's copy can
@@ -473,6 +475,7 @@ function AuthenticatedShell() {
             <OnboardingHostGate />
             <DesktopMenuCommands onToggleSidebar={isMobile ? undefined : toggleSidebar} />
           </CommandPaletteProvider>
+          </PortalHostProvider>
           </PageTabsProvider>
         </CreateWorkspaceHost>
       )}

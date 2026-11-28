@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef } from 'react';
-import { useLocation, useSearchParams } from 'react-router';
+import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import { useUser } from '@/hooks/useUser';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -21,9 +21,14 @@ import { ExperimentsPanel } from './panels/ExperimentsPanel';
 import { PlanPanel } from './panels/PlanPanel';
 import { IntegrationsPanel } from './panels/IntegrationsPanel';
 import { SettingsRail } from './components/SettingsRail';
+import { usePortalHost, type PortalStatus } from '@/components/AccountPortal/PortalHost';
+import { ExternalRedirect } from '@/components/ExternalRedirect';
+import { PORTAL_TAB, portalUrl } from '@/components/AccountPortal/portalPaths';
+import { cn } from '@/lib/utils';
 import ComputersDialogHost from '@/pages/ChatAgent/components/ComputersDialogHost';
-import { useCloseComputersOnLeave } from '@/pages/ChatAgent/hooks/computerPanelStore';
-import { readSection, SECTIONS, type Section } from './sections';
+import { closeComputerSpec, closeComputersPanel, useCloseComputersOnLeave } from '@/pages/ChatAgent/hooks/computerPanelStore';
+import { readSettingsView, SECTIONS, type Section } from './sections';
+import { arrivesAway, noteFramed } from './arrivedAway';
 import '@/styles/pageRail.css';
 import './Settings.css';
 
@@ -72,6 +77,36 @@ function SectionBody({ section }: { section: Section }) {
 }
 
 /**
+ * Where the account portal's frame is laid (components/AccountPortal/PortalHost),
+ * and what shows until the portal is ready: a section's head and rows, so a
+ * cold start reads as the section loading rather than an empty page.
+ */
+function PortalSlot({ status, setSlot, page }: { status: PortalStatus; setSlot: (el: HTMLElement | null) => void; page: string }) {
+  const { t } = useTranslation();
+  return (
+    <div ref={setSlot} className="settings-portal-slot">
+      {/* A column like a native section's, never seen: the portal's page is
+          laid out in its padding, so the two line up to the pixel. */}
+      <div data-portal-probe className="settings-column settings-portal-probe" aria-hidden="true" />
+      {status === 'stuck' ? (
+        <div className="settings-portal-status">
+          <p>{t('settings:portal.unavailable')}</p>
+          <a href={portalUrl(page)} target="_blank" rel="noopener noreferrer">{t('settings:portal.openInNewTab')}</a>
+        </div>
+      ) : status !== 'ready' && (
+        <div className="settings-column" aria-busy="true">
+          <header className="settings-head" aria-hidden="true">
+            <div className="page-head-title"><SkeletonBar style={{ width: '28%' }} /></div>
+            <div className="settings-head-def mt-2"><SkeletonBar style={{ width: '52%' }} /></div>
+          </header>
+          <SettingsSkeleton />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * A rail of sections beside one content column, as Plugins lays out. The URL
  * is the whole state: `?tab=` the section, and a hash the setting the search
  * jumped to, which is brought into view and marked for a moment.
@@ -85,9 +120,28 @@ function Settings() {
   const { isLoading: isUserLoading } = useUser();
   const { isLoading: isPrefsLoading } = usePreferences();
   const { t } = useTranslation();
-  const section = readSection(searchParams, hash);
+  const portal = usePortalHost();
+  const view = readSettingsView(searchParams, hash, portal !== null);
+  // Arriving on a portal page where its pages do not open here goes to the
+  // portal itself. A window narrowed past the phone width on one keeps the
+  // app, on Settings' own first section, rather than unloading it.
+  const arrivedAway = arrivesAway(view, location.key);
+  useEffect(() => {
+    if (view.kind === 'portal') noteFramed(location.key);
+  }, [view.kind, location.key]);
+  const section = view.kind === 'section' ? view.section : null;
+  // Settings lists the portal's pages, so the portal starts loading as it opens.
+  const want = portal?.want;
+  useEffect(() => want?.(), [want]);
   const pageRef = useRef<HTMLDivElement>(null);
-  useScrollMemory(pageRef, `page:settings:${section}`);
+  useScrollMemory(pageRef, `page:settings:${section ?? PORTAL_TAB}`);
+  // A dialog opened from a section (Change spec's upgrade link) would cover
+  // the portal page it led to.
+  useEffect(() => {
+    if (view.kind !== 'portal') return;
+    closeComputersPanel();
+    closeComputerSpec();
+  }, [view.kind]);
   const isLoading = isUserLoading || isPrefsLoading;
 
   // The setting is brought into view as soon as it is drawn: a section that
@@ -135,6 +189,8 @@ function Settings() {
     };
   }, [location.key, hash, section, isLoading, focusSetting]);
 
+  if (view.kind === 'away') return arrivedAway ? <ExternalRedirect to={portalUrl(view.page)} /> : <Navigate to="/settings" replace />;
+
   return (
     <div className="settings-page">
       {/* Doubles as the window titlebar in the desktop shell; inert
@@ -142,12 +198,12 @@ function Settings() {
           them, so it stays put once the page is scrolled. */}
       <div className="chrome-drag-strip" aria-hidden="true" />
       <div className="settings-body">
-        <SettingsRail section={section} />
-        <div ref={pageRef} className="settings-scroll">
-          <div className="settings-column">
+        <SettingsRail view={view} />
+        <div ref={pageRef} className={cn('settings-scroll', view.kind === 'portal' && 'settings-scroll--portal')}>
+          {view.kind === 'section' && <div className="settings-column">
             <header className="settings-head">
-              <h1 className="page-head-title">{t(SECTIONS[section].labelKey)}</h1>
-              <p className="settings-head-def">{t(SECTIONS[section].descKey)}</p>
+              <h1 className="page-head-title">{t(SECTIONS[view.section].labelKey)}</h1>
+              <p className="settings-head-def">{t(SECTIONS[view.section].descKey)}</p>
             </header>
             {/* Only a cold load waits here: the app shell has usually read
                 both already. The section takes the placeholder rows' place in
@@ -156,12 +212,13 @@ function Settings() {
               {isLoading ? (
                 <SettingsSkeleton />
               ) : (
-                <div key={section} className="settings-content">
-                  <SectionBody section={section} />
+                <div key={view.section} className="settings-content">
+                  <SectionBody section={view.section} />
                 </div>
               )}
             </SwapCell>
-          </div>
+          </div>}
+          {view.kind === 'portal' && portal && <PortalSlot status={portal.status} setSlot={portal.setSlot} page={view.page} />}
         </div>
       </div>
       {/* The Computers panel, opened from the Computers section's rows, and

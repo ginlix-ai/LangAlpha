@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
-import { publishSession, sessionAdopter, clearAuthToken, authGeneration } from '../lib/authToken';
+import { publishSession, sessionAdopter, clearAuthToken, authGeneration, getAccessToken } from '../lib/authToken';
 import { setSentryUser } from '../lib/sentry';
 import { trackRequest } from '../lib/reloadHolds';
 import { queryKeys } from '../lib/queryKeys';
@@ -24,6 +24,7 @@ import type {
   Session,
   UserResponse,
 } from '@supabase/supabase-js';
+import { isAuthApiError, isAuthSessionMissingError } from '@supabase/supabase-js';
 
 export interface AuthContextValue {
   userId: string | null;
@@ -43,9 +44,17 @@ export interface AuthContextValue {
   verifyEmailOtp: (tokenHash: string, type: EmailOtpType) => Promise<AuthResponse | void>;
   /** Sets a new password on the current (e.g. recovery) session. */
   updatePassword: (password: string) => Promise<UserResponse | void>;
+  /** Asks the auth server whether this session still holds, for when another
+   *  app on the shared cookie says it found none. A session the server no
+   *  longer knows is signed out here, which sends the shell to sign-in; true
+   *  while it holds or the server cannot be asked. */
+  recheckSession: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/** The auth server's codes for a session it no longer honours. */
+const SESSION_REFUSED = new Set(['session_not_found', 'user_not_found', 'user_banned', 'bad_jwt']);
 
 import { isPlatformMode } from '@/config/hostMode';
 import { LOCAL_USER_ID } from '@/config/localUser';
@@ -70,6 +79,7 @@ const _localDevValue: AuthContextValue = {
   resendConfirmation: () => Promise.resolve(),
   verifyEmailOtp: () => Promise.resolve(),
   updatePassword: () => Promise.resolve(),
+  recheckSession: () => Promise.resolve(true),
 };
 
 // Landing routes for Supabase email links. Both must be in the Supabase
@@ -354,6 +364,38 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
     queryClient.clear();
   }, [sb.auth, queryClient]);
 
+  // One check at a time: the portal may say it again while one is asking. Not
+  // shared across a change of user, whose session the earlier check never saw.
+  const recheckInFlight = useRef<{ generation: number; done: Promise<boolean> } | null>(null);
+  const recheckSession = useCallback(() => {
+    const started = authGeneration();
+    if (recheckInFlight.current?.generation === started) return recheckInFlight.current.done;
+    const done: Promise<boolean> = (async () => {
+      // Through the token cache, as every token is read: `getSession()`
+      // would refresh past its single flight and cool-off.
+      const checked = await getAccessToken();
+      const { data, error } = await sb.auth.getUser(checked ?? undefined);
+      if (data.user) return true;
+      // Only the auth server refusing this session ends it. A network failure,
+      // or a 401 from something in front of it, says nothing about it.
+      const refused = isAuthSessionMissingError(error)
+        || (isAuthApiError(error) && SESSION_REFUSED.has(error.code ?? ''));
+      if (!refused || started !== authGeneration()) return true;
+      // A session saved meanwhile, a refresh or the same user signing in
+      // again in another tab, is one this did not check: only the refused
+      // token is signed out. The generation moves only with the user.
+      const current = await getAccessToken();
+      if (current !== null && current !== checked) return true;
+      // Local only, as a lapsed session ends: the drafts stay for this user's return.
+      await sb.auth.signOut({ scope: 'local' });
+      return false;
+    })().finally(() => {
+      if (recheckInFlight.current?.done === done) recheckInFlight.current = null;
+    });
+    recheckInFlight.current = { generation: started, done };
+    return done;
+  }, [sb.auth]);
+
   const value: AuthContextValue = {
     userId: session?.user?.id ?? null,
     isInitialized,
@@ -367,6 +409,7 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
     resendConfirmation,
     verifyEmailOtp,
     updatePassword,
+    recheckSession,
   };
 
   return <AuthContext value={value}>{children}</AuthContext>;

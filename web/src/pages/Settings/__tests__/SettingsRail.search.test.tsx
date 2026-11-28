@@ -21,7 +21,7 @@ function search(query: string, flags: string[] = []) {
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <SettingsRail section="general" />
+        <SettingsRail view={{ kind: 'section', section: 'general' }} />
       </MemoryRouter>
     </QueryClientProvider>,
   );

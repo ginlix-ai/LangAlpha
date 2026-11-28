@@ -16,7 +16,10 @@ import { useStorageUser } from '@/lib/userStorage';
 import type { SkillInfo } from '@/pages/ChatAgent/utils/api/skills';
 import { workspacePath } from '@/pages/ChatAgent/utils/chatRoutes';
 import { useSaveFailureToast } from '@/pages/Settings/panels/usePreferenceWrite';
-import { SECTIONS, searchableSettings, settingSearchText } from '@/pages/Settings/sections';
+import { SECTIONS, searchableSettings, sectionOffered, settingSearchText } from '@/pages/Settings/sections';
+import { usePortalHost } from '@/components/AccountPortal/PortalHost';
+import { portalNavIcon, portalSearchPages } from '@/components/AccountPortal/portalNav';
+import { portalSettingsPath } from '@/components/AccountPortal/portalPaths';
 import type { Workspace } from '@/types/api';
 import { inNewTab, runs, type Verbs } from './rows';
 import type { PaletteItem } from './types';
@@ -109,7 +112,13 @@ export function useLocalSources(v: Verbs) {
     actions: [runs('open', t('palette.do.open'), icon, () => navigate(path)), ...inNewTab(path, v)],
   }));
 
-  const settings = searchableSettings(isDesktopShell(), (key) => isFeatureEnabled(features, key)).map((entry): PaletteItem => {
+  // As in Settings' own search: a section the portal's pages replace opens
+  // nothing the rail shows, and those pages are found in its place.
+  const portalNav = usePortalHost()?.nav ?? null;
+  const portalListed = portalNav !== null;
+  const settings = searchableSettings(isDesktopShell(), (key) => isFeatureEnabled(features, key))
+    .filter((entry) => sectionOffered(entry.section, portalListed))
+    .map((entry): PaletteItem => {
     const section = SECTIONS[entry.section];
     return {
       id: `setting:${entry.anchor}`,
@@ -122,6 +131,20 @@ export function useLocalSources(v: Verbs) {
           navigate(`/settings?tab=${entry.section}#${entry.anchor}`, { state: { focusSetting: true } }),
         ),
       ],
+    };
+  });
+
+  const portalPages = portalSearchPages(portalNav).map(({ item, group }): PaletteItem => {
+    const icon = portalNavIcon(item.icon);
+    const where = group ?? t('settings:group.account');
+    const path = portalSettingsPath(item.path);
+    return {
+      id: `portal:${item.path}`,
+      icon,
+      title: item.label,
+      keywords: `${item.label} ${where}`,
+      meta: `${t('sidebar.settings')} › ${where}`,
+      actions: [runs('open', t('palette.do.open'), icon, () => navigate(path))],
     };
   });
 
@@ -159,7 +182,7 @@ export function useLocalSources(v: Verbs) {
     workspaces: (workspacesData?.workspaces ?? []).map(workspaceRow),
     skills: skills.map(skillRow),
     pages,
-    settings,
+    settings: [...settings, ...portalPages],
     actions,
     recentTickers: recent.tickers,
   };

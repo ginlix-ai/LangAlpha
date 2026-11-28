@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ComponentType } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
@@ -7,8 +7,87 @@ import { isDesktopShell } from '@/lib/desktop';
 import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 import { isImeComposing } from '@/lib/ime';
 import { matchesAllWords, queryWords } from '@/lib/textMatch';
-import { GROUPS, SECTIONS, searchableSettings, sectionShown, settingSearchText, type Section, type SettingEntry } from '../sections';
+import { GROUPS, SECTIONS, searchableSettings, sectionOffered, settingSearchText, type SettingEntry, type SettingsView } from '../sections';
 import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
+import { usePortalHost } from '@/components/AccountPortal/PortalHost';
+import { activePortalPath, portalSettingsPath } from '@/components/AccountPortal/portalPaths';
+import type { PortalNavGroup, PortalNavItem } from '@/components/AccountPortal/portalMessages';
+import { portalNavIcon, portalSearchPages, type PortalSearchPage } from '@/components/AccountPortal/portalNav';
+
+/** One link in the rail. `id` names what it shows (`section:<name>`,
+ *  `portal:<path>`), so the current one is a single comparison. */
+interface RailLink {
+  id: string;
+  to: string;
+  Icon: ComponentType<{ className?: string }>;
+  label: string;
+}
+
+interface RailGroup {
+  key: string;
+  label: string;
+  links: RailLink[];
+}
+
+/** Whether the rail draws the section: once the account portal has listed its
+ *  pages, the sections that only led out to it give way to them. */
+/** A search result: a setting of Settings' own, or a page of the portal. */
+type SearchResult = { kind: 'setting'; entry: SettingEntry } | { kind: 'portal'; page: PortalSearchPage };
+
+function resultShown(result: SearchResult, t: (key: string) => string) {
+  if (result.kind === 'portal') {
+    const { item, group } = result.page;
+    return { key: `portal:${item.path}`, Icon: portalNavIcon(item.icon), name: item.label, where: group ?? t('settings:group.account') };
+  }
+  const { entry } = result;
+  return { key: entry.anchor, Icon: SECTIONS[entry.section].icon, name: t(entry.labelKey), where: t(SECTIONS[entry.section].labelKey) };
+}
+
+function resultText(result: SearchResult, t: (key: string) => string): string {
+  if (result.kind === 'setting') return settingSearchText(result.entry, t);
+  const shown = resultShown(result, t);
+  return `${shown.name} ${shown.where}`;
+}
+
+const portalLink = (item: PortalNavItem): RailLink => ({
+  id: `portal:${item.path}`,
+  // Absolute, so leaving a portal page drops its `page`.
+  to: portalSettingsPath(item.path),
+  Icon: portalNavIcon(item.icon),
+  label: item.label,
+});
+
+/**
+ * The rail's groups. Once the account portal has listed its pages they are
+ * sections here: the account's own join the Account group, and each
+ * organization's follows it as a group of its own.
+ */
+function railGroups(t: (key: string) => string, nav: PortalNavGroup[] | null): RailGroup[] {
+  const personal = nav?.find((group) => group.label === null)?.items.map(portalLink) ?? [];
+  const named = nav?.filter((group) => group.label !== null) ?? [];
+  return GROUPS.flatMap((group) => {
+    const sections = group.sections.filter((s) => sectionOffered(s, nav !== null));
+    const links = sections.map((section): RailLink => ({
+      id: `section:${section}`,
+      to: `/settings?tab=${section}`,
+      Icon: SECTIONS[section].icon,
+      label: t(SECTIONS[section].labelKey),
+    }));
+    if (!nav || !group.portalAfter) return [{ key: group.labelKey, label: t(group.labelKey), links }];
+    links.splice(sections.indexOf(group.portalAfter) + 1 || links.length, 0, ...personal);
+    return [
+      { key: group.labelKey, label: t(group.labelKey), links },
+      ...named.map((g, i) => ({ key: `portal:${i}:${g.label}`, label: g.label ?? '', links: g.items.map(portalLink) })),
+    ];
+  });
+}
+
+/** The rail link `view` is on: a portal page is on the listed page it sits under. */
+function currentLinkId(view: Exclude<SettingsView, { kind: 'away' }>, nav: PortalNavGroup[] | null): string | null {
+  if (view.kind === 'section') return `section:${view.section}`;
+  const path = activePortalPath(nav?.flatMap((g) => g.items.map((item) => item.path)) ?? [], view.page);
+  return path === null ? null : `portal:${path}`;
+}
 
 /**
  * The page's navigation: a search over every setting, then the sections in
@@ -16,8 +95,10 @@ import { SidebarReveal } from '@/components/Sidebar/SidebarReveal';
  * place, each naming the section it opens; picking one opens that section on
  * the setting itself.
  */
-export function SettingsRail({ section }: { section: Section }) {
+export function SettingsRail({ view }: { view: Exclude<SettingsView, { kind: 'away' }> }) {
   const { t } = useTranslation();
+  // The portal's pages as it listed them; null where they do not open here or are not listed yet.
+  const nav = usePortalHost()?.nav ?? null;
   const navigate = useNavigate();
   const listId = useId();
   const [query, setQuery] = useState('');
@@ -46,23 +127,30 @@ export function SettingsRail({ section }: { section: Section }) {
   }, []);
 
   const features = useFeatures().data;
-  const entries = useMemo(
-    () => searchableSettings(isDesktopShell(), (key) => isFeatureEnabled(features, key)),
-    [features],
-  );
+  // The portal's pages are found here too, as they replace Settings' own
+  // Plan and Integrations once listed.
+  const results = useMemo((): SearchResult[] => [
+    ...searchableSettings(isDesktopShell(), (key) => isFeatureEnabled(features, key))
+      .filter((entry) => sectionOffered(entry.section, nav !== null))
+      .map((entry): SearchResult => ({ kind: 'setting', entry })),
+    ...portalSearchPages(nav).map((page): SearchResult => ({ kind: 'portal', page })),
+  ], [features, nav]);
+  const groups = railGroups(t, nav);
+  const currentId = currentLinkId(view, nav);
   const words = queryWords(query);
   const matches = words.length === 0
     ? []
-    : entries.filter((entry) => matchesAllWords(settingSearchText(entry, t), words));
+    : results.filter((result) => matchesAllWords(resultText(result, t), words));
   const searching = words.length > 0;
   const shownActive = Math.min(active, Math.max(matches.length - 1, 0));
 
   /** Opens the setting's section on it. Picked from the keyboard, focus
    *  follows to its control, so the next key acts on what was found. */
-  const open = (entry: SettingEntry, fromKeyboard: boolean) => {
+  const open = (result: SearchResult, fromKeyboard: boolean) => {
     setQuery('');
     setSearchOpen(false);
-    navigate(`?tab=${entry.section}#${entry.anchor}`, { state: { focusSetting: fromKeyboard } });
+    if (result.kind === 'portal') navigate(portalSettingsPath(result.page.item.path));
+    else navigate(`/settings?tab=${result.entry.section}#${result.entry.anchor}`, { state: { focusSetting: fromKeyboard } });
   };
 
   // On a phone the sections are a row of pills wider than the screen; the one
@@ -71,7 +159,7 @@ export function SettingsRail({ section }: { section: Section }) {
   useEffect(() => {
     const current = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
     current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  }, [section, searching]);
+  }, [currentId, searching]);
 
   return (
     <div className={cn('page-rail settings-rail', (searchOpen || searching) && 'is-searching')}>
@@ -139,23 +227,23 @@ export function SettingsRail({ section }: { section: Section }) {
           {matches.length === 0 ? (
             <p className="settings-results-empty">{t('settings:search.empty')}</p>
           ) : (
-            matches.map((entry, index) => {
-              const Icon = SECTIONS[entry.section].icon;
+            matches.map((result, index) => {
+              const shown = resultShown(result, t);
               return (
                 <div
-                  key={entry.anchor}
+                  key={shown.key}
                   id={`${listId}-${index}`}
                   role="option"
                   aria-selected={index === shownActive}
                   className={cn('settings-result', index === shownActive && 'is-active')}
                   onMouseDown={(e) => e.preventDefault()}
                   onMouseEnter={() => setActive(index)}
-                  onClick={() => open(entry, false)}
+                  onClick={() => open(result, false)}
                 >
-                  <Icon className="page-rail-icon" aria-hidden />
+                  <shown.Icon className="page-rail-icon" aria-hidden />
                   <span className="min-w-0">
-                    <span className="settings-result-name">{t(entry.labelKey)}</span>
-                    <span className="settings-result-section">{t(SECTIONS[entry.section].labelKey)}</span>
+                    <span className="settings-result-name">{shown.name}</span>
+                    <span className="settings-result-section">{shown.where}</span>
                   </span>
                 </div>
               );
@@ -172,21 +260,20 @@ export function SettingsRail({ section }: { section: Section }) {
           >
             <Search aria-hidden />
           </button>
-          {GROUPS.map((group) => (
-            <div key={group.labelKey} className="settings-rail-group">
-              <div className="page-rail-label open-style:label-voice">{t(group.labelKey)}</div>
-              {group.sections.filter(sectionShown).map((s) => {
-                const Icon = SECTIONS[s].icon;
-                const current = s === section;
+          {groups.map((group) => (
+            <div key={group.key} className="settings-rail-group">
+              <div className="page-rail-label open-style:label-voice">{group.label}</div>
+              {group.links.map((link) => {
+                const current = link.id === currentId;
                 return (
                   <Link
-                    key={s}
-                    to={`?tab=${s}`}
+                    key={link.id}
+                    to={link.to}
                     className={cn('page-rail-link', current && 'is-active')}
                     aria-current={current ? 'page' : undefined}
                   >
-                    <Icon className="page-rail-icon" aria-hidden />
-                    <span className={cn('page-rail-name', current && 'rail-prompt')}>{t(SECTIONS[s].labelKey)}</span>
+                    <link.Icon className="page-rail-icon" aria-hidden />
+                    <span className={cn('page-rail-name', current && 'rail-prompt')}>{link.label}</span>
                   </Link>
                 );
               })}
