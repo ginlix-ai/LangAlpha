@@ -12,8 +12,9 @@ import type { FileBody } from '@/pages/ChatAgent/components/filePanel/fileBody';
 import { disposeEditorModel, newEditorModelPath } from '@/pages/ChatAgent/components/viewers/editorModels';
 import type { DriveEntry } from '@/types/drive';
 import { editReducer, isDirty, isPast, newSitting, VIEWING, type Content, type EditSession, type SaveRequest } from './driveEdit';
-import { draftOf, dropDraft, keepDraft } from './driveDrafts';
+import { askBeforeUnload, draftOf, dropDraft, keepDraft } from './driveDrafts';
 import { driveRefusal } from './driveRefusal';
+import { drivePathKey } from './drivePaths';
 import { memoState } from './memoMarks';
 
 /** The head body as content an edit can be written over, or null while it has no hash. */
@@ -47,8 +48,14 @@ export function useDriveEditor(
   const state = session ?? VIEWING;
   const setNote = (text: string) => dispatch({ type: 'note', note: text });
   const dirty = isDirty(state);
+  // The entry at the path, matched as the server matches names, since a link
+  // may spell the path in another case.
+  const entryId = entry && path !== null && drivePathKey(entry.path) === drivePathKey(path) ? entry.id : null;
+  // Another file can take the path while the editor is open (the one it
+  // opened on moved): its head is not this draft's, nor where it saves.
+  const ours = !session?.entryId || session.entryId === entryId;
   /** No save under way and no conflict to settle first. */
-  const ready = !!session && session.save === 'idle' && !session.conflict;
+  const ready = !!session && ours && session.save === 'idle' && !session.conflict;
   /** What the Save button and Enter read: ready, with unsaved text. */
   const canSave = ready && dirty;
   // "What changed?" is asked and sent only with a memo's save: a mark removed
@@ -56,9 +63,9 @@ export function useDriveEditor(
   const asksWhy = memoState(entry).kind === 'memo';
   const noteToSend = (s: EditSession) => (asksWhy ? s.note.trim() || null : null);
   const headContent = asContent(head.data);
-  const theirs = session && headContent && !isPast(session, headContent.sha) ? headContent : null;
+  const theirs = session && ours && headContent && !isPast(session, headContent.sha) ? headContent : null;
   /** The file moved on under an open editor. */
-  const behind = !!session && !!entry?.sha256 && !isPast(session, entry.sha256) && session.save === 'idle' && !session.conflict;
+  const behind = !!session && ours && !!entry?.sha256 && !isPast(session, entry.sha256) && session.save === 'idle' && !session.conflict;
 
   // The editor's model outlives its editor by design; it goes with the session.
   const modelPath = raw.mode === 'editing' ? raw.modelPath : null;
@@ -80,22 +87,32 @@ export function useDriveEditor(
     if (model && model.getValue() !== content) model.setValue(content);
   };
 
-  // Unsaved text is kept by entry while it stays unsaved, so the page left
-  // and come back to opens on it. A clean session (saved, theirs taken)
-  // keeps nothing.
-  const entryId = entry && entry.path === path ? entry.id : null;
+  // Unsaved text is kept by the entry it was written for while it stays
+  // unsaved, so the page left and come back to opens on it. A clean session
+  // (saved, theirs taken) keeps nothing.
   useEffect(() => {
-    if (!session || !entryId) return;
-    if (dirty) keepDraft(entryId, { base: session.base, draft: session.draft, note: session.note });
-    else dropDraft(entryId);
-  }, [session, dirty, entryId]);
+    const id = session?.entryId;
+    if (!session || !id) return;
+    if (dirty) keepDraft(id, { base: session.base, draft: session.draft, note: session.note, sitting: session.sitting });
+    else dropDraft(id);
+  }, [session, dirty]);
+
+  // A kept draft asks before the window goes (driveDrafts); one too large to
+  // keep asks while its editor is open.
+  useEffect(() => {
+    if (!dirty) return;
+    // Its own listener: the store's is the same function, which one removal would take off for both.
+    const onBeforeUnload = (e: BeforeUnloadEvent) => askBeforeUnload(e);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
 
   // A kept draft reopens on its own base, so a file that moved on meanwhile
   // answers its save with the conflict, never a silent rebase.
   const resume = useEffectEvent((id: string) => {
     const kept = draftOf(id);
     if (!kept || !path) return;
-    dispatch({ type: 'open', path, sitting: newSitting(), modelPath: newEditorModelPath(path), base: kept.base, note: kept.note });
+    dispatch({ type: 'open', path, entryId: id, sitting: newSitting(), modelPath: newEditorModelPath(path), base: kept.base, note: kept.note });
     dispatch({ type: 'change', draft: kept.draft });
   });
   const resumable = !session && atHeadDocument && entryId;
@@ -117,12 +134,13 @@ export function useDriveEditor(
 
   const start = () => {
     if (!path || !headContent) return;
-    dispatch({ type: 'open', path, sitting: newSitting(), modelPath: newEditorModelPath(path), base: headContent });
+    dispatch({ type: 'open', path, entryId, sitting: newSitting(), modelPath: newEditorModelPath(path), base: headContent });
   };
 
   /** Ends the session as the person asked, unsaved text and all. */
   const close = () => {
-    if (entryId) dropDraft(entryId);
+    const id = session ? session.entryId : entryId;
+    if (id) dropDraft(id);
     dispatch({ type: 'close' });
   };
 
@@ -136,9 +154,20 @@ export function useDriveEditor(
   /** Sends one request and reports each step under it, so only its own session hears. */
   const send = async (req: SaveRequest) => {
     if (!entry || !space) return;
+    const keptId = session?.entryId ?? null;
     try {
       const saved = await saveFile.mutateAsync({ ...req, entry, onBusy: () => dispatch({ type: 'retrying', req }) });
-      dispatch({ type: 'saved', req, sha: saved.sha256 ?? req.ifMatch, at: Date.now() });
+      const sha = saved.sha256 ?? req.ifMatch;
+      dispatch({ type: 'saved', req, sha, at: Date.now() });
+      // The kept draft moves with the save here, not only through the session:
+      // the editor may be gone by now (its panel tab put behind another), and
+      // a draft left on the version this save replaced would reopen as unsaved.
+      const kept = keptId ? draftOf(keptId) : undefined;
+      if (keptId && kept && kept.sitting === req.sitting && kept.base.sha === req.ifMatch) {
+        if (kept.draft === req.text) dropDraft(keptId);
+        // The note went with this save, as the session's does; one typed while it was on its way is the next save's.
+        else keepDraft(keptId, { ...kept, base: { sha, content: req.text }, note: req.note && kept.note.trim() === req.note ? '' : kept.note });
+      }
     } catch (err) {
       if (isChangedRefusal(err)) {
         // The head moves on to the version that refused the save; a file

@@ -21,6 +21,9 @@ interface PanelTargetArgs {
   onTargetHandled?: (seq?: number) => void;
   /** A file or chart ask that names a comment: its comment layer shows it once its pin is placed. */
   onCommentFocus?: (ask: CommentAsk) => void;
+  /** The person has a Drive; without one a Drive ask opens nothing. Null
+   *  while that is still being read, which holds a Drive ask until it is known. */
+  drive: boolean | null;
 }
 
 /**
@@ -33,7 +36,7 @@ interface PanelTargetArgs {
  */
 export function usePanelTarget({
   target, tabs, previews, openFileRef, cancelPending, clearSearch, setTreeOpen, setScopeDir, onTargetHandled,
-  onCommentFocus,
+  onCommentFocus, drive,
 }: PanelTargetArgs): void {
   const lastDirAsk = useRef<string | null>(null);
   // Before paint, so a panel opened on an ask first paints on the tab it
@@ -77,6 +80,14 @@ export function usePanelTarget({
         onTargetHandled?.(target.seq);
         return;
       }
+      case 'drive':
+        if (drive === null) return;
+        if (drive) {
+          cancelPending();
+          tabs.openDrive(target);
+        }
+        onTargetHandled?.(target.seq);
+        return;
       case 'tool':
         cancelPending();
         tabs.openTool(target);
@@ -110,5 +121,7 @@ export function usePanelTarget({
       default:
         return target satisfies never;
     }
-  }, [target]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Keyed on the ask, and for a Drive ask on the flag too: one that arrived
+    // while the flag was still being read (null) runs again once it is known.
+  }, [target, target?.kind === 'drive' ? drive : null]); // eslint-disable-line react-hooks/exhaustive-deps
 }

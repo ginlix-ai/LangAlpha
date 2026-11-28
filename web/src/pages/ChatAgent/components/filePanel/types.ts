@@ -2,6 +2,7 @@ import type { RectAnchor, SelectionAnchor } from '../selectionQuote/quoteAnchor'
 import type { FileLocation } from '../../utils/fileLocation';
 import type { MemoryTier } from '../../utils/agentPaths';
 import type { BackupResponse } from '@/types/api';
+import type { DriveLocation } from '@/lib/driveLinks';
 
 // --- Types ---
 
@@ -106,6 +107,17 @@ export interface ChartTabSpec {
 }
 
 /**
+ * What a Drive tab shows: a place in the person's Drive (a folder, the memo
+ * list, the trash, or a file with a memo's view of it), spelled as the Drive
+ * page's address spells it. `entryId` is the open file's, learned once it is
+ * read, so a tab whose file moved while it was not in front can find it again.
+ */
+export interface DriveTabSpec {
+  loc: DriveLocation;
+  entryId?: string;
+}
+
+/**
  * What a tool tab is opened with: the call id alone. A tab holds no record of
  * its own; it reads the transcript's live one at render, since stream handlers
  * replace a call's record as its result lands, and a copy taken at click time
@@ -149,6 +161,11 @@ export type PanelTarget =
    * `comment` is one of its comments to bring forward, as a file's.
    */
   | ({ kind: 'chart'; seq: number; comment?: string | null } & ChartTabSpec)
+  /**
+   * A place in the person's Drive, opened as a Drive tab. `pin` keeps it out
+   * of the loaned slot, as a file's does.
+   */
+  | { kind: 'drive'; seq: number; pin?: boolean; loc: DriveLocation }
   /** A tool call's result, opened as a tab in the Files panel. */
   | ({ kind: 'tool'; seq: number } & ToolTabSpec)
   /** A turn's provenance, opened as a tab in the Files panel. */
@@ -173,7 +190,7 @@ export type PanelTarget =
  * once the store's list resolves, and clears the target itself then. Either
  * way the clear names the ask's `seq`, so an ask landed in between is kept.
  */
-export const ONE_SHOT_KINDS = ['file', 'preview', 'chart', 'tool', 'sources', 'status', 'browser'] as const satisfies readonly PanelTarget['kind'][];
+export const ONE_SHOT_KINDS = ['file', 'preview', 'chart', 'drive', 'tool', 'sources', 'status', 'browser'] as const satisfies readonly PanelTarget['kind'][];
 export type OneShotKind = (typeof ONE_SHOT_KINDS)[number];
 
 export function isOneShotKind(kind: PanelTarget['kind'] | null | undefined): kind is OneShotKind {

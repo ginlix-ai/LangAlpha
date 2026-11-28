@@ -38,7 +38,7 @@ describe('Drive page on a phone', () => {
   });
 });
 
-describe('Drive page on a space no longer there', () => {
+describe('Drive page: the space its address names', () => {
   it('goes to the personal space instead of loading for ever', async () => {
     vi.mocked(getSpaces).mockResolvedValue([{
       id: 'sp-personal', kind: 'personal', created_at: '2026-11-01T00:00:00Z', change_seq: 0, trash_days: 14,
@@ -48,6 +48,17 @@ describe('Drive page on a space no longer there', () => {
     vi.mocked(getChanges).mockResolvedValue({ cursor: 0, entries: [], resync: false } as never);
     renderWithProviders(<><Drive /><Where /></>, { route: '/drive?space=sp-gone&dir=a&file=a%2Fx.md' });
     await vi.waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/drive$/));
+  });
+
+  it('writes the personal space named by its kind as the address leaves it out, keeping the place', async () => {
+    vi.mocked(getSpaces).mockResolvedValue([{
+      id: 'sp-personal', kind: 'personal', created_at: '2026-11-01T00:00:00Z', change_seq: 0, trash_days: 14,
+      usage: { bytes: 0, entries: 0, max_bytes: 1, max_entries: 1, max_file_bytes: 1 },
+    }] as never);
+    vi.mocked(listEntries).mockResolvedValue([]);
+    vi.mocked(getChanges).mockResolvedValue({ cursor: 0, entries: [], resync: false } as never);
+    renderWithProviders(<><Drive /><Where /></>, { route: '/drive?space=personal&dir=Memos' });
+    await vi.waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/drive\?dir=Memos$/));
   });
 });
 
@@ -150,7 +161,7 @@ describe('Drive page: back from an open file, on a phone', () => {
   });
 
   it("keeps a memo's other view over its kept draft, and opens the draft at the document", async () => {
-    keepDraft(file.id, { base: { sha: 'a'.repeat(64), content: 'base' }, draft: 'mine', note: '' });
+    keepDraft(file.id, { base: { sha: 'a'.repeat(64), content: 'base' }, draft: 'mine', note: '', sitting: 's' });
     setup('/drive?file=research%2Faapl.md&tab=changes');
     expect(await screen.findByRole('tab', { name: 'Changes' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();

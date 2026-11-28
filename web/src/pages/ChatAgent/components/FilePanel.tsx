@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState, Suspense } from 'react';
-import { Activity, BookMarked, CandlestickChart, FolderTree, Globe, LayoutDashboard, ScrollText, Upload } from 'lucide-react';
+import { Activity, BookMarked, CandlestickChart, FolderTree, Globe, HardDrive, LayoutDashboard, ScrollText, Upload } from 'lucide-react';
+import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 import { useTranslation } from 'react-i18next';
 import {
   memoMimeForName,
@@ -511,10 +512,25 @@ function FilePanel({
     rootRef: panelRef, selection, narrow, activePath: selectedFile, openFile: openFromTree, setOpen: setTreeOpen,
   });
 
+  // The person's Drive, where its feature is on. Only a read that says it is
+  // off closes the Drive tabs a reload restored: one still on its way, or one
+  // that failed, leaves them for a later read (their body waits for it), so
+  // none is lost to a slow or failed request. An ask made meanwhile waits for
+  // the read, and one that failed reads as off, as everywhere.
+  const { data: features, isPending: featuresPending, isSuccess: featuresRead } = useFeatures();
+  const drive = isFeatureEnabled(features, 'drive');
+  const driveOff = featuresRead && !drive;
+  const driveTabIds = driveOff ? tabs.tabs.filter((tab) => tab.kind === 'drive').map((tab) => tab.id) : [];
+  const driveTabsKey = driveTabIds.join(' ');
+  const closeDriveTabs = useEffectEvent(() => tabs.closeTabs(driveTabIds));
+  useEffect(() => {
+    if (driveTabsKey) closeDriveTabs();
+  }, [driveTabsKey]);
+
   usePanelTarget({
     target, tabs, previews, openFileRef, cancelPending,
     clearSearch, setTreeOpen, setScopeDir, onTargetHandled,
-    onCommentFocus: comments?.requestFocus,
+    onCommentFocus: comments?.requestFocus, drive: featuresPending ? null : drive,
   });
 
   // Opening a singleton tab drops a reference still resolving, like any other
@@ -524,6 +540,16 @@ function FilePanel({
   const openMemory = useCallback(() => { cancelPending(); tabs.openMemory(); }, [tabs, cancelPending]);
   const openMemo = useCallback(() => { cancelPending(); tabs.openMemo(); }, [tabs, cancelPending]);
   const viewInMemo = memos ? openMemo : null;
+  // The person's Drive, from its root, where they have one and the panel is
+  // theirs to browse from (not a share).
+  const driveLauncher: PanelLauncher | null = !readOnly && drive
+    ? {
+        key: 'drive',
+        label: t('filePanel:tabs.drive'),
+        icon: HardDrive,
+        open: () => { cancelPending(); tabs.openDrive({ loc: { dir: '' }, pin: true }); },
+      }
+    : null;
 
   const handleAddToMemo = useAddToMemo({ workspaceId, downloadFileAsArrayBufferFn, readFileFullFn, onSwitchToMemoTab: viewInMemo });
   const memoedMap = useWorkspaceMemoIndex(workspaceId);
@@ -790,6 +816,7 @@ function FilePanel({
   const pinned: PanelLauncher[] = [
     ...(stores ? [{ key: 'memory', label: t('filePanel:tabs.memory'), icon: BookMarked, open: openMemory }] : []),
     ...(viewInMemo ? [{ key: 'memo', label: t('filePanel:tabs.memo'), icon: ScrollText, open: viewInMemo }] : []),
+    ...(driveLauncher ? [driveLauncher] : []),
     ...liveViews,
   ];
 
@@ -804,6 +831,7 @@ function FilePanel({
   const newTabMenu: NewTabMenu = {
     kinds: [
       { key: 'files', label: t('filePanel:files'), icon: FolderTree, open: newTab },
+      ...(driveLauncher ? [driveLauncher] : []),
       ...liveViews,
       ...(openStatus ? [{ key: 'status', label: t('filePanel:tabs.status'), icon: Activity, open: openStatus }] : []),
     ],

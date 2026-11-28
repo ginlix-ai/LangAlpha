@@ -1,4 +1,4 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { OpenFileHandler } from '../../utils/fileLocation';
 import { SandboxSettingsContent } from '../SandboxSettingsPanel';
@@ -15,11 +15,14 @@ import { FileViewer, type FileViewerProps } from './FileViewer';
 import { EmptyTab } from './EmptyTab';
 import { useTranscriptRead, type TranscriptReader } from './useTranscript';
 import { withCopy } from '@/i18n';
+import { isFeatureEnabled, useFeatures } from '@/hooks/useFeatures';
 
 // Tool results draw market-data cards, and those carry the chart stack, so
 // like the chart tab they load when looked at rather than with the panel.
 const DetailPanel = React.lazy(withCopy(() => import('../DetailPanel'), ['automation']));
 const SourcesPanel = React.lazy(() => import('../SourcesPanel'));
+// The Drive tab is the Drive page's own code, its viewers and editor included.
+const DriveTab = React.lazy(withCopy(() => import('@/pages/Drive/DriveTab'), ['drive', 'mcp', 'pageViewer']));
 
 interface ActiveTabBodyProps {
   activeTab: FileTab;
@@ -73,6 +76,8 @@ export function ActiveTabBody({
           active={active}
         />
       );
+    case 'drive':
+      return <DriveTabBody tab={activeTab} tabs={tabs} active={active} />;
     case 'settings':
       return (
         <div className="file-panel-settings">
@@ -120,6 +125,40 @@ export function ActiveTabBody({
     default:
       return activeTab satisfies never;
   }
+}
+
+/**
+ * A place in the person's Drive, its moves kept as the tab's steps. Shown
+ * only once a read of the flags says the Drive is on: a read that failed
+ * keeps the tab, which a later read may show, without asking the Drive for
+ * anything meanwhile.
+ */
+/**
+ * Mounted only while its panel is the one in front: a chat put behind
+ * another stays mounted, hidden, and the Drive would keep polling its change
+ * feed there, while two hidden editors on one file would share its draft. The
+ * tab keeps its place and the draft store its text, so it comes back as left.
+ */
+function DriveTabBody({ tab, tabs, active }: { tab: Extract<FileTab, { kind: 'drive' }>; tabs: FileTabsApi; active: boolean }): React.ReactNode {
+  const { t } = useTranslation();
+  const { data: features, isPending } = useFeatures();
+  const { id } = tab;
+  const { goDrive, trackDrive, pinTab } = tabs;
+  const onPin = useCallback(() => pinTab(id), [pinTab, id]);
+  const onTrack = useCallback((entryId: string) => trackDrive(id, entryId), [trackDrive, id]);
+  if (!active) return null;
+  if (!isFeatureEnabled(features, 'drive')) {
+    return isPending ? null : (
+      <p className="px-6 py-10 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+        {t('filePanel:driveUnavailable')}
+      </p>
+    );
+  }
+  return (
+    <Suspense fallback={null}>
+      <DriveTab tab={tab} onGo={(to, opts) => goDrive(id, to, opts)} onTrack={onTrack} onPin={onPin} />
+    </Suspense>
+  );
 }
 
 /** A call's result, following its live record: a running call's result shows as it lands. */

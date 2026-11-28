@@ -1,7 +1,11 @@
+import type React from 'react';
 import { createContext, use } from 'react';
 import type { DriveLocation } from '@/lib/driveLinks';
 import type { DriveEntry } from '@/types/drive';
 import type { DriveActions } from './useDriveActions';
+
+/** Where the Drive is shown: its own page, or a tab of the chat's panel. */
+export type DriveHost = 'page' | 'panel';
 
 export interface DriveContextValue {
   space: string | null;
@@ -20,6 +24,11 @@ export interface DriveContextValue {
   trash: (entry: DriveEntry) => void;
   /** Closes the editor, asking first when it holds unsaved text; `then` runs once it is closed. */
   leaveEditor: (then?: () => void) => void;
+  host: DriveHost;
+  /** An action of the host's in each pane's header, such as leaving the panel for the page. */
+  pageAction?: React.ReactNode;
+  /** The open file's header names the folders it sits in, each a way back to it. */
+  fileCrumbs: boolean;
   ask: {
     rename: (entry: DriveEntry) => void;
     move: (entry: DriveEntry) => void;

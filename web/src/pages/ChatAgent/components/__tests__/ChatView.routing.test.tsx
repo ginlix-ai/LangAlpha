@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { computeAgentArtifactRouting } from '../../utils/agentArtifactRouting';
 import { MEMORY_WORKSPACE_DIR } from '../../utils/agentPaths';
 
-const panel = (target: object, workspaceId: string | null = null) => ({ kind: 'panel', target, workspaceId });
+const panel = (target: object, workspaceId: string | null = null) => ({ target, workspaceId });
 
 describe('computeAgentArtifactRouting: per-kind routing', () => {
   it('routes a user memory entry to the Memory tab, user tier, in no workspace', () => {
@@ -96,8 +96,10 @@ describe('computeAgentArtifactRouting: per-kind routing', () => {
     expect(computeAgentArtifactRouting('something/random.json')).toEqual(panel({ kind: 'file', path: 'something/random.json' }));
   });
 
-  it('opens a Drive path on the Drive page', () => {
+  it("opens a Drive file and a Drive folder in the panel's Drive tab", () => {
     expect(computeAgentArtifactRouting('.agents/drive/personal/notes/q3.md'))
-      .toEqual({ kind: 'page', href: '/drive?file=notes%2Fq3.md' });
+      .toEqual(panel({ kind: 'drive', loc: { space: null, file: 'notes/q3.md' } }));
+    expect(computeAgentArtifactRouting('.agents/drive/personal/notes/'))
+      .toEqual(panel({ kind: 'drive', loc: { space: null, dir: 'notes' } }));
   });
 });

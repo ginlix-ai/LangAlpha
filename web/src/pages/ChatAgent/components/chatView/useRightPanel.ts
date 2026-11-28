@@ -22,7 +22,8 @@ import { NO_TRANSCRIPTS, useToolCallLookup, type TranscriptMessage } from './too
 import { useTranscriptReader } from '../filePanel/transcriptStore';
 import { DEFAULT_PANEL_WIDTH, detailPanelWidth } from '../filePanel/detailWidth';
 import { panelWidthFor, panelWidthKind, readKeptWidths, saveKeptWidths, withKeptWidth, type PanelTabKind } from '../filePanel/panelWidths';
-import { usePanelAsks, usePanelLinkOpen } from './usePanelLinks';
+import { usePanelAsks, usePanelLinkOpen, usePanelOpen } from './usePanelLinks';
+import { driveRouteLocation } from '../../utils/agentArtifactRouting';
 import { useFileDeepLink } from './useFileDeepLink';
 import { useChatBrowser } from './useChatBrowser';
 
@@ -368,14 +369,14 @@ export function useRightPanel({
     pushPanelHistory();
   }, [askPanel, pushPanelHistory, toolWidth]);
 
-  const handleOpenFileFromChat = usePanelLinkOpen({
+  const openInPanel = usePanelOpen({
     workspaceId,
-    folders,
     override: filePanelWorkspaceId,
     setOverride: setFilePanelWorkspaceId,
     land: landInFilePanel,
     leave: leaveFiles,
   });
+  const handleOpenFileFromChat = usePanelLinkOpen(openInPanel, folders);
 
   // A turn's sources open as a tab of the file view, one per turn; the tab
   // reads its live records through `transcript`.
@@ -578,9 +579,19 @@ export function useRightPanel({
   // behind; each runs this cleanup.
   useEffect(() => () => { shareLinkClickRef.current += 1; }, [isActive, workspaceId]);
 
-  const linkActions = useMemo<LinkActions>(
-    () => ({ openShareLink: handleOpenShareLink, openInBrowser }),
-    [handleOpenShareLink, openInBrowser],
+  // A Drive page link the agent wrote opens beside the chat as its path
+  // would, in a Drive tab at the place it names; any other page is left to
+  // the link.
+  const handleOpenAppRoute = useCallback((route: string): boolean => {
+    const loc = driveRouteLocation(route);
+    if (loc) openInPanel({ target: { kind: 'drive', loc }, workspaceId: null });
+    return loc !== null;
+  }, [openInPanel]);
+
+  // Whether the reader has a Drive is the view's to add (ChatView).
+  const linkActions = useMemo<Omit<LinkActions, 'drive'>>(
+    () => ({ openShareLink: handleOpenShareLink, openAppRoute: handleOpenAppRoute, openInBrowser }),
+    [handleOpenShareLink, handleOpenAppRoute, openInBrowser],
   );
 
   // The sheets are the only surfaces that show a `preview` or `detail` panel

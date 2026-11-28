@@ -51,7 +51,7 @@ function renderRecord(onPick = vi.fn(), entry: DriveEntry = memo) {
     explain: vi.fn().mockResolvedValue(true), clearHistory: vi.fn().mockResolvedValue(true), pending: { explain: false, clearHistory: false },
   } as unknown as DriveActions;
   const ctx = {
-    space: 'personal', actions, go: vi.fn(), open: vi.fn(), trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const,
+    space: 'personal', actions, go: vi.fn(), open: vi.fn(), trash: vi.fn(), leaveEditor: vi.fn(), back: vi.fn(), backTo: 'folder' as const, host: 'page' as const, fileCrumbs: false,
     ask: { rename: vi.fn(), move: vi.fn(), newFolder: vi.fn(), memo: vi.fn() },
   } as DriveContextValue;
   const { queryClient, container, rerender } = renderWithProviders(<DriveContext value={ctx}><MemoRecord entry={entry} onPick={onPick} /></DriveContext>);

@@ -1146,3 +1146,168 @@ describe('useFileTabs history', () => {
     expect(result.current.historyTarget(id, 'back')).toBeNull();
   });
 });
+
+describe('useFileTabs Drive tabs', () => {
+  const places = (tabs: FileTab[]) => tabs.flatMap((t) => (t.kind === 'drive' ? [t.loc.file ?? t.loc.dir ?? ''] : []));
+
+  it('comes back to the tab already at a place, whatever view the link names', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'Memos/a.md' }, pin: true }));
+    act(() => result.current.openDrive({ loc: { file: 'memos/A.md', tab: 'record' } }));
+
+    expect(places(result.current.tabs)).toHaveLength(1);
+    expect(result.current.activeTab).toMatchObject({ kind: 'drive', loc: { tab: 'record' }, preview: false });
+  });
+
+  it("takes a step back from a view a link names to the one the tab showed", () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'm.md' }, pin: true }));
+    act(() => result.current.openDrive({ loc: { file: 'm.md', tab: 'record' } }));
+    expect(result.current.activeTab).toMatchObject({ kind: 'drive', loc: { tab: 'record' } });
+
+    act(() => result.current.stepHistory(result.current.activeId, 'back'));
+    expect(result.current.activeTab.kind === 'drive' && result.current.activeTab.loc.tab).toBeFalsy();
+    // A reopen that names no view is no step.
+    act(() => result.current.openDrive({ loc: { file: 'm.md' } }));
+    expect(result.current.historyTarget(result.current.activeId, 'forward')).toMatchObject({ loc: { tab: 'record' } });
+  });
+
+  it('takes a step back from the memo list beside a file to the folder it showed', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'm.md' }, pin: true }));
+    act(() => result.current.openDrive({ loc: { file: 'm.md', memos: true } }));
+    expect(result.current.activeTab).toMatchObject({ kind: 'drive', loc: { memos: true } });
+
+    act(() => result.current.stepHistory(result.current.activeId, 'back'));
+    expect(result.current.activeTab).toMatchObject({ kind: 'drive', loc: { file: 'm.md' } });
+    expect(result.current.activeTab.kind === 'drive' && result.current.activeTab.loc.memos).toBeFalsy();
+  });
+
+  it('closes a loaned tab corrected onto a place another tab shows, and shows that tab', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { dir: 'research' }, pin: true }));
+    const kept = result.current.activeId;
+    // A link that named the folder as a file lands on loan, then reads as the folder.
+    act(() => result.current.openDrive({ loc: { file: 'research' } }));
+    act(() => result.current.goDrive(result.current.activeId, { space: null, dir: 'research' }, { replace: true }));
+
+    expect(places(result.current.tabs)).toEqual(['research']);
+    expect(result.current.activeId).toBe(kept);
+  });
+
+  it('folds a loaned tab moved onto a place a kept tab shows into that tab', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { dir: 'a' }, pin: true }));
+    const kept = result.current.activeId;
+    act(() => result.current.openDrive({ loc: { dir: 'b' } }));
+    act(() => result.current.goDrive(result.current.activeId, { space: null, dir: 'a' }));
+
+    expect(places(result.current.tabs)).toEqual(['a']);
+    expect(result.current.activeId).toBe(kept);
+  });
+
+  it('keeps the tab a loaned tab gives way to when the reader moves it there', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { dir: 'a' } }));
+    const first = result.current.activeId;
+    // A new tab takes the next link even with a loaned Drive tab open.
+    act(() => result.current.newTab());
+    act(() => result.current.openDrive({ loc: { dir: 'b' } }));
+    act(() => result.current.goDrive(result.current.activeId, { space: null, dir: 'a' }));
+
+    expect(places(result.current.tabs)).toEqual(['a']);
+    expect(result.current.activeTab).toMatchObject({ id: first, preview: false });
+  });
+
+  it('closes a loaned tab at the place a kept tab is corrected onto', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'research' }, pin: true }));
+    const kept = result.current.activeId;
+    act(() => result.current.openDrive({ loc: { dir: 'research' } }));
+    act(() => result.current.goDrive(kept, { space: null, dir: 'research' }, { replace: true }));
+
+    expect(places(result.current.tabs)).toEqual(['research']);
+    expect(result.current.tabs.find((t) => t.kind === 'drive')?.id).toBe(kept);
+  });
+
+  it('folds a kept tab moved onto a place another kept tab shows into that tab, with the way back', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { dir: 'a' }, pin: true }));
+    const there = result.current.activeId;
+    act(() => result.current.newTab());
+    act(() => result.current.openDrive({ loc: { dir: 'b' }, pin: true }));
+    act(() => result.current.goDrive(result.current.activeId, { space: null, dir: 'a' }));
+
+    expect(places(result.current.tabs)).toEqual(['a']);
+    expect(result.current.activeId).toBe(there);
+    act(() => result.current.stepHistory(there, 'back'));
+    expect(places(result.current.tabs)).toEqual(['b']);
+  });
+
+  it('gives the tab a correction folds into the id of the file the correction found', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'b.md' }, pin: true }));
+    const atB = result.current.activeId;
+    act(() => result.current.trackDrive(atB, 'B'));
+    act(() => result.current.newTab());
+    act(() => result.current.openDrive({ loc: { file: 'a.md' }, pin: true }));
+    const atA = result.current.activeId;
+    act(() => result.current.trackDrive(atA, 'A'));
+    // A moved to where B was (B had moved on unseen): the correction lands on B's tab.
+    act(() => result.current.goDrive(atA, { space: null, file: 'b.md' }, { replace: true }));
+
+    const tabs = result.current.tabs.filter((t) => t.kind === 'drive');
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]).toMatchObject({ id: atB, entryId: 'A' });
+  });
+
+  it('shows the document a move names, over the view the tab it folds into showed', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'm.md', tab: 'record' }, pin: true }));
+    const there = result.current.activeId;
+    act(() => result.current.newTab());
+    act(() => result.current.openDrive({ loc: { dir: 'notes' }, pin: true }));
+    act(() => result.current.goDrive(result.current.activeId, { space: null, file: 'm.md', tab: null, version: null, against: null }));
+
+    expect(result.current.activeId).toBe(there);
+    expect(result.current.activeTab.kind === 'drive' && result.current.activeTab.loc.tab).toBeFalsy();
+  });
+
+  it('stays on the place a correction keeps when the loaned tab in front gives way', () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'a.md' }, pin: true }));
+    const kept = result.current.activeId;
+    act(() => result.current.newTab());
+    act(() => result.current.openDrive({ loc: { file: 'b.md' } }));
+    act(() => result.current.newTab());
+    const unrelated = result.current.activeId;
+    // The loaned tab is in front, between the kept tab and an unrelated one.
+    const loaned = result.current.tabs.find((t) => t.kind === 'drive' && t.preview)!.id;
+    act(() => result.current.activate(loaned));
+    act(() => result.current.goDrive(kept, { space: null, file: 'b.md' }, { replace: true }));
+
+    expect(result.current.activeId).toBe(kept);
+    expect(result.current.activeId).not.toBe(unrelated);
+  });
+
+  it("steps back through a file's views as the page does", () => {
+    const { result } = renderHook(() => useFileTabs('ws'));
+    act(() => result.current.openDrive({ loc: { file: 'm.md' }, pin: true }));
+    act(() => result.current.goDrive(result.current.activeId, { space: null, file: 'm.md', tab: 'record' }));
+    act(() => result.current.stepHistory(result.current.activeId, 'back'));
+
+    expect(result.current.activeTab).toMatchObject({ kind: 'drive', loc: { file: 'm.md' } });
+    expect(result.current.activeTab.kind === 'drive' && result.current.activeTab.loc.tab).toBeFalsy();
+  });
+
+  it('keeps where a tab is across a reload, but not the view of its file', () => {
+    const first = renderHook(() => useFileTabs('ws', 't1'));
+    act(() => first.result.current.openDrive({ loc: { file: 'a.md', tab: 'record', version: 2 }, pin: true }));
+    first.unmount();
+
+    const second = renderHook(() => useFileTabs('ws', 't1'));
+    const tab = second.result.current.tabs.find((t) => t.kind === 'drive');
+    expect(tab).toMatchObject({ kind: 'drive', loc: { file: 'a.md' } });
+    expect(tab?.kind === 'drive' && tab.loc.tab).toBeFalsy();
+  });
+});

@@ -21,7 +21,8 @@ import { isFilePath, isImagePath, normalizeFilePath, parseFolderHref, parseWsPat
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import { useLinkActions } from '../contexts/LinkActionsContext';
 import { isWebAddress, WebLinkMenu } from './WebLinkMenu';
-import { onOtherComputer, parseAgentHref, parseAgentPath } from '../utils/agentPaths';
+import { classifyAgentPath, onOtherComputer, parseAgentHref, parseAgentPath } from '../utils/agentPaths';
+import { drivePathHref } from '../utils/agentArtifactRouting';
 import { prepareMarkdownSource } from '../utils/markdownSource';
 import { splitFileLocation, type OpenFileHandler } from '../utils/fileLocation';
 import { splitMarkdownBlocks, scanStreamingBlock } from '../utils/markdownBlocks';
@@ -382,9 +383,17 @@ const chatBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
 // chat has a computer's browser, a web link's right-click menu offers it too.
 function MarkdownLink({ href, ...props }: MarkdownComponentProps) {
   const route = useInRouterContext() ? appRoutePath(href) : null;
-  const { openShareLink, openInBrowser } = useLinkActions();
+  const { openShareLink, openAppRoute, openInBrowser } = useLinkActions();
   if (isFootnoteLink(props)) return <FootnoteLink href={href} {...props} />;
-  if (route !== null) return <GuardedLink to={route} {...props} />;
+  if (route !== null) {
+    const onAppClick = openAppRoute
+      ? (e: React.MouseEvent) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          if (openAppRoute(route)) e.preventDefault();
+        }
+      : undefined;
+    return <GuardedLink to={route} onClick={onAppClick} {...props} />;
+  }
   const onClick = openShareLink && href
     ? (e: React.MouseEvent) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
@@ -697,6 +706,10 @@ function embeddedImagesKey(source: string): string {
 function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, onAnchorLink, codeTheme, streaming = false, rehypeAfter, rehypeForBlock }: MarkdownProps): React.ReactElement {
   const config = VARIANTS[variant];
   const folders = useWorkspaceFolders();
+  // Where the chat opens a Drive link beside it, the link also names the
+  // Drive page, for a modified click. Elsewhere (a share)
+  // the Drive is someone else's, and its page would be the reader's own.
+  const drivePages = !!useLinkActions().openAppRoute;
   const rootDir = folders?.rootDir;
   const otherRoots = folders?.otherRoots;
   const prepared = useMemo(() => prepareMarkdownSource(content, rootDir, otherRoots), [content, rootDir, otherRoots]);
@@ -814,11 +827,20 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
           // The rest of another computer is on no machine this view reads, so
           // the link opens nothing rather than a namesake here.
           if (!other && !wsRef && onOtherComputer(parseAgentHref(path, folders?.rootDir), folders)) return <span {...props}>{children}</span>;
+          // A Drive file opens beside the chat; a modified click opens it on
+          // the Drive page in a new tab, as any other page of the app does.
+          const drive = classifyAgentPath(opened, folders?.rootDir);
+          const pageHref = drivePages && drive.kind === 'drive' ? drivePathHref(drive) : undefined;
           return (
             <a
               className="underline hover:opacity-80 transition-opacity cursor-pointer"
               style={{ color: 'var(--color-accent-primary)' }}
-              onClick={(e: React.MouseEvent) => { e.preventDefault(); onOpenFile(opened, wsRef?.workspaceId ?? other?.workspaceId, location ?? undefined, { rooted: rooted || !!wsRef || !!other }); }}
+              href={pageHref}
+              onClick={(e: React.MouseEvent) => {
+                if (pageHref && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0)) return;
+                e.preventDefault();
+                onOpenFile(opened, wsRef?.workspaceId ?? other?.workspaceId, location ?? undefined, { rooted: rooted || !!wsRef || !!other });
+              }}
               {...props}
             >{children}</a>
           );
@@ -831,7 +853,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
       return <DefaultA node={_node} href={href} {...props}>{children}</DefaultA>;
     };
     return { ...result, a: fileAwareA };
-  }, [onOpenFile, onAnchorLink, variant, config.components, codeTheme, folders, embeddedImages]);
+  }, [onOpenFile, onAnchorLink, variant, config.components, codeTheme, folders, embeddedImages, drivePages]);
 
   // Rendered markdown is always long-form reading content — every call site
   // (transcript, detail panels, memos) gets the content face here.

@@ -9,6 +9,7 @@ import {
   getAttribution,
   getChanges,
   getEntry,
+  getEntryById,
   getRecord,
   getSpaces,
   getVersionText,
@@ -94,6 +95,20 @@ export function useDriveEntry(space: string | null, path: string | null, seed?: 
     enabled: !!space && !!path,
     placeholderData: seed,
     staleTime: 15_000,
+    retry: retryUnlessClientError,
+  });
+}
+
+/**
+ * Where an entry is now, by its id: asked only once its old path is gone, to
+ * follow a file renamed or moved while nothing showing it was listening.
+ */
+export function useDriveEntryById(space: string | null, id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.drive.entryById(space ?? '', id ?? ''),
+    queryFn: () => getEntryById(space!, id!),
+    enabled: !!space && !!id,
+    staleTime: 0,
     retry: retryUnlessClientError,
   });
 }

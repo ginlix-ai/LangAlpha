@@ -409,7 +409,7 @@ describe('classifyAgentPath', () => {
 });
 
 describe('computeAgentArtifactRouting: user data', () => {
-  const userFile = (path: string) => ({ kind: 'panel', target: { kind: 'file', path }, workspaceId: null });
+  const userFile = (path: string) => ({ target: { kind: 'file', path }, workspaceId: null });
 
   it('routes portfolio.json to the Files tab in no workspace', () => {
     expect(computeAgentArtifactRouting('.agents/user/profile/portfolio.json')).toEqual(userFile('.agents/user/profile/portfolio.json'));

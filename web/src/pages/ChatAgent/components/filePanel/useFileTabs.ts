@@ -6,7 +6,9 @@ import { userLocalStorage } from '@/lib/userStorage';
 import type { FileLocation } from '../../utils/fileLocation';
 import { isValidUuid } from '../../utils/uuid';
 import { freshStrips, tabsStorageKey, threadTabsStorageKey } from './freshStrips';
-import { PREVIEW_PORT_MAX, PREVIEW_PORT_MIN, type ChartTabSpec, type PreviewSpec, type ToolTabSpec } from './types';
+import { drivePathKey } from '@/pages/Drive/drivePaths';
+import type { DriveLocation } from '@/lib/driveLinks';
+import { PREVIEW_PORT_MAX, PREVIEW_PORT_MIN, type ChartTabSpec, type DriveTabSpec, type PreviewSpec, type ToolTabSpec } from './types';
 
 /**
  * What one tab shows. The empty tab is the panel's landing surface and its
@@ -23,6 +25,14 @@ import { PREVIEW_PORT_MAX, PREVIEW_PORT_MIN, type ChartTabSpec, type PreviewSpec
  * opening one per row, and never takes the file being browsed. Both point into
  * the transcript and are never stored: each carries an id and reads the live
  * record at render.
+ *
+ * A Drive tab is a place in the person's Drive (a folder, the memo list, the
+ * trash, a file), opened from a link in the chat or the new tab's list, and
+ * browsed in place like a browser tab, each move a step back can undo. It is
+ * on loan like a file tab, in a slot of its own, and kept once the reader
+ * moves around in it or edits. A memo's record or changes, or a past version,
+ * is where the reader is in the file, not what it is, so a reload opens the
+ * file's document again.
  *
  * Settings, memory, memo, status and browser are each the one tab of their
  * kind, and carry nothing: the body is the store itself, the live watch, or the
@@ -58,6 +68,7 @@ type TabBody =
     command?: string;
   }
   | { kind: 'chart'; symbol: string; timeframe: string; workspaceId?: string }
+  | ({ kind: 'drive'; preview: boolean } & DriveTabSpec)
   | ({ kind: 'tool'; preview: boolean } & ToolTabSpec)
   | { kind: 'sources'; preview: boolean; messageId: string };
 
@@ -95,7 +106,7 @@ export function isListingTab(tab: FileTab): boolean {
 
 /** A tab that the next open of its kind may take over. */
 export function isOnLoan(tab: FileTab): tab is Extract<FileTab, { preview: boolean }> {
-  return (tab.kind === 'file' || tab.kind === 'tool' || tab.kind === 'sources') && tab.preview;
+  return (tab.kind === 'file' || tab.kind === 'drive' || tab.kind === 'tool' || tab.kind === 'sources') && tab.preview;
 }
 
 /** `tab` kept: a tab on loan taken off it, any other as it is. */
@@ -156,6 +167,18 @@ const persistedTabSchemas = {
   memory: z.object({ kind: z.literal('memory') }),
   memo: z.object({ kind: z.literal('memo') }),
   browser: z.object({ kind: z.literal('browser') }),
+  drive: z.object({
+    kind: z.literal('drive'),
+    loc: z.catch(z.object({
+      space: z.catch(z.optional(z.nullable(z.string())), undefined),
+      file: z.catch(z.optional(z.nullable(z.string())), undefined),
+      dir: z.catch(z.optional(z.nullable(z.string())), undefined),
+      memos: z.catch(z.optional(z.boolean()), undefined),
+      trash: z.catch(z.optional(z.boolean()), undefined),
+    }), {}),
+    entryId: z.catch(z.optional(z.string()), undefined),
+    preview: z.catch(z.boolean(), false),
+  }),
   preview: z.object({
     kind: z.literal('preview'),
     // Outside the served range the tab would restore as a permanent error
@@ -264,6 +287,10 @@ function revive(t: PersistedTab): FileTab {
 }
 
 function toPersisted({ id: _id, ...body }: PersistableTab): PersistedTab {
+  if (body.kind === 'drive') {
+    const { tab: _tab, version: _version, against: _against, ...place } = body.loc;
+    return { ...body, loc: place };
+  }
   if (body.kind !== 'file') return body;
   const { location: _location, locationSeq: _seq, ...file } = body;
   return file;
@@ -360,29 +387,72 @@ function sameView(a: TabBody, b: TabBody): boolean {
     case 'file': return b.kind === 'file' && b.path === a.path;
     case 'preview': return b.kind === 'preview' && b.port === a.port;
     case 'chart': return b.kind === 'chart' && b.symbol === a.symbol;
+    case 'drive': return b.kind === 'drive' && drivePlaceKey(a.loc) === drivePlaceKey(b.loc);
     case 'tool': return b.kind === 'tool' && b.toolCallId === a.toolCallId;
     case 'sources': return b.kind === 'sources' && b.messageId === a.messageId;
     default: return b.kind === a.kind;
   }
 }
 
+/**
+ * One place in a Drive, its path matched as the server matches names, read
+ * as the page reads its address: the trash over all, else a file wherever it
+ * was opened from, else the memo list or a folder.
+ */
+function drivePlaceKey(loc: DriveLocation): string {
+  const where = loc.trash ? 'trash'
+    : loc.file ? `file:${drivePathKey(loc.file)}`
+    : loc.memos ? 'memos'
+    : `dir:${drivePathKey(loc.dir ?? '')}`;
+  return `${loc.space ?? ''}|${where}`;
+}
+
+/** Whether `loc` names a memo's view or a version, which an open moves the tab to. */
+function namesView(loc: DriveLocation): boolean {
+  return loc.tab != null || loc.version != null || loc.against != null;
+}
+
 /** Remake a tab as something else, with the step it left kept to come back to. */
 function navigateIn(state: TabsState, id: string, body: TabBody): TabsState {
   const tab = state.tabs.find((t) => t.id === id);
   const next = replaceIn(state, id, body);
-  if (!tab || sameView(tab, body)) return next;
+  if (!tab || sameStep(tab, body)) return next;
   const back = [...(state.history?.[id]?.back ?? []), bodyOf(tab)].slice(-MAX_HISTORY);
   return { ...next, history: { ...state.history, [id]: { back, forward: [] } } };
 }
 
-/** A step onto `b` from `a` would change nothing on screen; two empty tabs look alike. */
+/**
+ * A step onto `b` from `a` would change nothing on screen; two empty tabs
+ * look alike. A Drive file's view and the list beside it count too, since a
+ * memo's record, a past version or the memo list in place of the folder is
+ * a step on the page and so a step here.
+ */
 function sameStep(a: TabBody, b: TabBody): boolean {
+  if (a.kind === 'drive' && b.kind === 'drive') {
+    return sameView(a, b) && (a.loc.tab ?? null) === (b.loc.tab ?? null) && !!a.loc.memos === !!b.loc.memos
+      && (a.loc.version ?? null) === (b.loc.version ?? null) && (a.loc.against ?? null) === (b.loc.against ?? null);
+  }
   return a.kind === 'empty' ? b.kind === 'empty' : sameView(a, b);
 }
 
 /** Drops a step that shows what the one before it shows, which a step onto it would not change. */
 function collapseRepeats(steps: TabBody[]): TabBody[] {
   return steps.filter((step, at) => at === 0 || !sameStep(step, steps[at - 1]));
+}
+
+/**
+ * `next` with the history of `from`, a tab folded into `intoId`, joined onto
+ * that tab's: Back from the tab it folded into returns to where the reader
+ * moved away from, as it would have without the fold. The surviving tab's own
+ * steps stay on either side of that journey, since where it is now is where
+ * both left off. Where the two journeys meet they can repeat a step (both
+ * began on an empty tab). `step` is false for a fold no move of the reader's
+ * made, which adds no step of its own.
+ */
+function foldHistory(prev: TabsState, next: TabsState, from: FileTab, intoId: string, step = true): TabsState {
+  const kept = prev.history?.[intoId];
+  const back = collapseRepeats([...(kept?.back ?? []), ...(prev.history?.[from.id]?.back ?? []), ...(step ? [bodyOf(from)] : [])]).slice(-MAX_HISTORY);
+  return { ...next, history: { ...next.history, [intoId]: { back, forward: kept?.forward ?? [] } } };
 }
 
 /** Drops the steps that name a deleted file, so Back never lands on a read error. */
@@ -707,14 +777,8 @@ export function useFileTabs(
           const { workspaceId: _dropped, ...rest } = t;
           return { ...rest, timeframe: tab.timeframe, ...(tab.workspaceId && { workspaceId: tab.workspaceId }) };
         });
-        // So is its history: Back from the tab it folded into returns to the
-        // ticker the reader moved away from, as it would have without the fold.
-        // The surviving tab's own steps stay on either side of that journey,
-        // since its current ticker is where both left off. Where the two
-        // journeys meet they can repeat a step (both began on an empty tab).
-        const kept = prev.history?.[other.id];
-        const back = collapseRepeats([...(kept?.back ?? []), ...(prev.history?.[id]?.back ?? []), bodyOf(tab)]).slice(-MAX_HISTORY);
-        return { ...folded, activeId: other.id, history: { ...folded.history, [other.id]: { back, forward: kept?.forward ?? [] } } };
+        // So is its history.
+        return { ...foldHistory(prev, folded, tab, other.id), activeId: other.id };
       }
       const { id: _id, ...chart } = tab;
       return navigateIn(prev, id, { ...chart, symbol: ticker });
@@ -732,6 +796,84 @@ export function useFileTabs(
       toolCallId,
       preview: existing?.kind === 'tool' ? existing.preview : true,
     }), { loan: true }));
+  }, []);
+
+  /**
+   * One tab per place in a Drive: a second open comes back to its tab, and a
+   * first lands on the loaned Drive tab unless pinned, as a file's does. A
+   * view the open names (a memo's record, a version) moves the tab there, a
+   * step Back undoes, as a move inside the tab is; one that names none leaves
+   * it where the reader was.
+   */
+  const openDrive = useCallback(({ loc, pin = false }: { loc: DriveLocation; pin?: boolean }) => {
+    const key = drivePlaceKey(loc);
+    const match = (t: FileTab) => t.kind === 'drive' && drivePlaceKey(t.loc) === key;
+    const make = (existing: FileTab | null): TabBody => {
+      const was = existing?.kind === 'drive' ? existing : null;
+      return {
+        kind: 'drive',
+        // An open names a path, so the tab learns the id of whatever is there.
+        loc: was && !namesView(loc) ? { ...loc, tab: was.loc.tab, version: was.loc.version, against: was.loc.against } : loc,
+        preview: was ? (pin ? false : was.preview) : !pin,
+      };
+    };
+    setState((prev) => {
+      const existing = prev.tabs.find(match);
+      return existing ? navigateIn(prev, existing.id, make(existing)) : place(prev, match, make, { loan: !pin });
+    });
+  }, []);
+
+  /**
+   * Move a Drive tab to another place, as a link in a browser tab does: a
+   * step back can undo, and the tab is kept from then on. `replace` corrects
+   * where the tab is instead (the file renamed under it, an address the file
+   * reads otherwise), adding no step and leaving it on loan. A place has one
+   * tab, so a move onto a place another tab shows folds the two, journeys
+   * and all.
+   */
+  const goDrive = useCallback((id: string, loc: DriveLocation, { replace = false }: { replace?: boolean } = {}) => {
+    setState((prev) => {
+      const tab = prev.tabs.find((t) => t.id === id);
+      if (tab?.kind !== 'drive') return prev;
+      const body: TabBody = {
+        kind: 'drive',
+        loc,
+        // The id names the file a correction keeps; a move elsewhere learns its own.
+        ...(replace && tab.entryId && { entryId: tab.entryId }),
+        preview: replace ? tab.preview : false,
+      };
+      const key = drivePlaceKey(loc);
+      const other = prev.tabs.find((t) => t.id !== id && t.kind === 'drive' && drivePlaceKey(t.loc) === key);
+      // The tab moved gives way to the one already there, as an open of the
+      // place comes back to it, taking it to the view named; a move the reader
+      // made keeps it. Only a loaned tab there gives way to a kept one instead.
+      if (other && !(isOnLoan(other) && !isOnLoan(tab))) {
+        // A correction says which file is at the place now, so the tab there
+        // takes that file's id; its own named the file that was.
+        // A move the reader made names its whole place, the document view
+        // included; a correction keeps the view the tab there shows unless it
+        // names one.
+        const folded = foldHistory(prev, patchIn(closeIn(prev, id), other.id, (t) => (t.kind !== 'drive' ? t : {
+          ...t,
+          ...((!replace || namesView(loc)) && { loc }),
+          ...(!replace && { preview: false }),
+          ...(replace && tab.entryId && { entryId: tab.entryId }),
+        })), tab, other.id, !replace);
+        return prev.activeId === id ? { ...folded, activeId: other.id } : folded;
+      }
+      // A correction can land after the reader moved to another tab (a trash
+      // that took a moment): it leaves the tab in front where it is, unless
+      // that is the loaned tab giving way, whose place this tab now shows.
+      const moved = replace ? { ...replaceIn(prev, id, body), activeId: prev.activeId } : navigateIn(prev, id, body);
+      if (!other) return moved;
+      const closed = closeIn(moved, other.id);
+      return prev.activeId === other.id ? { ...closed, activeId: id } : closed;
+    });
+  }, []);
+
+  /** Keeps the open file's id on its Drive tab, to find it again after a move. */
+  const trackDrive = useCallback((id: string, entryId: string) => {
+    setState((prev) => patchIn(prev, id, (t) => (t.kind === 'drive' && t.entryId !== entryId ? { ...t, entryId } : t)));
   }, []);
 
   /** One tab per turn; a first open lands on the loaned sources tab. */
@@ -804,6 +946,9 @@ export function useFileTabs(
     retargetChart,
     openTool,
     openSources,
+    openDrive,
+    goDrive,
+    trackDrive,
     patchTab,
     clearLocation,
     historyTarget,
@@ -812,7 +957,7 @@ export function useFileTabs(
   }), [
     state.tabs, activeTab, openPaths,
     activate, openFile, pinTab, closeTab, closeTabs, closeOut, newTab, showListing, openSettings, openMemory, openMemo, openStatus, openBrowser,
-    openPreview, openChart, retargetChart, openTool, openSources, patchTab, clearLocation, historyTarget, stepHistory, forgetPaths,
+    openPreview, openChart, retargetChart, openTool, openSources, openDrive, goDrive, trackDrive, patchTab, clearLocation, historyTarget, stepHistory, forgetPaths,
   ]);
 }
 

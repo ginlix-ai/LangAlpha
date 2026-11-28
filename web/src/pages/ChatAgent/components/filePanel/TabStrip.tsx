@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ArrowLeft, BookMarked, BookOpen, CandlestickChart, ChevronLeft, ChevronRight, FolderOpen, FolderTree, Globe, LayoutDashboard, Maximize2, Minimize2, PanelRight, Plus, ScrollText, Settings, X, XCircle, type LucideIcon } from 'lucide-react';
+import { Activity, ArrowLeft, BookMarked, BookOpen, CandlestickChart, ChevronLeft, ChevronRight, Folder, FolderOpen, FolderTree, Globe, HardDrive, LayoutDashboard, Maximize2, Minimize2, PanelRight, Plus, ScrollText, Settings, Trash2, X, XCircle, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -8,6 +8,9 @@ import { fileGlyph } from './fileMeta';
 import { isHtmlFile } from '../../utils/filePaths';
 import { getCompletedRowTitle, getCompletedSummary, getToolIcon, isTaskTool } from '../toolDisplayConfig';
 import { isOnLoan, type FileTab } from './useFileTabs';
+import type { DriveTabSpec } from './types';
+import { fillLocation } from '@/lib/driveLinks';
+import { nameOf, parentOf } from '@/pages/Drive/drivePaths';
 import { isToolCallFailed } from './toolCallFailure';
 import type { ToolCallProcessRecord } from '../ToolCallDetailView';
 import { appFaviconGlyph } from '../messaging/appGlyph';
@@ -124,6 +127,18 @@ function readToolCall(proc: ToolCallProcessRecord, t: TFunction, root: string | 
   };
 }
 
+/** A Drive tab is named for the place it is at, with the Drive and the folder it sits in as its detail. */
+function describeDrive({ loc }: DriveTabSpec, t: TFunction): TabReading {
+  const { file, trash, memos, dir } = fillLocation(loc);
+  const drive = t('filePanel:tabs.drive');
+  const inFolder = (folder: string) => (folder ? `${drive} · ${folder}` : drive);
+  if (trash) return { name: t('filePanel:tabs.driveTrash'), Glyph: Trash2, detail: drive };
+  if (file) return { name: nameOf(file), Glyph: fileGlyph(file), detail: inFolder(parentOf(file)) };
+  if (memos) return { name: t('filePanel:tabs.driveMemos'), Glyph: ScrollText, detail: drive };
+  if (!dir) return { name: drive, Glyph: HardDrive, detail: null };
+  return { name: nameOf(dir), Glyph: Folder, detail: inFolder(parentOf(dir)) };
+}
+
 function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | null | undefined, names: LaNames | undefined): TabReading {
   switch (tab.kind) {
     case 'empty':
@@ -132,6 +147,8 @@ function describe(tab: FileTab, t: TFunction, source: TabSource, root: string | 
       const slash = tab.path.lastIndexOf('/');
       return { name: tab.path.slice(slash + 1), Glyph: fileGlyph(tab.path), detail: slash > 0 ? tab.path.slice(0, slash) : null };
     }
+    case 'drive':
+      return describeDrive(tab, t);
     case 'settings':
       return { name: t('chat.workspaceSettings'), Glyph: Settings, detail: null };
     case 'memory':
@@ -192,6 +209,19 @@ function ArtifactUnreadDot({ path }: { path: string }): React.ReactElement | nul
       )}
     </AnimatePresence>
   );
+}
+
+/**
+ * A tab's hint, held shut while the tab has nothing to say. Always
+ * controlled, since a tab gains and loses its detail as it moves (a Drive tab
+ * from a folder to the Drive's root) and Radix will not switch modes.
+ */
+function TabHint({ shut, children }: { shut: boolean; children: React.ReactNode }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  // Shut, it takes no ask to open, and one already open closes, so a hint
+  // never pops up on its own when the tab gains a detail under the pointer.
+  if (shut && open) setOpen(false);
+  return <Tooltip open={!shut && open} onOpenChange={(next) => setOpen(next && !shut)}>{children}</Tooltip>;
 }
 
 function launcherItem({ key, label, icon: Icon, open }: PanelLauncher): React.ReactElement {
@@ -520,7 +550,7 @@ export function TabStrip({
           // a detail keeps its element (and the observers on it).
           return (
             <ContextMenu key={tab.id} onOpenChange={(open) => setMenuTab((was) => (open ? tab.id : was === tab.id ? null : was))}>
-              <Tooltip open={hasHint ? undefined : false}>
+              <TabHint shut={!hasHint}>
                 <TooltipTrigger asChild>
                   <ContextMenuTrigger asChild>{pill}</ContextMenuTrigger>
                 </TooltipTrigger>
@@ -530,7 +560,7 @@ export function TabStrip({
                     {detail && <div className="file-panel-tab-hint-detail">{detail}</div>}
                   </TooltipContent>
                 )}
-              </Tooltip>
+              </TabHint>
               <TabMenuContent tabs={tabs} at={i} onClose={onClose} onCloseAutoFocus={(event) => focusAfterMenu(event, tab.id)} />
             </ContextMenu>
           );

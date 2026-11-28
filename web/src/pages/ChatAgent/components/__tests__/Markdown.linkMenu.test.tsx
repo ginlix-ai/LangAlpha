@@ -17,7 +17,7 @@ import { LinkActionsContext, type LinkActions } from '../../contexts/LinkActions
 
 function show(content: string, opener: LinkActions['openInBrowser'], openShareLink: LinkActions['openShareLink'] = null) {
   render(
-    <LinkActionsContext value={{ openShareLink, openInBrowser: opener }}>
+    <LinkActionsContext value={{ openShareLink, openAppRoute: null, openInBrowser: opener, drive: true }}>
       <Markdown variant="chat" content={content} onOpenFile={() => {}} />
     </LinkActionsContext>,
   );

@@ -1,5 +1,4 @@
 import { useTranslation } from 'react-i18next';
-import type React from 'react';
 import { Code2, Eye, MoreHorizontal, Pencil } from 'lucide-react';
 import { HeaderButton } from '@/components/mcp/McpPrimitives';
 import { Button } from '@/components/ui/button';
@@ -17,7 +16,7 @@ import { isImeComposing } from '@/lib/ime';
 import { Input } from '@/components/ui/input';
 import type { DriveEntry } from '@/types/drive';
 import { useDriveContext } from '../driveContext';
-import { nameOf } from '../drivePaths';
+import { nameOf, parentOf } from '../drivePaths';
 import { memoState } from '../memoMarks';
 import type { DriveEditor } from '../useDriveEditor';
 import { whoLabel } from '../who';
@@ -25,6 +24,7 @@ import { EntryGlyph } from './EntryGlyph';
 import { EntryMenuItems } from './EntryMenuItems';
 import { EntryName } from './EntryName';
 import { MemoChip } from './MemoBadges';
+import { Crumbs } from './Crumbs';
 import { BackButton, ICON_BUTTON, PaneAction } from './PaneFrame';
 
 /** The save's quiet mark beside the editor's buttons. */
@@ -40,8 +40,10 @@ function useSaveMark(editor: DriveEditor): string {
 
 /**
  * The open file's name and where it stands (version, who changed it last,
- * size), then what can be done: edit, the entry's menu; or, while editing,
- * the save, beside which a memo asks what changed. Under it, a memo's band.
+ * size), then what can be done: edit, the host's action, the entry's menu;
+ * or, while editing, the save, beside which a memo asks what changed. Under
+ * it, a memo's band. Where the folder list is not beside it in the panel,
+ * the folders it sits in sit above its name, each a way to that folder.
  */
 export function FileHeader({ path, entry, mobile, editor, edit, html, children }: {
   path: string;
@@ -62,7 +64,7 @@ export function FileHeader({ path, entry, mobile, editor, edit, html, children }
   const { t } = useTranslation();
   const locale = useLocale();
   const now = useNow();
-  const { back, backTo, leaveEditor } = useDriveContext();
+  const { back, backTo, leaveEditor, pageAction, fileCrumbs } = useDriveContext();
   const backLabel = backTo === 'memos' ? t('drive:backToMemos') : t('drive:backToFolder');
   const mark = useSaveMark(editor);
   const { session, dirty } = editor;
@@ -77,8 +79,10 @@ export function FileHeader({ path, entry, mobile, editor, edit, html, children }
 
   return (
     <div className="drive-file-top">
+      {fileCrumbs && <Crumbs dir={parentOf(path)} compact here={false} className="drive-file-crumbs" />}
       <div className="drive-file-head">
-        {mobile && <BackButton label={backLabel} onClick={back} />}
+        {/* The crumbs lead to folders; a file opened from the memo list keeps its way back there. */}
+        {mobile && (!fileCrumbs || backTo === 'memos') && <BackButton label={backLabel} onClick={back} />}
         <EntryGlyph name={name} className="drive-file-glyph" />
         <div className="drive-file-title">
           <div className="drive-file-name-row">
@@ -131,6 +135,7 @@ export function FileHeader({ path, entry, mobile, editor, edit, html, children }
                   // On a phone the name needs the row: the action keeps its icon.
                   <PaneAction icon={Pencil} label={t('drive:actions.edit')} compact={mobile} onClick={editor.start} disabled={edit === 'waiting'} />
                 )}
+                {pageAction}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button type="button" variant="ghost" size="icon" className={ICON_BUTTON} aria-label={t('drive:actions.more', { name })}>

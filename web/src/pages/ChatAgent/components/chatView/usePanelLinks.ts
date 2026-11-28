@@ -1,10 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
-import { useNavigate } from 'react-router';
-import { computeAgentArtifactRouting } from '../../utils/agentArtifactRouting';
+import { computeAgentArtifactRouting, type ArtifactDestination, type PanelDestination } from '../../utils/agentArtifactRouting';
 import type { ComputerFolders } from '../../utils/agentPaths';
 import { isValidUuid } from '../../utils/uuid';
 import { isOneShotKind, stampTarget, type PanelTarget, type UnsequencedTarget } from '../filePanel/types';
-import type { OpenFileHandler } from '../../utils/fileLocation';
+import type { FileLocation, OpenFileHandler } from '../../utils/fileLocation';
 import type { RouteLeaveGuard } from '../../contexts/RouteLeaveGuardContext';
 
 /**
@@ -76,18 +75,33 @@ export function usePanelAsks() {
   };
 }
 
+/** What a click adds to the target it opens: where in a file, kept in a tab of its own, a comment to bring forward. */
+interface PanelClick {
+  location?: FileLocation | null;
+  pin?: boolean;
+  comment?: string;
+}
+
+export type PanelOpen = (dest: ArtifactDestination, click?: PanelClick) => void;
+
+function clicked(target: PanelDestination, { location, pin, comment }: PanelClick): UnsequencedTarget {
+  if (target.kind === 'drive') return { ...target, pin: !!pin };
+  if (target.kind === 'file' && 'path' in target) {
+    return { ...target, location: location ?? null, pin: !!pin, ...(comment && { comment }) };
+  }
+  return target;
+}
+
 /**
- * Routes a click on an agent artifact to the panel tab that owns its domain,
- * in the workspace the link names: a sibling's file opens in the panel in
- * place of the view's own (`nextPanelOverride`). The pure decision is
- * computed by computeAgentArtifactRouting; the result becomes the one panel
- * target, which replaces whatever ask was pending.
+ * Opens a destination in the panel, in the workspace it names: a sibling's
+ * file opens in the panel in place of the view's own (`nextPanelOverride`),
+ * and anything that names no workspace returns the panel to the view's own.
+ * The result becomes the one panel target, which replaces whatever ask was
+ * pending.
  */
-export function usePanelLinkOpen({ workspaceId, folders, override, setOverride, land, leave }: {
+export function usePanelOpen({ workspaceId, override, setOverride, land, leave }: {
   /** The view's own workspace. */
   workspaceId: string;
-  /** The view's folders, which a path naming a sibling by its folder is read against. */
-  folders: ComputerFolders | null;
   /** The sibling the panel shows in place of the view's own (usePanelFiles). */
   override: string | null;
   setOverride: (workspaceId: string | null) => void;
@@ -95,22 +109,13 @@ export function usePanelLinkOpen({ workspaceId, folders, override, setOverride, 
   land: (target: UnsequencedTarget) => void;
   /** The panel's leave guard (usePanelAsks). */
   leave: RouteLeaveGuard;
-}): OpenFileHandler {
-  const navigate = useNavigate();
-  return useCallback<OpenFileHandler>((rawPath, targetWorkspaceId, location, opts) => {
-    const dest = computeAgentArtifactRouting(rawPath, targetWorkspaceId, folders);
-    // A Drive file is the user's, not the workspace's: it opens on its page.
-    if (dest.kind === 'page') {
-      leave(() => navigate(dest.href));
-      return;
-    }
+}): PanelOpen {
+  return useCallback((dest, click = {}) => {
     if (dest.workspaceId && !isValidUuid(dest.workspaceId)) {
       console.warn('[FilePanel] ignoring artifact ref with invalid workspace id', dest.workspaceId);
       return;
     }
-    const target: UnsequencedTarget = dest.target.kind === 'file' && 'path' in dest.target
-      ? { ...dest.target, location: location ?? null, pin: !!opts?.pin, ...(opts?.comment && { comment: opts.comment }) }
-      : dest.target;
+    const target = clicked(dest.target, click);
     // Another workspace's strip replaces this one's, drafts included. Only a
     // change in the workspace the panel shows does that; clearing an unset
     // override keeps the strip.
@@ -122,5 +127,17 @@ export function usePanelLinkOpen({ workspaceId, folders, override, setOverride, 
       land(target);
     };
     if (switching) leave(go); else go();
-  }, [land, setOverride, folders, leave, workspaceId, override, navigate]);
+  }, [land, setOverride, leave, workspaceId, override]);
+}
+
+/**
+ * Routes a click on an agent artifact to the panel tab that owns its domain,
+ * in the workspace the link names, through `open` (usePanelOpen). The pure
+ * decision is computed by computeAgentArtifactRouting; `folders` are the
+ * view's, which a path naming a sibling by its folder is read against.
+ */
+export function usePanelLinkOpen(open: PanelOpen, folders: ComputerFolders | null): OpenFileHandler {
+  return useCallback<OpenFileHandler>((rawPath, targetWorkspaceId, location, opts) => {
+    open(computeAgentArtifactRouting(rawPath, targetWorkspaceId, folders), { location, pin: opts?.pin, comment: opts?.comment });
+  }, [open, folders]);
 }

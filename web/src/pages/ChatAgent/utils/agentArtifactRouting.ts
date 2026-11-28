@@ -1,4 +1,4 @@
-import { driveHref } from '@/lib/driveLinks';
+import { DRIVE_ROUTE, driveHref, readDriveLocation, type DriveLocation, type ReadLocation } from '@/lib/driveLinks';
 import {
   classifyAgentPath,
   DRIVE_PERSONAL,
@@ -10,34 +10,54 @@ import {
 } from './agentPaths';
 import type { UnsequencedTarget } from '../components/filePanel/types';
 
-/** The Drive page's address for a Drive path: the file, or the folder it names. */
-export function drivePathHref(info: DrivePathInfo): string {
+/** The place a Drive path names: the file, or the folder (a space's root is one). */
+export function driveLocationOf(info: DrivePathInfo): DriveLocation {
   const space = info.space === DRIVE_PERSONAL ? null : info.space;
-  return info.directory
-    ? driveHref({ space, dir: info.path })
-    : driveHref({ space, file: info.path });
+  return info.directory || !info.path ? { space, dir: info.path } : { space, file: info.path };
+}
+
+/** The Drive page's address for a Drive path. */
+export function drivePathHref(info: DrivePathInfo): string {
+  return driveHref(driveLocationOf(info));
+}
+
+/**
+ * The place a Drive page address names (a folder, the memo list, the trash,
+ * a file in its view), or null for any other address. A page link the agent
+ * wrote opens beside the chat as its path would.
+ */
+export function driveRouteLocation(route: string): ReadLocation | null {
+  let url: URL;
+  try {
+    url = new URL(route, 'http://drive.invalid');
+  } catch {
+    return null;
+  }
+  return url.pathname === DRIVE_ROUTE ? readDriveLocation(url.searchParams) : null;
 }
 
 /**
  * What the panel is asked to open, in the shapes its targets take
- * (`UnsequencedTarget`): a file or a folder in the Files tab, or an entry in
- * the memory or memo store. `''` is a real answer for both a folder (the
- * workspace root) and a memo (the memo list). A click's location and pin are
- * the caller's to add.
+ * (`UnsequencedTarget`): a file or a folder in the Files tab, an entry in
+ * the memory or memo store, or a place in the person's Drive. `''` is a real
+ * answer for both a folder (the workspace root) and a memo (the memo list).
+ * A click's location and pin are the caller's to add.
  */
 export type PanelDestination =
   | { kind: 'file'; path: string }
   | { kind: 'file'; dir: string }
-  | Extract<UnsequencedTarget, { kind: 'memory' | 'memo' }>;
+  | Extract<UnsequencedTarget, { kind: 'memory' | 'memo' }>
+  | { kind: 'drive'; loc: DriveLocation };
 
 /**
- * Where an agent artifact opens: a page outside the chat (the Drive), or the
- * panel, in `workspaceId`'s files where the link names a workspace and the
- * view's own where it names none (a user-scoped store, a plain path).
+ * Where an agent artifact opens in the panel: in `workspaceId`'s files where
+ * the link names a workspace, and the view's own where it names none (a
+ * user-scoped store, the person's Drive, a plain path).
  */
-export type ArtifactDestination =
-  | { kind: 'page'; href: string }
-  | { kind: 'panel'; target: PanelDestination; workspaceId: string | null };
+export interface ArtifactDestination {
+  target: PanelDestination;
+  workspaceId: string | null;
+}
 
 /**
  * Pure routing decision, so it is testable without mounting the chat shell.
@@ -62,11 +82,13 @@ export function computeAgentArtifactRouting(
   const { path: routedPath, parts } = selectedWorkspaceLink(rawPath, folders);
   const info = classifyAgentPath(routedPath, root);
   const named = targetWorkspaceId ?? ('crossWorkspaceId' in info ? info.crossWorkspaceId : undefined) ?? null;
-  const panel = (target: PanelDestination, workspaceId: string | null): ArtifactDestination => ({ kind: 'panel', target, workspaceId });
+  const panel = (target: PanelDestination, workspaceId: string | null): ArtifactDestination => ({ target, workspaceId });
 
   switch (info.kind) {
+    // The Drive is browsed beside the chat, in a Drive tab, at the folder or
+    // file the link names.
     case 'drive':
-      return { kind: 'page', href: drivePathHref(info) };
+      return panel({ kind: 'drive', loc: driveLocationOf(info) }, null);
     case 'memory':
       return panel({ kind: 'memory', key: info.key, tier: info.tier }, info.tier === 'workspace' ? named : null);
     case 'memo':

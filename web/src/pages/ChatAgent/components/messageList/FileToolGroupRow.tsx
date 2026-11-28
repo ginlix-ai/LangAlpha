@@ -13,6 +13,7 @@ import { SwapCell } from '@/components/ui/crossfade';
 import { announceAnchoredToggle } from '../../utils/anchoredToggle';
 import { EditDiff } from './EditDiff';
 import { editStrings, filePathOf } from './groupFileToolRuns';
+import { useLinkActions } from '../../contexts/LinkActionsContext';
 import type { ActivityItem, ToolActivityItem } from './activityTypes';
 
 interface FileToolGroupRowProps {
@@ -59,17 +60,21 @@ export const FileToolGroupRow = memo(function FileToolGroupRow({ items, onOpenFi
     : [];
   const hasDiff = diffs.length > 0;
   const category = categorizeTool(toolName, item.toolCall, root);
-  const tab = category === 'memoryRead' || category === 'memoryWrite' ? 'memory'
-    : category === 'memo' || category === 'memoWrite' ? 'memo' : 'files';
-  const openLabel = t('toolArtifact:a11y.openInTab', { tab: t(`filePanel:tabs.${tab}`) });
   const singlePath = filePathOf(item);
+  const tab = category === 'memoryRead' || category === 'memoryWrite' ? 'memory'
+    : category === 'memo' || category === 'memoWrite' ? 'memo'
+    : singlePath && classifyAgentPath(singlePath, root).kind === 'drive' ? 'drive' : 'files';
+  const openLabel = t('toolArtifact:a11y.openInTab', { tab: t(`filePanel:tabs.${tab}`) });
   const singleLabel = getCompletedSummary(toolName, item.toolCall, t, { root })
     || (singlePath && AGENT_PATH_TRAITS[classifyAgentPath(singlePath, root).kind].plainFile ? singlePath.split('/').pop() : null);
   // A run keeps to one computer. On another one the path is that machine's,
   // and the file panel would read it here, so the pill opens the call.
   const elsewhere = ranElsewhere(item.toolCall?.args);
+  // Without a Drive there is no tab for a Drive path to open, so its pill opens the call too.
+  const { drive } = useLinkActions();
+  const opensFile = (path: string) => !elsewhere && (drive || classifyAgentPath(path, root).kind !== 'drive');
   const openPath = (path: string) => {
-    if (onOpenFile && !elsewhere) onOpenFile(path);
+    if (onOpenFile && opensFile(path)) onOpenFile(path);
     else {
       const call = items.find((entry) => filePathOf(entry) === path);
       if (call) onToolCallClick?.(call);

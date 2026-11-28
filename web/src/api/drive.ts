@@ -68,6 +68,12 @@ export async function getEntry(space: string, path: string): Promise<DriveEntry>
   return data;
 }
 
+/** An entry by its id, wherever it is now: a file renamed or moved keeps its id. */
+export async function getEntryById(space: string, id: string): Promise<DriveEntry> {
+  const { data } = await api.get<DriveEntry>(at(space, 'entry'), { params: { id } });
+  return data;
+}
+
 /** Where a file's bytes are read: its head, or one version of it. */
 export function contentUrl(space: string): string {
   return at(space, 'content');

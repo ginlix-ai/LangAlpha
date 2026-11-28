@@ -8,6 +8,7 @@ import { runAuthResets } from '@/lib/authResets';
 import type { FileBody } from '@/pages/ChatAgent/components/filePanel/fileBody';
 import { renderHookWithProviders } from '@/test/utils';
 import type { DriveEntry, DriveMemoMark } from '@/types/drive';
+import { draftOf } from '../driveDrafts';
 import { useDriveEditor } from '../useDriveEditor';
 
 vi.mock('@/api/drive', async (importOriginal) => ({
@@ -75,13 +76,74 @@ function setup({ atHeadDocument = true, memo = false }: { atHeadDocument?: boole
     page.entry = { ...page.entry, memo: { ...MARK, marked: false } };
     view.rerender();
   };
-  return { ...view, start, type, moveHead, openFile, unmark };
+  /** Another file takes the path while the editor stays open (the one it opened on moved). */
+  const swapIn = (id: string) => {
+    page.entry = { ...entryAt(SHA.theirs), id };
+    page.head = headAt(SHA.theirs, 'theirs');
+    view.rerender();
+  };
+  return { ...view, start, type, moveHead, openFile, unmark, swapIn };
 }
 
 beforeEach(() => {
   runAuthResets();
   vi.mocked(saveFile).mockReset();
   vi.mocked(getEntry).mockReset();
+});
+
+describe('useDriveEditor: another file at the path', () => {
+  it('keeps the draft for the file it was written for, and saves nothing over the newcomer', () => {
+    const { result, start, type, swapIn } = setup();
+    start();
+    type('mine');
+    swapIn('e9');
+    type('mine, more');
+
+    expect(draftOf('e1')).toMatchObject({ draft: 'mine, more' });
+    expect(draftOf('e9')).toBeUndefined();
+    expect(result.current.canSave).toBe(false);
+    expect(result.current.theirs).toBeNull();
+    expect(result.current.behind).toBe(false);
+  });
+});
+
+describe('useDriveEditor: a save that lands after its editor is gone', () => {
+  it('drops the kept draft it saved, so the file does not reopen as unsaved', async () => {
+    const { result, start, type, unmount } = setup();
+    start();
+    type('mine');
+    expect(draftOf('e1')).toMatchObject({ draft: 'mine' });
+    let land!: (entry: DriveEntry) => void;
+    vi.mocked(saveFile).mockReturnValueOnce(new Promise((resolve) => { land = resolve; }));
+    let saving!: Promise<void>;
+    act(() => { saving = result.current.save(); });
+    // The panel tab is put behind another before the save answers.
+    unmount();
+    land(entryAt(SHA.saved));
+    await act(() => saving);
+
+    expect(draftOf('e1')).toBeUndefined();
+  });
+});
+
+describe('useDriveEditor: a memo save that lands after its editor is gone', () => {
+  it('keeps a note typed after the save left, with the text typed since', async () => {
+    const { result, start, type, unmount } = setup({ memo: true });
+    start();
+    type('mine');
+    act(() => result.current.setNote('first'));
+    let land!: (entry: DriveEntry) => void;
+    vi.mocked(saveFile).mockReturnValueOnce(new Promise((resolve) => { land = resolve; }));
+    let saving!: Promise<void>;
+    act(() => { saving = result.current.save(); });
+    type('mine, more');
+    act(() => result.current.setNote('second'));
+    unmount();
+    land(entryAt(SHA.saved));
+    await act(() => saving);
+
+    expect(draftOf('e1')).toMatchObject({ draft: 'mine, more', note: 'second', base: { content: 'mine' } });
+  });
 });
 
 describe('useDriveEditor: a save that lands', () => {
@@ -258,6 +320,27 @@ describe('useDriveEditor: a save that lands after its session ended', () => {
     });
     // The new sitting neither took the old text as its base nor marked itself saved.
     expect(result.current.session).toEqual(reopened);
+  });
+
+  it('leaves the draft kept by the reopened editor on its own base, once that editor is gone too', async () => {
+    const { result, start, type, unmount } = setup();
+    start();
+    type('first draft');
+    const land = deferredSave();
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.save(); });
+
+    act(() => result.current.close());
+    start();
+    type('second draft');
+    unmount();
+    await act(async () => {
+      land(SHA.saved);
+      await pending;
+    });
+    // Moved onto the old save's version, its save would overwrite that
+    // version without the conflict it is owed.
+    expect(draftOf('e1')).toMatchObject({ base: { sha: SHA.base, content: 'base' }, draft: 'second draft' });
   });
 
   it('leaves the editor on another file alone', async () => {

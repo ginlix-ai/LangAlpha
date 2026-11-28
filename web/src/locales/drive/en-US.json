@@ -13,6 +13,7 @@
   "loadMore": "Show more",
   "backToFolder": "Back to folder",
   "backToMemos": "Back to memos",
+  "openInDrive": "Open in Drive",
   "retrying": "Server busy, retrying",
   "columns": {
     "modified": "Changed",

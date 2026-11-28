@@ -3,6 +3,9 @@
     "files": "Workspace",
     "memory": "Memory",
     "memo": "Memo",
+    "drive": "Drive",
+    "driveMemos": "Memos",
+    "driveTrash": "Trash",
     "status": "Status"
   },
   "sourcesTab": "Sources ({{count}})",
@@ -43,6 +46,7 @@
   "noFilesYet": "No files yet",
   "noTypeMatches": "No {{type}} files",
   "openFile": "Open a file",
+  "driveUnavailable": "Drive isn't available right now.",
   "files": "Files",
   "dropToUploadHint": "Drop a file here to upload it.",
   "openFiles": "Open tabs",
