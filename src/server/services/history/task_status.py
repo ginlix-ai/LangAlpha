@@ -19,7 +19,7 @@ from src.server.contracts.run_times import epoch_ms
 from src.server.utils.error_sanitization import sanitize_error_text
 
 if TYPE_CHECKING:
-    from ptc_agent.config.agent import SubagentModel
+    from ptc_agent.config.agent import RunModel
 
 logger = logging.getLogger(__name__)
 
@@ -53,17 +53,23 @@ def _artifact_run_id(data: Any) -> str | None:
     return str(run_id) if run_id else None
 
 
-def _model(row: dict[str, Any]) -> SubagentModel | None:
-    """The row's recorded model, or None for one that ran its launcher's."""
+def _model(row: dict[str, Any]) -> RunModel | None:
+    """The row's recorded model, or None for a row admitted before every run
+    recorded its model."""
     model = row.get("model")
-    if isinstance(model, dict) and model.get("id") and model.get("provider"):
-        return {"id": str(model["id"]), "provider": str(model["provider"])}
-    return None
+    if not (isinstance(model, dict) and model.get("id") and model.get("provider")):
+        return None
+    effort = model.get("effort")
+    return {
+        "id": str(model["id"]),
+        "provider": str(model["provider"]),
+        **({"effort": effort} if isinstance(effort, str) and effort else {}),
+    }
 
 
 def _telemetry(row: dict[str, Any]) -> dict[str, Any]:
     """A run's bounds and model, from its ledger row: no finish while it
-    runs, no model when it ran its launcher's."""
+    runs, no model for a row that recorded none."""
     return {
         "started_ms": epoch_ms(row.get("started_at")),
         "finished_ms": epoch_ms(row.get("finalized_at")),
@@ -251,7 +257,7 @@ def stamp_task_artifact_data(
 
     Every replay, a shared one included, also gets the bounds of the run this
     artifact launched (``started_ms``, ``finished_ms`` once it settled) and
-    its ``model`` when that was not its launcher's, which say nothing the
+    its ``model`` where the row recorded one, which say nothing the
     transcript beside them does not. An artifact that names no run (a launch
     from before the ledger) takes its task's latest run's; one naming a run
     the read missed gets none rather than another run's."""

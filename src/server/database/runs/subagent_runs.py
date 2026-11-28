@@ -38,7 +38,7 @@ from psycopg.types.json import Jsonb
 from src.server.database.claude_code_hosted import CLAUDE_CODE_TURN, CLI_COMPUTER, STORED_TURN
 from src.server.database.home_workspace import STAND_IN_COMPUTER
 
-from ptc_agent.config.agent import SubagentModel
+from ptc_agent.config.agent import RunModel
 from src.server.database import pool
 from src.server.contracts.status import (
     REPORT_BACK_STATUSES,
@@ -145,7 +145,7 @@ async def start_task_run(
     launch_tool_call_id: Optional[str] = None,
     predecessor_run_id: Optional[str] = None,
     start_checkpoint_id: Optional[str] = None,
-    model: Optional[SubagentModel] = None,
+    model: Optional[RunModel] = None,
     claude_code: bool = False,
     stored_token: bool = False,
     cli_cap: Optional[tuple[str, int]] = None,
@@ -1072,7 +1072,7 @@ async def get_task_run_telemetry(
     The per-run counterpart of :func:`get_latest_run_details`: a task card
     replays the run its own launch started, which a later resume has since
     displaced as the task's latest. ``model`` is the one admission recorded
-    (``replay_facts.model``), None when the run used its launcher's. The ids
+    (``replay_facts.model``), None for a row that recorded none. The ids
     come off stored artifacts, so the read is scoped to the thread (a
     payload must not reach another thread's run) and drops non-UUID ids
     pre-bind so one malformed id can't 22P02 the batch.

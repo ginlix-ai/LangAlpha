@@ -239,7 +239,7 @@ class TaskModelGate:
             display_name=(user_models.model_entry(model_pref, name) or {}).get("display_name") or name,
             client=resolved.client,
             guidance=guidance,
-            model=card_model(model_pref, catalog_model(resolved.client) or name, self._turn_model),
+            model=card_model(model_pref, resolved.client, name),
             claude_code=claude_code,
             effort=effort,
         )

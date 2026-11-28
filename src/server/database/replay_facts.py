@@ -7,9 +7,9 @@ stream was archived, what that archive added under ``LEGACY_KEY``, or, for one
 its checkpoints could not cover, the archive itself under ``ARCHIVE_KEY``
 (migration 069). A subagent run's row holds the captured URLs of the images
 its lane referenced (``images``) and the steering it handed back unread
-(``steering_returned``), written as each is learned, and, when it ran a
-model other than its launcher's, that model (``model``, ``{"id",
-"provider"}``), written with the row at admission.
+(``steering_returned``), written as each is learned, and the model it ran
+and the level it sent (``model``, ``{"id", "provider", "effort"?}``),
+written with the row at admission.
 """
 
 from typing import Any, Dict, List, Optional
