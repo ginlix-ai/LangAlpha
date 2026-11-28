@@ -7,6 +7,7 @@ import { apiErrorStatus } from '@/api/errors';
 import { spaceRef, useDriveChanges, useDriveEntry, useDriveList, useDriveSpaces, useDriveVersions } from '@/hooks/useDrive';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePageTabLeaveGuard } from '@/components/PageTabs/usePageTabLeaveGuard';
+import { isUnclaimedEscape } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 import { driveHref, readDriveLocation, withFile, type DriveLocation } from '@/lib/driveLinks';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
@@ -124,7 +125,7 @@ function Drive() {
   useEffect(() => {
     if (!fileOpen || editor.session) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      if (!isUnclaimedEscape(e)) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"], .monaco-editor')) return;
       if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;

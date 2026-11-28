@@ -33,6 +33,7 @@ import {
 import { flushSync } from 'react-dom';
 import type { DragEndEvent, DragStartEvent, Modifier } from '@dnd-kit/core';
 import { whenIdle } from '@/lib/whenIdle';
+import { LANDING_ATTR } from './loadMoreFocus';
 
 /** dnd-kit's gate: `true` disables both aspects, the object form keeps a row droppable. */
 export type DragGate = boolean | { draggable: boolean; droppable: boolean };
@@ -196,21 +197,25 @@ function findSection(root: HTMLElement, wsId: string): HTMLElement | undefined {
 /** Set by ./NavigationRows on each element that takes focus or animates, unique within its section. */
 const NAV_KEY_ATTR = 'data-nav-key';
 
-/** An element's identity in either tree: its section and its own nav key. */
+/** An element's identity in either tree: its section and its own nav key.
+ *  A row outside every section (Load all) has no section, and its key is
+ *  unique among such rows. */
 interface NavId {
-  wsId: string;
+  wsId: string | null;
   key: string;
 }
 
 function identify(el: Element): NavId | null {
   const key = el.getAttribute(NAV_KEY_ATTR);
-  const wsId = el.closest<HTMLElement>('[data-ws-id]')?.dataset.wsId;
-  return key !== null && wsId ? { wsId, key } : null;
+  const wsId = el.closest<HTMLElement>('[data-ws-id]')?.dataset.wsId ?? null;
+  return key !== null ? { wsId, key } : null;
 }
 
 function findTwin(root: HTMLElement, { wsId, key }: NavId): Element | undefined {
-  const keyed = findSection(root, wsId)?.querySelectorAll(`[${NAV_KEY_ATTR}]`) ?? [];
-  return Array.from(keyed).find((el) => el.getAttribute(NAV_KEY_ATTR) === key);
+  const scope = wsId === null ? root : findSection(root, wsId);
+  const keyed = Array.from(scope?.querySelectorAll(`[${NAV_KEY_ATTR}]`) ?? []);
+  return keyed.find((el) => el.getAttribute(NAV_KEY_ATTR) === key
+    && (wsId !== null || el.closest('[data-ws-id]') === null));
 }
 
 /**
@@ -282,7 +287,10 @@ function swapWouldShow(root: HTMLElement): boolean {
   );
   return (
     root.querySelector('[data-ws-id]:hover, [data-ws-id] [data-state="open"]') !== null ||
-    (focused !== null && root.contains(focused) && focused.closest('[data-ws-id]') !== null && holdsFocus(focused)) ||
+    // A "show more" pressed from the keyboard is still to land its focus, and
+    // the remount would lose it.
+    root.querySelector(`[${LANDING_ATTR}]`) !== null ||
+    (focused !== null && root.contains(focused) && identify(focused) !== null && holdsFocus(focused)) ||
     (selection !== null && !selection.isCollapsed && root.contains(selection.anchorNode)) ||
     // A dialog or menu opened from a row hands focus back to it on close,
     // which for a menu comes after its exit animation, once its trigger has

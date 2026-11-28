@@ -68,6 +68,7 @@ export function FailedIconBadge({ failed, label }: { failed: boolean; label: str
         <motion.span
           key="failed"
           className="nrow-badge"
+          role="img"
           aria-label={label}
           initial={{ scale: 0.6, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}

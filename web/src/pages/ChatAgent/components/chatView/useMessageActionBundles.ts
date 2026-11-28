@@ -107,11 +107,12 @@ export function useMessageActionBundles(src: MessageActionSources): {
   const messageActions = useMemo<MessageActions>(() => ({
     ...stable,
     onOpenArtifactComment: commentOpeners,
+    onFocusComposer: () => chatInputRef.current?.focus(),
     editDrafts,
     widgetPrompts,
     reportThreadId,
     feedbackLoading,
-  }), [stable, commentOpeners, editDrafts, widgetPrompts, reportThreadId, feedbackLoading]);
+  }), [stable, commentOpeners, chatInputRef, editDrafts, widgetPrompts, reportThreadId, feedbackLoading]);
 
   // The subagent transcript is a DIFFERENT surface: its cards belong to a task,
   // not to the main thread's turn, so the main thread's approve/reject/edit

@@ -21,6 +21,7 @@ import type { IChartApi, IPanePrimitive, ISeriesApi, Logical, MouseEventParams, 
 import { useChartComposer } from '@/components/chart/chartComposer';
 import { buttonSlot } from '@/components/ui/button-class';
 import { useToast } from '@/components/ui/use-toast';
+import { isUnclaimedEscape } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 
 import type { LayerTime } from '../types/chartLayer';
@@ -276,7 +277,7 @@ export const ChartLayerOverlay = React.memo(function ChartLayerOverlay({
   useEffect(() => {
     if (!pinned) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPin(null);
+      if (isUnclaimedEscape(e)) setPin(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

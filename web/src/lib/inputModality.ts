@@ -177,6 +177,16 @@ export function focusWithoutRing(field: HTMLElement | null | undefined, options?
   document.documentElement.toggleAttribute(POINTER_FOCUS, true);
 }
 
+/**
+ * Whether focus has fallen to nowhere, as it does when the element holding it
+ * is removed. What restores focus asks this first, so it never takes focus
+ * from wherever the user has since put it.
+ */
+export function focusIsLost(): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body;
+}
+
 export function lastInputWasPointer(): boolean {
   return pointer;
 }

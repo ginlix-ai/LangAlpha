@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useStableHandler } from './useStableHandler';
+import { focusIsLost } from '@/lib/inputModality';
 
 /**
  * Keyboard and focus behaviour for a hand-rolled modal overlay.
@@ -227,9 +228,7 @@ export function useDialogA11y<T extends HTMLElement>(onClose: () => void) {
       // Focus still nowhere: the opener went with what this dialog did (a
       // removed row), or was in a panel made inert while this one was open
       // over it. A dialog still open underneath takes it back, not <body>.
-      if (!document.activeElement || document.activeElement === document.body) {
-        openDialogs.findLast(isShown)?.focus();
-      }
+      if (focusIsLost()) openDialogs.findLast(isShown)?.focus();
     };
   }, []);
 

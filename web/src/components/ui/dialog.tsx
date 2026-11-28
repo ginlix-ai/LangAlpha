@@ -1,9 +1,10 @@
 import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
-import { closeAutoFocus } from "@/lib/inputModality"
+import { closeAutoFocus, focusIsLost } from "@/lib/inputModality"
 import { useIsMobile } from "@/hooks/useIsMobile"
 
 // A sheet whose gesture fails to load still opens and closes, it just does not
@@ -56,6 +57,7 @@ function DialogContent({
   className,
   children,
   variant = 'default',
+  onFocusCapture,
   onCloseAutoFocus,
   ref,
   ...props
@@ -64,8 +66,38 @@ function DialogContent({
    *  'command' = pinned near the top on every screen, with no close button: Escape closes it. */
   variant?: 'default' | 'centered' | 'command';
 }) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const swipeEnabled = isMobile && variant === 'default';
+
+  // Radix hands focus back to a Dialog.Trigger on close, and a dialog opened
+  // from state has none, so a keyboard user would be dropped on <body>. What
+  // held focus at open takes it back then, after Radix's own return has run
+  // and only where it left focus nowhere, so a trigger or a handler that
+  // places focus itself is left alone. What held it is read from the first
+  // focus to enter the dialog, which a field's autoFocus moves in before
+  // Radix's own open focus runs, and which says where focus came from.
+  const returnFocusRef = React.useRef<HTMLElement | null>(null);
+  const enteredRef = React.useRef(false);
+  const handleFocusCapture = (event: React.FocusEvent<HTMLDivElement>) => {
+    if (!enteredRef.current) {
+      enteredRef.current = true;
+      const from = event.relatedTarget;
+      returnFocusRef.current = from instanceof HTMLElement && !event.currentTarget.contains(from) ? from : null;
+    }
+    onFocusCapture?.(event);
+  };
+  const handleCloseAutoFocus = (event: Event) => {
+    // Prevents the event after a click, so this returns focus only after keys.
+    closeAutoFocus(onCloseAutoFocus)(event);
+    const held = returnFocusRef.current;
+    returnFocusRef.current = null;
+    enteredRef.current = false;
+    if (!held || event.defaultPrevented) return;
+    queueMicrotask(() => {
+      if (focusIsLost() && held.isConnected) held.focus({ preventScroll: true });
+    });
+  };
 
   // Hidden close button ref — clicking it triggers Radix's onOpenChange(false)
   const closeRef = React.useRef<HTMLButtonElement>(null);
@@ -96,7 +128,8 @@ function DialogContent({
           aria-describedby={undefined}
           ref={containerRefCb}
           className={cn(DIALOG_MOBILE_SHEET_CLASSES, className)}
-          onCloseAutoFocus={closeAutoFocus(onCloseAutoFocus)}
+          onFocusCapture={handleFocusCapture}
+          onCloseAutoFocus={handleCloseAutoFocus}
           {...props}
         >
           {/* Drag handle */}
@@ -148,13 +181,14 @@ function DialogContent({
           variant === 'command' ? DIALOG_COMMAND_CLASSES : DIALOG_CENTERED_CLASSES,
           className
         )}
-        onCloseAutoFocus={closeAutoFocus(onCloseAutoFocus)}
+        onFocusCapture={handleFocusCapture}
+        onCloseAutoFocus={handleCloseAutoFocus}
         {...props}>
         {children}
         {variant !== 'command' && <DialogPrimitive.Close
           className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
           <X className="h-4 w-4" />
-          <span className="sr-only">Close</span>
+          <span className="sr-only">{t('common.close')}</span>
         </DialogPrimitive.Close>}
       </DialogPrimitive.Content>
     </DialogPortal>

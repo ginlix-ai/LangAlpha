@@ -4,6 +4,7 @@
  * the session hands back opens the same way, and a running turn keeps the
  * edit in its box rather than send it.
  */
+import { useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { MessageBubble } from '../MessageBubble';
@@ -151,6 +152,69 @@ describe('MessageBubble – an edit kept by the host', () => {
 
     expect(onEditMessage).toHaveBeenCalledWith('user-b', 'question 1 rewritten');
     expect(screen.queryAllByRole('textbox')).toHaveLength(0);
+  });
+
+  it('hands the focus back to the pencil when Escape, Cancel or Save closes the box', () => {
+    const editDrafts = createEditDraftStore(() => 'thread-1');
+    render(bubble({ onEditMessage: vi.fn(), editDrafts }));
+    const pencil = () => screen.getByTitle('Edit message');
+
+    fireEvent.click(pencil());
+    fireEvent.keyDown(box()!, { key: 'Escape' });
+    expect(box()).toBeNull();
+    expect(document.activeElement).toBe(pencil());
+
+    fireEvent.click(pencil());
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    cancel.focus();
+    fireEvent.click(cancel);
+    expect(document.activeElement).toBe(pencil());
+
+    fireEvent.click(pencil());
+    const save = screen.getByRole('button', { name: 'Save' });
+    save.focus();
+    fireEvent.click(save);
+    expect(document.activeElement).toBe(pencil());
+  });
+
+  it('hands the focus to the composer when the save starts a turn that hides the pencil', () => {
+    const editDrafts = createEditDraftStore(() => 'thread-1');
+    const onFocusComposer = vi.fn();
+    function Chat() {
+      const [loading, setLoading] = useState(false);
+      return bubble({ onEditMessage: () => setLoading(true), onFocusComposer, editDrafts }, loading);
+    }
+    render(<Chat />);
+    fireEvent.click(screen.getByTitle('Edit message'));
+    fireEvent.change(box()!, { target: { value: 'question 1, again' } });
+    const save = screen.getByRole('button', { name: 'Save' });
+    save.focus();
+    fireEvent.click(save);
+    expect(box()).toBeNull();
+    expect(screen.queryByTitle('Edit message')).toBeNull();
+    expect(onFocusComposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the pencil unfocused after a click on Cancel, so the actions do not stay up', () => {
+    const editDrafts = createEditDraftStore(() => 'thread-1');
+    render(bubble({ onEditMessage: vi.fn(), editDrafts }));
+    fireEvent.click(screen.getByTitle('Edit message'));
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    cancel.focus();
+    fireEvent.pointerDown(cancel);
+    fireEvent.click(cancel);
+    expect(box()).toBeNull();
+    expect(document.activeElement).not.toBe(screen.getByTitle('Edit message'));
+    // The next test starts from the keyboard again.
+    fireEvent.keyDown(window, { key: 'Tab' });
+  });
+
+  it('leaves the focus alone when the box did not hold it as it closed', () => {
+    const editDrafts = createEditDraftStore(() => 'thread-1');
+    editDrafts.put({ turnIndex: 1, original: 'question 1', text: 'never mind' });
+    render(bubble({ onEditMessage: vi.fn(), editDrafts }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(document.activeElement).toBe(document.body);
   });
 
   it('closes on Cancel and forgets the text', () => {

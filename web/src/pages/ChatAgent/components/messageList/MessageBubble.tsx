@@ -7,6 +7,7 @@ import { ThumbDownDialog } from '../ThumbDownSentDialog';
 import FigureEightLoading, { FADE_MS } from '@/components/ui/figure-eight-loading';
 import { copyText } from '@/lib/clipboard';
 import { AnimatePresence, motion } from '@/lib/framer';
+import { focusIsLost, lastInputWasPointer } from '@/lib/inputModality';
 import { DURATION, EASE_COLLAPSE } from '@/lib/motion';
 import { useTranscriptDisplay } from '@/lib/transcriptDisplay';
 import { CitationMetadataProvider } from '../CitationMetadataContext';
@@ -203,7 +204,7 @@ interface MessageBubbleProps {
  * chunk never re-renders settled bubbles through a handler identity.
  */
 export const MessageBubble = memo(function MessageBubble({ message, contentProjection, turnIndex, isTurnTail, endsReply = isTurnTail, canRegenerate = true, isLatestReply = true, isTurnLive, turnFiles, completedAt, quietEnd, feedback, isLoading, fold = 'unfolded', isSubagentView, readOnly, allowFiles, isMobile, dispatcherContext, continuesSender, held = false, borrowedFrom = null }: MessageBubbleProps): React.ReactElement | null {
-  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, editDrafts, onRegenerate, onRetry, onForkFromTurn, onThumbUp, onThumbDown, onThumbDownFollowUp, onSendNow, reportThreadId, feedbackLoading } = useMessageActions();
+  const { onOpenFile, onDownloadFile, onRevealFiles, onOpenSources, onEditMessage, onFocusComposer, editDrafts, onRegenerate, onRetry, onForkFromTurn, onThumbUp, onThumbDown, onThumbDownFollowUp, onSendNow, reportThreadId, feedbackLoading } = useMessageActions();
   const { t } = useTranslation();
   const root = useWorkspaceFolders()?.rootDir;
   const projection = contentProjection ?? projectMessageContent(message, isSubagentView, root);
@@ -237,6 +238,11 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   const isEditing = draftText !== undefined;
   const editContent = draftText ?? '';
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  // Closing the box unmounts whatever held the focus in it, which would drop
+  // a keyboard user on the page's body; the pencil that opened it takes it,
+  // or the composer after a save, whose turn hides the pencil while it runs.
+  const refocusEditButton = useRef(false);
 
   // Copy state
   const [copied, setCopied] = useState(false);
@@ -416,9 +422,8 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
   useLayoutEffect(() => {
     const el = editTextareaRef.current;
     if (!isEditing || !el) return;
-    const active = document.activeElement;
     const key = { turnIndex, original: originalText, messageId };
-    if (draftStore.takeFocus(key) && (!active || active === document.body)) {
+    if (draftStore.takeFocus(key) && focusIsLost()) {
       el.focus({ preventScroll: true });
       el.setSelectionRange(el.value.length, el.value.length);
     }
@@ -445,6 +450,13 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     shownEditing.current = isEditing;
     return columnRef.current ? playEntrance(columnRef.current) : undefined;
   }, [isEditing]);
+  useLayoutEffect(() => {
+    if (isEditing || !refocusEditButton.current) return;
+    refocusEditButton.current = false;
+    if (!focusIsLost()) return;
+    if (editButtonRef.current) editButtonRef.current.focus({ preventScroll: true });
+    else onFocusComposer?.();
+  }, [isEditing, onFocusComposer]);
 
   const handleCopy = useStableHandler(() => {
     // A quiet turn's closing line stands as its answer, so it is copied too.
@@ -463,7 +475,10 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
 
   if (foldedAway) return null;
 
-  const handleCancelEdit = () => {
+  const closeEdit = () => {
+    // A click leaves focus where clicking leaves it: a pencil focused under
+    // the pointer would hold the message's actions open.
+    refocusEditButton.current = !lastInputWasPointer() && !!columnRef.current?.contains(document.activeElement);
     draftStore.drop(draftKey);
   };
 
@@ -472,7 +487,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     if (isLoading) return;
     const trimmed = editContent.trim();
     // Closed first: an edit the session cannot take yet reopens the box.
-    draftStore.drop(draftKey);
+    closeEdit();
     if (trimmed && trimmed !== originalText.trim()) {
       onEditMessage?.(message.id as string, trimmed);
     }
@@ -484,7 +499,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
       e.preventDefault();
       handleSubmitEdit();
     } else if (e.key === 'Escape') {
-      handleCancelEdit();
+      closeEdit();
     }
   };
 
@@ -523,6 +538,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
     {atEnd && shownTime}
     {visible.edit && (
       <button
+        ref={editButtonRef}
         onClick={handleStartEdit}
         className={ACTION_BUTTON}
         title={t('chat.actions.editMessage')}
@@ -781,7 +797,7 @@ export const MessageBubble = memo(function MessageBubble({ message, contentProje
               </div>
               <div className={`flex gap-2 shrink-0 ${isMobile ? 'justify-end' : ''}`}>
                 <button
-                  onClick={handleCancelEdit}
+                  onClick={closeEdit}
                   className="press px-4 py-1.5 rounded-full text-sm font-medium"
                   style={{
                     color: 'var(--color-text-primary)',

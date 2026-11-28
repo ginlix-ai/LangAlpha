@@ -170,6 +170,7 @@ describe('nav tree kits', () => {
       'agent:main', 'agent:sub-running', 'agent:sub-running:remove', 'agent:sub-done', 'agent:sub-done:remove',
       'thread:t-pinned:title', 'thread:t-pinned:pin', 'thread:t-pinned:archive',
       'thread:t-other:title', 'thread:t-other:pin', 'thread:t-other:archive',
+      'show-more',
     ]);
   });
 

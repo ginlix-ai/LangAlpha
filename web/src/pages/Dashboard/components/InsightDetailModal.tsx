@@ -11,6 +11,7 @@ import { Loader } from '@/components/ui/loader';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
 import { createDateFormatter } from '@/lib/format';
+import { isUnclaimedEscape } from '@/lib/ime';
 import { buildInsightWidgetSnapshot, normalizeInsight } from '../utils/insightFetch';
 import { useLocale } from '@/hooks/useLocale';
 import { TermCard, TermChange, TermTag } from '@/pages/ChatAgent/components/charts/TermCard';
@@ -284,10 +285,7 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
   useEffect(() => {
     if (!marketInsightId) return;
     const handleEsc = (e: KeyboardEvent) => {
-      // The guard the dialog hook uses: an Escape that abandons an IME
-      // candidate, or one a layer inside already handled, is not a dismissal.
-      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
-      onClose();
+      if (isUnclaimedEscape(e)) onClose();
     };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);

@@ -13,6 +13,7 @@ import { TickerLabel } from '@/components/TickerLogo';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
 import { createDateFormatter } from '@/lib/format';
+import { isUnclaimedEscape } from '@/lib/ime';
 import { TermCard, TermStatus, TermTag, type TermTone } from '@/pages/ChatAgent/components/charts/TermCard';
 import { TermPanelContext } from '@/pages/ChatAgent/components/charts/termContext';
 import '@/pages/ChatAgent/components/charts/termPanel.css';
@@ -347,11 +348,7 @@ function NewsDetailModal({ newsId, onClose, fallback }: NewsDetailModalProps) {
   useEffect(() => {
     if (!newsId) return;
     const handleEsc = (e: KeyboardEvent) => {
-      // The same guard the dialog hook uses. An Escape that abandons an IME
-      // candidate, or one a layer inside has already handled, is not a
-      // dismissal, and this listener is on the window so it hears both.
-      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
-      onClose();
+      if (isUnclaimedEscape(e)) onClose();
     };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);

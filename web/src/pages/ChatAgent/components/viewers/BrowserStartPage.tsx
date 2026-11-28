@@ -3,6 +3,7 @@ import { CornerDownLeft, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
 import { isImeComposing } from '@/lib/ime';
+import { focusIsLost } from '@/lib/inputModality';
 import { cn } from '@/lib/utils';
 import type { BrowserStartState } from '../filePanel/browserPhase';
 import { visitFor } from '../filePanel/browserRefusal';
@@ -52,8 +53,7 @@ export function BrowserStartPage({
 
   // Ready to type into, unless the person is already typing somewhere else.
   useEffect(() => {
-    const active = document.activeElement;
-    if (!active || active === document.body) field.current?.focus({ preventScroll: true });
+    if (focusIsLost()) field.current?.focus({ preventScroll: true });
   }, []);
 
   const go = async () => {

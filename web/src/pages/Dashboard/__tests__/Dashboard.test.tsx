@@ -192,6 +192,32 @@ describe('Dashboard', () => {
     expect(drawn.addOpen).toBe(false);
   });
 
+  it('leaves edit mode on Esc, but not on an Esc a dialog or an IME already took', () => {
+    renderDashboard(makeClient());
+    const enter = () => {
+      const edit = drawn.headerEdit;
+      if (!edit || edit === 'unrendered') throw new Error('no Edit button');
+      act(() => edit.onEditModeChange(true));
+    };
+    const editing = () => (drawn.headerEdit as { editMode: boolean }).editMode;
+    enter();
+
+    const taken = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    taken.preventDefault();
+    act(() => { document.dispatchEvent(taken); });
+    expect(editing()).toBe(true);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true }));
+    });
+    expect(editing()).toBe(true);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(editing()).toBe(false);
+  });
+
   it('draws the default without an Edit button after a failed read, since no edit may be saved over the saved layout', () => {
     loadingState.failed = true;
     prefsState.current = null;

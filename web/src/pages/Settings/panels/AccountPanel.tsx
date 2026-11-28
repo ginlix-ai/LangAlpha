@@ -39,8 +39,18 @@ export function AccountPanel() {
   const avatarUrl = shownAvatar === brokenAvatar ? null : shownAvatar;
   const name = nameDraft ?? authUser?.name ?? '';
 
+  // Held with aria-disabled rather than disabled while an upload runs: the
+  // picker hands focus back to the button that opened it, and a disabled
+  // button would drop it on the page.
+  const pickPhoto = () => {
+    if (!isUploadingAvatar) fileInputRef.current?.click();
+  };
+
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Cleared so picking the same file again, as after a failed upload, still
+    // fires a change.
+    e.target.value = '';
     if (!file) return;
     setIsUploadingAvatar(true);
     setAvatarError(null);
@@ -87,7 +97,8 @@ export function AccountPanel() {
               type="button"
               className="h-12 w-12 rounded-xl flex items-center justify-center overflow-hidden shrink-0"
               style={{ backgroundColor: 'var(--color-accent-soft)' }}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={pickPhoto}
+              aria-disabled={isUploadingAvatar}
               aria-label={t('settings:changeAvatar')}
             >
               {avatarUrl ? (
@@ -100,9 +111,9 @@ export function AccountPanel() {
               type="button"
               variant="outline"
               size="sm"
-              className="h-8"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploadingAvatar}
+              className="h-8 aria-disabled:opacity-50"
+              onClick={pickPhoto}
+              aria-disabled={isUploadingAvatar}
             >
               {isUploadingAvatar ? t('settings:uploading') : t('settings:changeAvatar')}
             </Button>

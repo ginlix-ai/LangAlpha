@@ -3,6 +3,7 @@
 // (was loader.reference.tsx).
 
 import { useCallback, useSyncExternalStore, type CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 
 // Terminal-style frame set — the loader CLI AI agents cycle through.
@@ -94,10 +95,12 @@ function getReduceSnapshot(): boolean {
 export function Loader({
   size = 32,
   speed = 0.8,
-  label = "Loading",
+  label,
   className,
   style,
 }: LoaderProps) {
+  const { t } = useTranslation();
+  const name = label ?? t("common.loading");
   // Reduced motion slows the cycle rather than stopping it — it's a glyph
   // swap, not on-screen movement.
   const reduce = useSyncExternalStore(
@@ -123,7 +126,7 @@ export function Loader({
   return (
     <span
       role="status"
-      aria-label={label}
+      aria-label={name}
       className={cn(
         "inline-flex items-center justify-center text-foreground",
         className,
@@ -136,7 +139,7 @@ export function Loader({
       >
         {ASCII_FRAMES[frame % ASCII_FRAMES.length]}
       </span>
-      <span className="sr-only">{label}</span>
+      <span className="sr-only">{name}</span>
     </span>
   );
 }

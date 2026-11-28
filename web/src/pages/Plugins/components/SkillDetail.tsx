@@ -7,6 +7,7 @@ import { ConfirmStrip } from '@/components/mcp/McpPrimitives';
 import { useSkillContent } from '@/hooks/useSkills';
 import { useLocale } from '@/hooks/useLocale';
 import { formatBytes, mediumDate } from '@/lib/format';
+import { isImeComposing } from '@/lib/ime';
 import type { PluginInfo, SkillInfo } from '@/pages/ChatAgent/utils/api';
 import { isPluginOwned, isPluginSuppressed, skillScopeId } from '../utils/provenance';
 import type { useSkillActions } from '../hooks/useSkillActions';
@@ -364,6 +365,8 @@ function CommandBox({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
+            // A key that commits or drops an IME candidate edits the name.
+            if (isImeComposing(e)) return;
             if (e.key === 'Enter') save();
             else if (e.key === 'Escape') {
               e.stopPropagation();

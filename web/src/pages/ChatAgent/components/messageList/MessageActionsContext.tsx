@@ -85,6 +85,9 @@ export interface MessageActions {
   onApproveToolCall?: (approvalId: string, interruptId: string, position: ToolApprovalPosition, attemptId?: string) => void;
   onRejectToolCall?: (approvalId: string, interruptId: string, position: ToolApprovalPosition, message?: string, attemptId?: string) => void;
   onEditMessage?: (messageId: string, content: string) => void;
+  /** Puts the focus in the composer: where a keyboard user goes after saving
+   *  an edit, whose turn hides the message's own actions while it runs. */
+  onFocusComposer?: () => void;
   /** The session's open edit boxes, which outlive the bubbles a reload
    *  remounts. Without it a bubble keeps its own while it lives. */
   editDrafts?: EditDraftStore;

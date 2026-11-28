@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { isImeComposing } from '@/lib/ime';
-import { focusWithoutRing, lastInputWasPointer } from '@/lib/inputModality';
+import { focusIsLost, focusWithoutRing, lastInputWasPointer } from '@/lib/inputModality';
 import { cn } from '@/lib/utils';
 import { PaletteField } from './PaletteField';
 import { PaletteFooter } from './PaletteFooter';
@@ -65,8 +65,7 @@ export default function CommandPalette({ open, onClose, typed, returnFocus }: Co
             // Focus goes back where it was unless something took it since: the
             // page a row led to (a composer it filled), or a click elsewhere.
             // The palette's own field, removed with it, leaves it on the body.
-            const now = document.activeElement;
-            if ((!now || now === document.body) && !lastInputWasPointer()) focusWithoutRing(returnRef.current);
+            if (focusIsLost() && !lastInputWasPointer()) focusWithoutRing(returnRef.current);
           }}
           onEscapeKeyDown={(e) => {
             // Escape in an IME composition drops the candidates, nothing more.

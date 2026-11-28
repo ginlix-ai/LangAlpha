@@ -92,7 +92,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
       {needsInput ? (
         <span
           role="img"
-          aria-label="Waiting for your input"
+          aria-label={t('nav.threadNeedsInput')}
           className="w-2 h-2 rounded-full shrink-0"
           style={{ border: '1.5px solid var(--color-accent-primary)' }}
         />
@@ -106,7 +106,10 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
       {/* Thread title and info */}
       <div className="flex-1 min-w-0">
         <h3 className={cn('flex items-center gap-1.5 text-sm font-normal', titleFading && 'animate-fade-in')} style={{ color: 'var(--color-text-primary)' }}>
-          <span className="truncate min-w-0">{cardTitle}</span>
+          {/* The card takes the pointer; its title is its button for the
+              keyboard, and the click reaches the card. A button around the
+              whole card would nest the action buttons in it. */}
+          <button type="button" className="truncate min-w-0 text-left">{cardTitle}</button>
           {!!thread.is_shared && (
             <span
               role="img"
@@ -159,7 +162,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
               onClick={handleRenameClick}
               className="p-1.5 rounded-md transition-colors hover:bg-foreground/10"
               style={{ color: 'var(--color-text-tertiary)' }}
-              title="Rename thread"
+              title={t('thread.renameThread')}
             >
               <Edit2 className="h-3.5 w-3.5" />
             </button>
@@ -191,7 +194,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
               onClick={handleDeleteClick}
               className="p-1.5 rounded-md transition-colors hover:bg-(--color-danger-hover-bg)"
               style={{ color: 'var(--color-loss)' }}
-              title="Delete thread"
+              title={t('thread.deleteThread')}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>

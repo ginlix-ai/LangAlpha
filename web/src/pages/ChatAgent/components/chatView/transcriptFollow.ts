@@ -160,7 +160,17 @@ export function createTranscriptFollow({
     tailing = false;
   });
   const settle = createSettleWindow(() => {
+    const expiring = pin.current;
     pin.current = null;
+    // An offset restore leaves the reader off the end, and only their scroll
+    // would say otherwise. A transcript shorter than the view never scrolls,
+    // so where the held place settled is asked here instead: at the end
+    // itself, as a scroll of the reader's own is read, so the top bar's tap
+    // up a short transcript stays where it went.
+    if (expiring?.mode === 'offset' && c && !following.current && isNearBottom(c, AT_BOTTOM_PX)) {
+      following.current = true;
+      placed?.(true);
+    }
   });
   const maxTop = (el: HTMLElement) => Math.max(0, el.scrollHeight - el.clientHeight);
 

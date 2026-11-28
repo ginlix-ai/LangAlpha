@@ -21,6 +21,7 @@ import {
 } from '@/components/PageTabs/pageTabsContext';
 import { SidebarCorner } from '@/components/Sidebar/SidebarCorner';
 import type { SidebarPeek } from '@/components/Sidebar/useSidebarPeek';
+import { focusIsLost, lastInputWasPointer } from '@/lib/inputModality';
 import { cn } from '@/lib/utils';
 import './TopBar.css';
 
@@ -42,6 +43,26 @@ function PageTabStrip({ tabs, actions }: { tabs: PageTabsState; actions: PageTab
   useEffect(() => {
     listRef.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [tabs.activeId]);
+  // Closing a tab removes the button that held focus, which drops a keyboard
+  // user on <body>. Focus goes to the tab in its place, as the page does: the
+  // one to its right, else its left. Only for a close from the keyboard, since
+  // a click leaves focus where clicking leaves it, and only once the tab is
+  // gone, since a page may ask first and the answer may be to stay.
+  const newTabRef = useRef<HTMLButtonElement>(null);
+  const refocus = useRef<{ id: string; index: number } | null>(null);
+  useEffect(() => {
+    const closing = refocus.current;
+    if (!closing || tabs.tabs.some((tab) => tab.id === closing.id)) return;
+    refocus.current = null;
+    if (!focusIsLost()) return;
+    const mains = listRef.current?.querySelectorAll<HTMLElement>('.page-tab-main');
+    const next = mains?.length ? mains[Math.min(closing.index, mains.length - 1)] : newTabRef.current;
+    next?.focus();
+  }, [tabs.tabs]);
+  const closeTab = (id: string, index: number) => {
+    refocus.current = lastInputWasPointer() ? null : { id, index };
+    actions.close(id);
+  };
   return (
     <div className="page-tabs">
       {/* The tabs scroll once they reach their narrowest; the new-tab button
@@ -57,7 +78,7 @@ function PageTabStrip({ tabs, actions }: { tabs: PageTabsState; actions: PageTab
           if (e.deltaX === 0) e.currentTarget.scrollLeft += e.deltaY;
         }}
       >
-        {tabs.tabs.map((tab) => {
+        {tabs.tabs.map((tab, index) => {
           const { label, Icon } = describe(tab, t);
           const active = tab.id === tabs.activeId;
           return (
@@ -66,7 +87,7 @@ function PageTabStrip({ tabs, actions }: { tabs: PageTabsState; actions: PageTab
               className={cn('page-tab', active && 'is-active')}
               // A middle click closes, as in a browser.
               onAuxClick={(e) => {
-                if (e.button === 1) actions.close(tab.id);
+                if (e.button === 1) closeTab(tab.id, index);
               }}
             >
               <button
@@ -84,7 +105,7 @@ function PageTabStrip({ tabs, actions }: { tabs: PageTabsState; actions: PageTab
                   type="button"
                   className="page-tab-close"
                   aria-label={t('pageTabs.close', { title: label })}
-                  onClick={() => actions.close(tab.id)}
+                  onClick={() => closeTab(tab.id, index)}
                 >
                   <X className="h-3 w-3" aria-hidden="true" />
                 </button>
@@ -99,6 +120,7 @@ function PageTabStrip({ tabs, actions }: { tabs: PageTabsState; actions: PageTab
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <button
+            ref={newTabRef}
             type="button"
             className="page-tab-new"
             aria-label={t('pageTabs.newTab')}

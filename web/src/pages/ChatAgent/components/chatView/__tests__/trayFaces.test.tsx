@@ -194,7 +194,7 @@ describe('the delegated work faces', () => {
   const tightCount = (face: ChipFace) => {
     const chip = drawn(face);
     expect(chip.querySelector('svg')).not.toBeNull();
-    return chip.textContent?.replace(/^.*Loading/, '');
+    return chip.textContent?.replace(/^.*Loading\.*/, '');
   };
 
   it('count by icon and number when tight, named in full', () => {
